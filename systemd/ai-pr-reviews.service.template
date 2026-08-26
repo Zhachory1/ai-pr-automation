@@ -1,0 +1,15 @@
+[Unit]
+Description=AI pull-request review automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=__HOME__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PR_AUTOMATION_REVIEW_RUNNER=__RUNNER__
+Environment=PR_AUTOMATION_REPOSITORIES=__REPOSITORIES__
+ExecStart=__INSTALL_DIR__/bin/pr-automation review
+
+[Install]
+WantedBy=default.target
