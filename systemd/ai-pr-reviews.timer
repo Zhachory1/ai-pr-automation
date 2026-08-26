@@ -1,0 +1,10 @@
+[Unit]
+Description=Run AI pull-request reviews hourly
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=1h
+Persistent=false
+
+[Install]
+WantedBy=timers.target
