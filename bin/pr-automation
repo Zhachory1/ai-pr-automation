@@ -31,6 +31,7 @@ KEEP_SUCCESS_WORKSPACES="${PR_AUTOMATION_KEEP_SUCCESS_WORKSPACES:-false}"
 ALLOWED_REPOS="${PR_AUTOMATION_REPOSITORIES:-}"
 ALLOWED_ORGS="${PR_AUTOMATION_ORGS:-}"
 ALLOW_ALL_REPOS="${PR_AUTOMATION_ALLOW_ALL_REPOS:-false}"
+GITHUB_ACCOUNT="${PR_AUTOMATION_GITHUB_ACCOUNT:-}"
 [[ -n "${PR_AUTOMATION_MCP_AUTH_DIR:-}" ]] && export MCP_REMOTE_CONFIG_DIR="$PR_AUTOMATION_MCP_AUTH_DIR"
 
 ts() {
@@ -191,6 +192,14 @@ echo "$(ts) run budget: ${RUN_BUDGET_SECONDS}s"
 echo "$(ts) ordering: least recently attempted; never-attempted PRs use creation time"
 [[ "$DRY_RUN" == true ]] && echo "$(ts) dry run: runner will not be invoked"
 [[ -n "$ONLY" ]] && echo "$(ts) target: $ONLY"
+
+if [[ -n "$GITHUB_ACCOUNT" && -z "${GH_TOKEN:-}" ]]; then
+  if ! GH_TOKEN="$(gh auth token -u "$GITHUB_ACCOUNT" 2>/dev/null)"; then
+    finish_early failed 2 "unable to load GitHub token for account $GITHUB_ACCOUNT"
+  fi
+  export GH_TOKEN
+fi
+[[ -n "$GITHUB_ACCOUNT" ]] && echo "$(ts) GitHub account: $GITHUB_ACCOUNT"
 
 if [[ -n "$INPUT_FILE" ]]; then
   prs="$(<"$INPUT_FILE")"

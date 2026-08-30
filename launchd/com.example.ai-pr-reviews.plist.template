@@ -33,6 +33,8 @@
     <string>__RUNNER__</string>
     <key>PR_AUTOMATION_REPOSITORIES</key>
     <string>__REPOSITORIES__</string>
+    <key>PR_AUTOMATION_GITHUB_ACCOUNT</key>
+    <string>__GITHUB_ACCOUNT__</string>
   </dict>
 
   <key>WorkingDirectory</key>

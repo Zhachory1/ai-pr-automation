@@ -203,6 +203,7 @@ Use separate tokens or GitHub App installations for the two runners. Put tokens 
 | `PR_AUTOMATION_REPOSITORIES` | empty | Comma-separated exact `owner/repo` allowlist |
 | `PR_AUTOMATION_ORGS` | empty | Comma-separated exact organization allowlist |
 | `PR_AUTOMATION_ALLOW_ALL_REPOS` | `false` | Explicitly disable repository scoping |
+| `PR_AUTOMATION_GITHUB_ACCOUNT` | empty | Pin `gh` token selection to a named authenticated account |
 | `PR_AUTOMATION_PER_PR_TIMEOUT` | `12m` | Per-PR GNU timeout |
 | `PR_AUTOMATION_RUN_BUDGET_SECONDS` | `3300` | Outer watchdog and queue budget |
 | `PR_AUTOMATION_GH_TIMEOUT_SECONDS` | `60` | GitHub CLI call timeout |
@@ -254,6 +255,7 @@ Templates are in [`launchd/`](launchd/). Replace:
 - `__RUNNER__` with your agent runner's absolute path
 - `__REPOSITORIES__` with a comma-separated exact repository allowlist
 - `__LABEL_PREFIX__` with a reverse-DNS prefix you own, such as `com.yourname`
+- `__GITHUB_ACCOUNT__` with the exact account shown by `gh auth status`
 
 Copy them to `~/Library/LaunchAgents/`, then load:
 
@@ -316,6 +318,7 @@ Additional notes:
 
 - GitHub search is capped at 1,000 results. Reaching the cap fails loudly; narrow repository scope.
 - A targeted run uses `gh pr view` directly and is not limited by search ordering.
+- Machines with multiple authenticated GitHub accounts should set `PR_AUTOMATION_GITHUB_ACCOUNT`. The scheduler resolves `GH_TOKEN` through `gh auth token -u`, preventing a later interactive `gh auth switch` from silently changing which account `@me` means.
 - Do not edit a Bash script in place while it is running; Bash can read later lines after startup. Validate a temporary file and atomically rename it over the installed path.
 - A run takes one PR-list snapshot. PRs created after that snapshot become eligible next run.
 - Per-runner GNU timeout intentionally runs without `--foreground`, giving timeout a process group it can terminate. `TERM` is followed by `KILL` after 10 seconds so descendants cannot leak output or writes into the next PR slot.
