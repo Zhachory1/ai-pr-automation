@@ -2,8 +2,8 @@
 Description=Run AI pull-request reviews hourly
 
 [Timer]
-OnBootSec=10m
-OnUnitActiveSec=1h
+OnCalendar=*-*-* *:35:00
+AccuracySec=1m
 Persistent=false
 
 [Install]

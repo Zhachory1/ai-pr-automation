@@ -8,7 +8,7 @@ The project handles scheduling, queue fairness, locking, time budgets, GitHub di
 
 | Mode | GitHub query | Intended behavior |
 | --- | --- | --- |
-| `review` | Open PRs assigned to `@me` | Review only; approve clean PRs or leave one blocker comment |
+| `review` | Open PRs assigned to `@me` | Review only; submit `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` from verdict |
 | `maintain` | Open PRs authored by `@me` | Handle review feedback and CI with one bounded fix pass |
 
 ```bash
@@ -153,9 +153,10 @@ bin/pr-automation maintain
 
 Review mode prompts enforce:
 
-- no source edits or pushes
-- approve only without blockers
-- otherwise one blocker comment, not request-changes
+- no source edits, pushes, or merges
+- `approve` / `approve-with-nits` → `APPROVE`
+- `request-changes` / `block` → `REQUEST_CHANGES`
+- `needs-info` or self-review restrictions → `COMMENT`
 - one visible result per head SHA using `<!-- ai-pr-automation head=<full-head-sha> -->`
 - exact body-file preview before posting
 
@@ -268,7 +269,7 @@ launchctl print "gui/$(id -u)/com.yourname.ai-pr-reviews"
 launchctl print "gui/$(id -u)/com.yourname.ai-pr-maintenance"
 ```
 
-Both templates run hourly, set `RunAtLoad=false` to avoid surprise work during reloads, and set launchd `Umask=63` (`077`) so launchd-created logs remain user-private.
+Templates use fixed wall-clock hourly starts: maintenance at minute 5 and review at minute 35. This avoids `StartInterval` behavior where a long run can delay the next start by an additional hour. They set `RunAtLoad=false` to avoid surprise work during reloads and launchd `Umask=63` (`077`) so launchd-created logs remain user-private. Per-mode locks skip overlaps safely.
 
 ### systemd user setup
 
@@ -290,7 +291,7 @@ systemctl --user status ai-pr-reviews.timer ai-pr-maintenance.timer
 journalctl --user -u ai-pr-reviews.service -u ai-pr-maintenance.service
 ```
 
-The repository files are templates; copy them to names without `.template` after replacing placeholders.
+The repository files are templates; copy them to names without `.template` after replacing placeholders. Timers use fixed hourly wall-clock starts matching launchd: maintenance at `:05`, review at `:35`.
 
 ## Testing
 
@@ -317,6 +318,7 @@ Additional notes:
 - A targeted run uses `gh pr view` directly and is not limited by search ordering.
 - Do not edit a Bash script in place while it is running; Bash can read later lines after startup. Validate a temporary file and atomically rename it over the installed path.
 - A run takes one PR-list snapshot. PRs created after that snapshot become eligible next run.
+- Per-runner GNU timeout intentionally runs without `--foreground`, giving timeout a process group it can terminate. `TERM` is followed by `KILL` after 10 seconds so descendants cannot leak output or writes into the next PR slot.
 - Locks include PID, mode, start time, and an ownership token to reject PID-reuse false positives, close startup races, and prevent one process from removing another's lock.
 - `health.env` records `running`, `success`, or `failed`, timestamps, attempts, and failures. Alert when it remains `running` beyond the run budget or has repeated `failed` results.
 - Timestamped logs and failed workspaces default to 14-day retention. Successful workspaces are removed unless `PR_AUTOMATION_KEEP_SUCCESS_WORKSPACES=true`.
