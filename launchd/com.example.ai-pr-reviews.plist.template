@@ -14,8 +14,11 @@
     <string>review</string>
   </array>
 
-  <key>StartInterval</key>
-  <integer>3600</integer>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Minute</key>
+    <integer>35</integer>
+  </dict>
 
   <key>RunAtLoad</key>
   <false/>
@@ -30,6 +33,8 @@
     <string>__RUNNER__</string>
     <key>PR_AUTOMATION_REPOSITORIES</key>
     <string>__REPOSITORIES__</string>
+    <key>PR_AUTOMATION_GITHUB_ACCOUNT</key>
+    <string>__GITHUB_ACCOUNT__</string>
   </dict>
 
   <key>WorkingDirectory</key>

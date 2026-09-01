@@ -8,7 +8,7 @@ The project handles scheduling, queue fairness, locking, time budgets, GitHub di
 
 | Mode | GitHub query | Intended behavior |
 | --- | --- | --- |
-| `review` | Open PRs assigned to `@me` | Review only; approve clean PRs or leave one blocker comment |
+| `review` | Open PRs assigned to `@me` | Review only; submit `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` from verdict |
 | `maintain` | Open PRs authored by `@me` | Handle review feedback and CI with one bounded fix pass |
 
 ```bash
@@ -20,6 +20,7 @@ bin/pr-automation maintain
 
 - Bash
 - [GitHub CLI](https://cli.github.com/) authenticated with `gh auth login`
+- `jq`
 - GNU `timeout` (`timeout` on Linux, `gtimeout` from Homebrew coreutils on macOS)
 - An executable agent runner
 
@@ -104,26 +105,28 @@ exec your-agent-cli --non-interactive "$(<"$prompt_file")"
 
 Replace the final command with your agent's supported non-interactive interface. Keep credentials in that agent's normal credential store; do not add them to this repository.
 
-## Fair scheduling
+## Queue ordering and stale cutoffs
 
-Each run discovers the complete matching PR list once, then processes it sequentially.
+Each run discovers the complete matching PR list once, then processes that snapshot sequentially.
 
-A persistent fairness timestamp determines order:
+Review mode defaults to hybrid activity plus aging fairness:
 
-1. Previously attempted PR: use `last_attempt_at`.
-2. Never-attempted PR: use GitHub creation time.
-3. Sort ascending, oldest first.
-4. Record success, failure, and timeout as attempts.
-5. Stop at the total run budget; continue remaining work next run.
+```bash
+PR_AUTOMATION_ORDER=hybrid
+```
 
-This is least-recently-attempted round robin—not newest-updated-first or least-recently-updated.
+The score combines latest activity with twice the time since last attempt, so fresh review requests lead initially while overdue work eventually moves ahead and cannot starve. Set `updated` for strict newest-first or `least-attempted` for pure round-robin backlog processing.
 
-Why:
+Maintenance mode defaults to least-recently-attempted. Previously attempted PRs use `last_attempt_at`; never-attempted PRs use creation time. Success, failure, and timeout all advance the attempt timestamp. If you add wrapper-side branch refresh in your own runner, advance the timestamp there too and skip the agent for that PR until the next run, so a refreshed branch does not consume its slot twice.
 
-- Constant new activity cannot starve old PRs.
-- Old but already-clean PRs do not permanently lead.
-- A PR that times out moves to the back instead of monopolizing each run.
-- New unseen PRs are ordered by creation time, so older unseen work beats newer arrivals.
+Stale filtering is opt-in in the public base:
+
+```bash
+PR_AUTOMATION_MAX_UPDATED_AGE_DAYS=0
+PR_AUTOMATION_MAX_PR_AGE_DAYS=0
+```
+
+Set updated age when inactive PRs should be parked. Created-at filtering can additionally exclude old PRs regardless of fresh activity, so enable it deliberately. `PR_AUTOMATION_ONLY` bypasses age gates.
 
 State lives at:
 
@@ -138,7 +141,7 @@ Defaults:
 
 ```text
 12 minutes per PR
-55 minutes per run, enforced by an outer watchdog
+55-minute hard watchdog and queue budget with a 20-second teardown reserve
 60 seconds per GitHub CLI call
 one process per mode via lock directory
 ```
@@ -153,20 +156,41 @@ bin/pr-automation maintain
 
 Review mode prompts enforce:
 
-- no source edits or pushes
-- approve only without blockers
-- otherwise one blocker comment, not request-changes
+- no source edits, pushes, or merges
+- `approve` / `approve-with-nits` → `APPROVE`
+- `request-changes` / `block` → `REQUEST_CHANGES`
+- `needs-info` or self-review restrictions → `COMMENT`
 - one visible result per head SHA using `<!-- ai-pr-automation head=<full-head-sha> -->`
 - exact body-file preview before posting
 
+The scheduler can pre-skip already-reviewed heads from the configured GitHub account before launching the model:
+
+```bash
+PR_AUTOMATION_SKIP_REVIEWED_HEADS=true
+```
+
+Set it to `false` to force same-head re-review.
+
 Maintenance mode prompts enforce:
 
-- no merge, deploy, release, force-push, history rewrite, or default-branch push
+- no merge, deploy, release, force-push, history rewrite, or default-branch push by the agent
 - one initial feedback/CI snapshot
 - at most one low-risk fix pass
-- at most one commit and push
+- changed files must finish committed+pushed, reverted to a clean diff, or explicitly blocked by permission/head/conflict
+- fixed review comments receive commit/validation replies and are resolved when possible
 - focused validation
 - at most one unrelated CI-flake retry
+
+The public base intentionally does not rebase or force-push branches. Branch refresh is a destructive, repository-specific policy and belongs in an explicitly authorized maintenance runner, not the generic scheduler.
+
+If you add branch refresh to your own maintenance runner, be aware that it couples the two modes through the PR head SHA. Review mode dedupes on `<!-- ai-pr-automation head=<full-head-sha> -->`, so anything that rewrites a branch head between review runs invalidates that marker and the next run posts again. A wrapper that rebases whenever a branch is merely behind its base will therefore generate one duplicate review per cycle on any repository whose base branch moves faster than the review cadence.
+
+Two mitigations, both recommended:
+
+- Refresh only when the forge itself reports the branch as blocked on staleness or conflict, not when a local commit count says the branch is behind. Most "behind" branches are perfectly mergeable, and rebasing them is pure churn that also re-triggers other PR bots.
+- Prefer a merge over a rebase where your repository policy allows it. A merge needs no force-push, so existing review comments keep their line anchors, and it reconciles only the two branch endpoints rather than replaying each commit against intermediate trees.
+
+If you delegate conflict resolution to the agent, do not implement "prefer the base branch" as `-X theirs` or `checkout --theirs`. On a file with mixed conflict hunks those silently discard the other side's changes. Resolve hunk by hunk, require lint and focused tests to pass before committing the merge, and treat a parked conflict as an acceptable outcome.
 
 These are prompt guardrails, not a security sandbox. Pull-request metadata, diffs, comments, files, and tool output are explicitly labeled untrusted, but the runner must still provide real containment.
 
@@ -202,8 +226,13 @@ Use separate tokens or GitHub App installations for the two runners. Put tokens 
 | `PR_AUTOMATION_REPOSITORIES` | empty | Comma-separated exact `owner/repo` allowlist |
 | `PR_AUTOMATION_ORGS` | empty | Comma-separated exact organization allowlist |
 | `PR_AUTOMATION_ALLOW_ALL_REPOS` | `false` | Explicitly disable repository scoping |
+| `PR_AUTOMATION_GITHUB_ACCOUNT` | empty | Pin `gh` token selection to a named authenticated account |
+| `PR_AUTOMATION_ORDER` | review: `hybrid`; maintain: `least-attempted` | `hybrid`, `updated`, or `least-attempted` ordering |
+| `PR_AUTOMATION_MAX_UPDATED_AGE_DAYS` | `0` | Maximum days since PR activity; disabled by default |
+| `PR_AUTOMATION_MAX_PR_AGE_DAYS` | `0` | Maximum PR age in days; disabled by default |
+| `PR_AUTOMATION_SKIP_REVIEWED_HEADS` | `true` | Pre-skip review heads carrying the exact scheduler marker |
 | `PR_AUTOMATION_PER_PR_TIMEOUT` | `12m` | Per-PR GNU timeout |
-| `PR_AUTOMATION_RUN_BUDGET_SECONDS` | `3300` | Outer watchdog and queue budget |
+| `PR_AUTOMATION_RUN_BUDGET_SECONDS` | `3300` | Hard watchdog and queue budget |
 | `PR_AUTOMATION_GH_TIMEOUT_SECONDS` | `60` | GitHub CLI call timeout |
 | `PR_AUTOMATION_ONLY` | empty | Target one `owner/repo#number` directly |
 | `PR_AUTOMATION_DRY_RUN` | `false` | List processing order without invoking runner |
@@ -253,6 +282,7 @@ Templates are in [`launchd/`](launchd/). Replace:
 - `__RUNNER__` with your agent runner's absolute path
 - `__REPOSITORIES__` with a comma-separated exact repository allowlist
 - `__LABEL_PREFIX__` with a reverse-DNS prefix you own, such as `com.yourname`
+- `__GITHUB_ACCOUNT__` with the exact account shown by `gh auth status`
 
 Copy them to `~/Library/LaunchAgents/`, then load:
 
@@ -268,7 +298,7 @@ launchctl print "gui/$(id -u)/com.yourname.ai-pr-reviews"
 launchctl print "gui/$(id -u)/com.yourname.ai-pr-maintenance"
 ```
 
-Both templates run hourly, set `RunAtLoad=false` to avoid surprise work during reloads, and set launchd `Umask=63` (`077`) so launchd-created logs remain user-private.
+Templates use fixed wall-clock hourly starts: maintenance at minute 5 and review at minute 35. This avoids `StartInterval` behavior where a long run can delay the next start by an additional hour. They set `RunAtLoad=false` to avoid surprise work during reloads and launchd `Umask=63` (`077`) so launchd-created logs remain user-private. Per-mode locks skip overlaps safely.
 
 ### systemd user setup
 
@@ -290,7 +320,7 @@ systemctl --user status ai-pr-reviews.timer ai-pr-maintenance.timer
 journalctl --user -u ai-pr-reviews.service -u ai-pr-maintenance.service
 ```
 
-The repository files are templates; copy them to names without `.template` after replacing placeholders.
+The repository files are templates; copy them to names without `.template` after replacing placeholders. Timers use fixed hourly wall-clock starts matching launchd: maintenance at `:05`, review at `:35`.
 
 ## Testing
 
@@ -309,16 +339,18 @@ Exit status:
 - `1`: one or more runner attempts failed or timed out
 - `2`: invalid configuration or missing dependency
 - `3`: GitHub discovery failed or hit the 1,000-result search cap
-- `124`/`137`: outer watchdog timeout/kill
+- `124`/`137`: hard watchdog or process-group timeout
 
 Additional notes:
 
 - GitHub search is capped at 1,000 results. Reaching the cap fails loudly; narrow repository scope.
 - A targeted run uses `gh pr view` directly and is not limited by search ordering.
+- Machines with multiple authenticated GitHub accounts should set `PR_AUTOMATION_GITHUB_ACCOUNT`. The scheduler resolves `GH_TOKEN` through `gh auth token -u`, preventing a later interactive `gh auth switch` from silently changing which account `@me` means.
 - Do not edit a Bash script in place while it is running; Bash can read later lines after startup. Validate a temporary file and atomically rename it over the installed path.
 - A run takes one PR-list snapshot. PRs created after that snapshot become eligible next run.
-- Locks include PID, mode, start time, and an ownership token to reject PID-reuse false positives, close startup races, and prevent one process from removing another's lock.
-- `health.env` records `running`, `success`, or `failed`, timestamps, attempts, and failures. Alert when it remains `running` beyond the run budget or has repeated `failed` results.
+- Per-runner GNU timeout intentionally runs without `--foreground`, giving timeout a process group it can terminate. `TERM` is followed by `KILL` after 10 seconds so descendants cannot leak output or writes into the next PR slot. The whole-run watchdog traps termination and explicitly kills/reaps any active runner process group before releasing the lock.
+- Locks include PID, mode, start time, and an ownership token to reject PID-reuse false positives, close startup races, and prevent one process from removing another's lock. A matching live process is never reclaimed solely because it is old.
+- `health.env` records `running`, `success`, or `failed`, timestamps, attempts, and failures. Alert when it remains `running` beyond the configured budget or has repeated `failed` results.
 - Timestamped logs and failed workspaces default to 14-day retention. Successful workspaces are removed unless `PR_AUTOMATION_KEEP_SUCCESS_WORKSPACES=true`.
 - Logs, prompts, and failed workspaces can contain private code or review text. Directories are created under `umask 077`; keep them on encrypted local storage and choose retention appropriate for your environment.
 
