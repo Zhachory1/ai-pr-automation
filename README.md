@@ -117,7 +117,7 @@ PR_AUTOMATION_ORDER=hybrid
 
 The score combines latest activity with twice the time since last attempt, so fresh review requests lead initially while overdue work eventually moves ahead and cannot starve. Set `updated` for strict newest-first or `least-attempted` for pure round-robin backlog processing.
 
-Maintenance mode defaults to least-recently-attempted. Previously attempted PRs use `last_attempt_at`; never-attempted PRs use creation time. Success, failure, timeout, and wrapper-handled rebase all advance the attempt timestamp.
+Maintenance mode defaults to least-recently-attempted. Previously attempted PRs use `last_attempt_at`; never-attempted PRs use creation time. Success, failure, and timeout all advance the attempt timestamp. If you add wrapper-side branch refresh in your own runner, advance the timestamp there too and skip the agent for that PR until the next run, so a refreshed branch does not consume its slot twice.
 
 Stale filtering is opt-in in the public base:
 
@@ -182,6 +182,15 @@ Maintenance mode prompts enforce:
 - at most one unrelated CI-flake retry
 
 The public base intentionally does not rebase or force-push branches. Branch refresh is a destructive, repository-specific policy and belongs in an explicitly authorized maintenance runner, not the generic scheduler.
+
+If you add branch refresh to your own maintenance runner, be aware that it couples the two modes through the PR head SHA. Review mode dedupes on `<!-- ai-pr-automation head=<full-head-sha> -->`, so anything that rewrites a branch head between review runs invalidates that marker and the next run posts again. A wrapper that rebases whenever a branch is merely behind its base will therefore generate one duplicate review per cycle on any repository whose base branch moves faster than the review cadence.
+
+Two mitigations, both recommended:
+
+- Refresh only when the forge itself reports the branch as blocked on staleness or conflict, not when a local commit count says the branch is behind. Most "behind" branches are perfectly mergeable, and rebasing them is pure churn that also re-triggers other PR bots.
+- Prefer a merge over a rebase where your repository policy allows it. A merge needs no force-push, so existing review comments keep their line anchors, and it reconciles only the two branch endpoints rather than replaying each commit against intermediate trees.
+
+If you delegate conflict resolution to the agent, do not implement "prefer the base branch" as `-X theirs` or `checkout --theirs`. On a file with mixed conflict hunks those silently discard the other side's changes. Resolve hunk by hunk, require lint and focused tests to pass before committing the merge, and treat a parked conflict as an acceptable outcome.
 
 These are prompt guardrails, not a security sandbox. Pull-request metadata, diffs, comments, files, and tool output are explicitly labeled untrusted, but the runner must still provide real containment.
 
