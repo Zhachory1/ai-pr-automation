@@ -98,6 +98,20 @@ hindsight_retain() {
       --data "$(jq -cn --arg c "$content" '{async:false, items:[{content:$c}]}')" >/dev/null
 }
 
+# GitHub is the crash-proof source of truth for "already posted": the review carries the marker
+# <!-- ai-pr-automation head=<sha> -->. Survives any server crash between posting and mark_done,
+# which a DB column cannot. Returns 0 if a review/comment with this marker already exists.
+github_already_reviewed() {
+  local repo="$1" pr="$2" sha="$3" login="$4"
+  local marker="<!-- ai-pr-automation head=$sha -->"
+  {
+    "$TIMEOUT_BIN" --kill-after=5s 60s gh api --paginate "repos/$repo/pulls/$pr/reviews" \
+      --jq '.[] | select(.state != "DISMISSED" and .state != "PENDING") | [.user.login, (.body // "")] | @tsv' 2>/dev/null || true
+    "$TIMEOUT_BIN" --kill-after=5s 60s gh api --paginate "repos/$repo/issues/$pr/comments" \
+      --jq '.[] | [.user.login, (.body // "")] | @tsv' 2>/dev/null || true
+  } | awk -F '\t' -v login="$login" -v marker="$marker" '$1 == login && index($0, marker) { found=1 } END { exit !found }'
+}
+
 process_one() {
   local id="$1" kind="$2" payload="$3" dedupe_key="$4" run_id="$5" nonce="$6"
   local repo pr url title head_sha
@@ -106,17 +120,19 @@ process_one() {
   url="$(jq -r '.url // empty' <<<"$payload")"
   title="$(jq -r '.title // empty' <<<"$payload")"
 
-  # idempotency: already posted for this dedupe_key? no-op, mark done.
-  if queue_already_posted "$kind" "$dedupe_key"; then
-    log "already posted for $dedupe_key; marking done without re-running"
-    queue_mark_done "$id" "dedup:$dedupe_key"; return 0
-  fi
-
   local work_root="$WORK_ROOT/${repo//\//-}-$pr/$run_id"
   rm -rf "$work_root"; mkdir -p "$work_root"   # wipe: no stale result.json survives
 
   head_sha="$("$TIMEOUT_BIN" --kill-after=5s 60s gh pr view "$pr" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   [[ -z "$head_sha" ]] && { queue_mark_failed "$id" "could not resolve head sha"; return 0; }
+
+  # Idempotency (crash-proof): if a review with this head's marker is already on GitHub, no-op.
+  # This is the reconciliation the council required — GitHub marker, not the DB posted_ref column,
+  # so a crash between posting and mark_done cannot cause a double-post on the next claim.
+  if github_already_reviewed "$repo" "$pr" "$head_sha" "$GITHUB_LOGIN"; then
+    log "marker for $repo#$pr@$head_sha already on GitHub; marking done without re-running"
+    queue_mark_done "$id" "head=$head_sha"; return 0
+  fi
 
   local prompt_file="$work_root/prompt.md"
   build_prompt "$kind" "$repo" "$pr" "$url" "$title" "$head_sha" "$nonce" "$work_root" > "$prompt_file"
@@ -177,6 +193,10 @@ PROMPT
 # --- startup (fatal on db error) ---
 acquire_single_instance
 if ! db_up; then log "FATAL: Postgres not reachable at startup; exiting for launchd backoff"; exit 3; fi
+# Resolve the authenticated GitHub login once; used to match our own head-dedup markers.
+GITHUB_LOGIN="$("$TIMEOUT_BIN" --kill-after=5s 60s gh api user --jq .login 2>/dev/null || true)"
+[[ -n "$GITHUB_LOGIN" ]] || { log "FATAL: could not resolve GitHub login"; exit 3; }
+log "github login: $GITHUB_LOGIN"
 log "reclaiming stale running rows"
 queue_reclaim_stale || { log "FATAL: reclaim failed"; exit 3; }
 
@@ -196,11 +216,13 @@ while true; do
   run_id="$(date '+%Y%m%d-%H%M%S')-$$"
   nonce="$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   claim="$(queue_claim_one "$run_id" "$nonce" || true)"
-  if [[ -z "$claim" ]]; then sleep "$POLL_INTERVAL"; continue; fi
+  if [[ -z "$claim" || "$claim" == "null" ]]; then sleep "$POLL_INTERVAL"; continue; fi
 
-  IFS=$'\t' read -r id kind payload dedupe_key < <(
-    jq -r '[.id, .kind, (.payload|tostring), .dedupe_key] | @tsv' <<<"$claim"
-  )
+  # claim is a single JSON object; parse it as JSON (no intermediate TSV format).
+  id="$(jq -r '.id' <<<"$claim")"
+  kind="$(jq -r '.kind' <<<"$claim")"
+  payload="$(jq -c '.payload' <<<"$claim")"
+  dedupe_key="$(jq -r '.dedupe_key' <<<"$claim")"
   log "claimed request $id ($kind, $dedupe_key)"
   process_one "$id" "$kind" "$payload" "$dedupe_key" "$run_id" "$nonce" || log "process_one error for $id"
   last_progress="$(date +%s)"

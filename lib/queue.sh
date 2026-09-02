@@ -14,9 +14,10 @@ set -euo pipefail
 AGENT_SERVER_LOCK_KEY="${AGENT_SERVER_LOCK_KEY:-774411}"
 
 _psql() {
-  # -qAt: quiet, unaligned, tuples-only. -F $'\t': tab field separator for multi-column returns.
+  # -qAt: quiet, unaligned, tuples-only. Returns are single JSON objects (claim) or scalars;
+  # no multi-column tab-separated output, so no field separator is needed.
   # ON_ERROR_STOP so failures are fatal to callers.
-  psql -v ON_ERROR_STOP=1 -qAt -F $'\t' \
+  psql -v ON_ERROR_STOP=1 -qAt \
     -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" \
     -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"
 }
@@ -85,7 +86,10 @@ queue_mark_failed() {
     <<<"UPDATE requests SET status='failed', finished_at=now(), fail_response = :'reason' WHERE id = :'id';"
 }
 
-# Is this dedupe_key already posted (marker recorded)? Source of truth = posted_ref, not side_effect_at.
+# DB-side record that a review was posted (self-describing row; verifiable without a GitHub call).
+# NOTE: this is NOT the idempotency gate — that is github_already_reviewed (crash-proof marker on
+# GitHub itself). posted_ref can be NULL after a crash-between-post-and-mark_done; do not rely on it
+# to prevent double-posting.
 queue_already_posted() {
   local kind="$1" dedupe_key="$2"
   local n
