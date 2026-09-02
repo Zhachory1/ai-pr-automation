@@ -28,24 +28,26 @@ queue_try_single_instance_lock() {
   _psql <<<"SELECT pg_try_advisory_lock(${AGENT_SERVER_LOCK_KEY});"
 }
 
-# Startup reclaim. NOT a blanket requeue: a running row that already had a side effect is
-# fail-closed to 'failed'; a clean running row is re-queued. Runs once at boot.
+# Startup reclaim (fail-closed, but uses posted_ref as the 'posted' truth so transient
+# pre-post failures are safely retried instead of dead-lettered):
+#   posted_ref present            -> genuinely posted; terminal 'done' (no re-run).
+#   side_effect intent, not posted -> safe to requeue (head-dedup marker prevents double-post).
+#   clean running                 -> requeue.
 queue_reclaim_stale() {
   _psql <<'SQL'
 UPDATE requests
-   SET status = 'failed',
-       finished_at = now(),
-       fail_response = 'reclaimed: crashed after side effect; not auto-retried'
- WHERE status = 'running' AND side_effect_at IS NOT NULL;
+   SET status = 'done', finished_at = now()
+ WHERE status = 'running' AND posted_ref IS NOT NULL;
 
 UPDATE requests
-   SET status = 'queued', started_at = NULL, run_id = NULL, run_nonce = NULL
- WHERE status = 'running' AND side_effect_at IS NULL;
+   SET status = 'queued', started_at = NULL, run_id = NULL, run_nonce = NULL, side_effect_at = NULL
+ WHERE status = 'running' AND posted_ref IS NULL;
 SQL
 }
 
-# Claim one queued row -> running, stamping run_id + nonce. Emits: id<TAB>kind<TAB>payload<TAB>dedupe_key
-# Returns empty if queue empty. FOR UPDATE SKIP LOCKED keeps a future 2nd worker safe.
+# Claim one queued row -> running, stamping run_id + nonce. Emits ONE json object (avoids
+# tab/newline parsing hazards from untrusted dedupe_key/payload). Empty if queue empty.
+# FOR UPDATE SKIP LOCKED keeps a future 2nd worker safe.
 queue_claim_one() {
   local run_id="$1" nonce="$2"
   _psql -v run_id="$run_id" -v nonce="$nonce" <<'SQL'
@@ -61,7 +63,7 @@ UPDATE requests r
        run_id = :'run_id', run_nonce = :'nonce'
   FROM claimed
  WHERE r.id = claimed.id
- RETURNING r.id, r.kind, r.payload::text, r.dedupe_key;
+ RETURNING json_build_object('id', r.id, 'kind', r.kind, 'payload', r.payload, 'dedupe_key', r.dedupe_key)::text;
 SQL
 }
 

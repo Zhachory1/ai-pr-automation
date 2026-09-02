@@ -37,18 +37,29 @@ TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
 
 # --- single instance: hold a session advisory lock for our whole life via a long-lived coproc ---
-# The lock is released only when this psql session ends (i.e. the server dies).
+# The coproc's psql session stays alive because we keep its write-fd open (global, never closed)
+# and it blocks reading stdin; the session lock releases only when this process dies (fd closes).
+LOCKSESSION_PID=""
 acquire_single_instance() {
   coproc LOCKSESSION { _psql 2>/dev/null; }
-  # send the lock request; read result
+  LOCKSESSION_PID="$!"
   printf "SELECT pg_try_advisory_lock(%s);\n" "$AGENT_SERVER_LOCK_KEY" >&"${LOCKSESSION[1]}"
   local got; read -r got <&"${LOCKSESSION[0]}" || true
   if [[ "$got" != "t" ]]; then
     log "another agent-server holds the single-instance lock; refusing to start"
     exit 0
   fi
-  # keep the coproc session open for the process lifetime; closing fd releases the lock.
-  log "single-instance lock acquired"
+  # Keep the write-fd open for process life so psql never sees EOF and the lock is held.
+  # Copy it to a dedicated global fd that we deliberately never close.
+  exec {LOCK_HOLD_FD}>&"${LOCKSESSION[1]}"
+  log "single-instance lock acquired (holder pid $LOCKSESSION_PID)"
+}
+
+# Verify the lock holder is still alive; if it died, our lock is gone -> exit rather than run unlocked.
+assert_lock_held() {
+  if [[ -z "$LOCKSESSION_PID" ]] || ! kill -0 "$LOCKSESSION_PID" 2>/dev/null; then
+    log "FATAL: single-instance lock holder died; exiting to avoid running unlocked"; exit 3
+  fi
 }
 
 db_up() { _psql <<<"SELECT 1;" >/dev/null 2>&1; }
@@ -122,6 +133,8 @@ process_one() {
 
   if [[ "$status" -eq 0 ]]; then
     local verdict; verdict="$(jq -r '.verdict // "unknown"' "$work_root/result.json" 2>/dev/null || echo unknown)"
+    # verdict is agent-authored: whitelist before it can touch the server fact / shared bank.
+    case "$verdict" in comment|request-changes|approve) ;; *) verdict=unknown ;; esac
     apply_write_path_gate "$id" "$kind" "$repo" "$pr" "$head_sha" "$run_id" "$nonce" "$work_root" "$verdict"
     queue_mark_done "$id" "head=$head_sha"
     log "done $repo#$pr (verdict=$verdict)"
@@ -176,6 +189,7 @@ while true; do
   if (( now - last_progress > LOOP_HEARTBEAT_MAX )); then
     log "FATAL: no loop progress in ${LOOP_HEARTBEAT_MAX}s; self-exiting for launchd restart"; exit 3
   fi
+  assert_lock_held
   if ! db_up; then log "db unreachable; backing off"; sleep "$POLL_INTERVAL"; continue; fi
 
   run_id="$(date '+%Y%m%d-%H%M%S')-$$"
@@ -183,7 +197,9 @@ while true; do
   claim="$(queue_claim_one "$run_id" "$nonce" || true)"
   if [[ -z "$claim" ]]; then sleep "$POLL_INTERVAL"; continue; fi
 
-  IFS=$'\t' read -r id kind payload dedupe_key <<<"$claim"
+  IFS=$'\t' read -r id kind payload dedupe_key < <(
+    jq -r '[.id, .kind, (.payload|tostring), .dedupe_key] | @tsv' <<<"$claim"
+  )
   log "claimed request $id ($kind, $dedupe_key)"
   process_one "$id" "$kind" "$payload" "$dedupe_key" "$run_id" "$nonce" || log "process_one error for $id"
   last_progress="$(date +%s)"
