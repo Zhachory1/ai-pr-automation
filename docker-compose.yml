@@ -86,7 +86,37 @@ services:
       timeout: 5s
       retries: 12
 
+  # --- coderag: shared code-graph coordination daemon (stdio frontends attach per agent) ---
+  # CBM shares one graph + watcher across all agents via CBM_CACHE_DIR. Runs the daemon here;
+  # agents mount the same coderag_cache volume + ${CODE_ROOT}:ro and attach thin stdio frontends.
+  coderag:
+    image: agent-fleet/coderag:${CODERAG_VERSION:-latest}   # built locally; see docker/README
+    container_name: fleet-coderag
+    restart: unless-stopped
+    environment:
+      CBM_CACHE_DIR: /cache
+    volumes:
+      - coderag_cache:/cache
+      - ${CODE_ROOT:?set CODE_ROOT}:/code:ro
+    # daemon + UI; watcher scope (exclude worktrees/dirty main) set via CBM config, not the mount.
+    command: ["--ui=true", "--port=9749"]
+    ports:
+      - "9749:9749"
+
+  # --- swarmvault: shared doc vault + continuous ingest watcher ---
+  # Doc-drop model: agents write files into the shared vault volume directly and trigger ingest
+  # over a per-agent stdio MCP (read+trigger only). This service is the persistent watcher.
+  swarmvault-watch:
+    image: agent-fleet/swarmvault:${SWARMVAULT_VERSION:-latest}   # built locally; see docker/README
+    container_name: fleet-swarmvault-watch
+    restart: unless-stopped
+    volumes:
+      - ${SWARMVAULT_VAULT:-./.swarmvault-vault}:/vault
+    working_dir: /vault
+    command: ["swarmvault", "watch", "/vault"]
+
 volumes:
   requests_pgdata:
   redisdata:
   hindsight_pgdata:
+  coderag_cache:
