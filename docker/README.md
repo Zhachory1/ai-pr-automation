@@ -13,52 +13,79 @@ scripts/m0-verify.sh      # runs the six exit checks
 
 ## What runs as a service vs. what does not
 
-Verified 2026-09-02 by reading each upstream repo. **Transport matters:**
+Verified 2026-09-02 by reading each upstream repo. **All memory services are persistent + shared
+across agents** — the transport differs but none is spawned-fresh-per-agent-with-private-state:
 
-| Service | Transport | In compose? |
+| Service | Shared how | In compose? |
 |---|---|---|
 | db-requests (our Postgres) | TCP 5432 | yes, `up` |
 | redis | TCP 6379 | yes, `up` |
-| hindsight (+ hindsight-db) | HTTP :8888 / UI :9999 | yes, `up` |
-| swarmvault | **stdio MCP** (`swarmvault mcp`) | **image only** — spawned per agent run in M1 |
-| coderag (codebase-memory-mcp) | **stdio MCP** (static binary) | **image only** — see below |
+| hindsight (+ hindsight-db) | network service, HTTP :8888 / UI :9999 | yes, `up` |
+| coderag (codebase-memory-mcp) | **shared coordination daemon** + per-agent thin stdio frontend | yes, `up` (daemon) |
+| swarmvault | **shared vault volume + `watch` daemon**; per-agent stdio MCP is read+trigger only | yes, `up` (watcher) |
 
-swarmvault and coderag are stdio MCP servers (spawned over stdin/stdout per client), not network
-daemons. M0 builds and verifies their images; M1 launches them per run via the agent-server's
-`MCP_REMOTE_CONFIG_DIR` hook, with the vault / code dirs mounted.
+### coderag — native shared daemon (verified)
 
-## Building the stdio MCP images
+CBM ships a **per-account coordination daemon** that owns the shared knowledge graph, background
+watchers, continuous indexing, and the UI (:9749). The first session starts it; each agent runs a
+**thin stdio MCP frontend** that registers a session against the shared daemon (clean JSON-RPC on
+stdout; the daemon owns long-lived state). All CBM processes MUST share one canonical cache root
+(`CBM_CACHE_DIR`) and the exact same build — a different root is rejected while any process is
+active. So "persistent + shared" is coderag's native design, not a bridge we build. Requirement:
+every agent mounts the same `CBM_CACHE_DIR` volume + `${CODE_ROOT}:ro`.
+
+### swarmvault — shared vault + doc-drop model (verified)
+
+swarmvault's MCP is stdio, but sharing does NOT go through the MCP as a content-write path. Model:
+
+- One **shared vault dir** on a host volume; a persistent `swarmvault watch` container ingests it.
+- Agents **write doc files directly into the vault dir** (filesystem — distinct files, no
+  contention), then call the MCP only to **signal ingest / query**. The MCP is read + trigger,
+  never a content-write RPC.
+- Content-trust gate still applies to the SHARED vault: a malicious PR could make an agent drop an
+  injected doc and trigger ingest → poisoned recall. Run-scoped scratch docs = free; promotion into
+  the shared vault = server-gated + provenance-tagged (same discipline as hindsight; enforced in M1
+  write-path).
+
+## Building the images
 
 ```bash
-# swarmvault — from its own Dockerfile (docker run --rm -i swarmvault mcp)
+# swarmvault — from its own Dockerfile. Runs as: (a) a persistent `swarmvault watch` container
+# over the shared vault volume, and (b) per-agent `docker run --rm -i ... swarmvault mcp` for
+# read+trigger, both mounting the same vault dir.
 git clone https://github.com/swarmclawai/swarmvault /tmp/swarmvault
 docker build -t agent-fleet/swarmvault /tmp/swarmvault
 
-# coderag — codebase-memory-mcp static binary. Run its MCP server directly;
-# do NOT run its `install` (it mutates agent client config files — we don't want that).
-# Package the release binary into a thin image; mount ${CODE_ROOT}:ro at run time.
+# coderag — codebase-memory-mcp. Run the coordination daemon in a container with a shared
+# CBM_CACHE_DIR volume + ${CODE_ROOT}:ro; agents attach thin stdio frontends against it.
+# Do NOT run its `install` (mutates agent client config files); invoke the binary directly.
 ```
 
 coderag indexes **main only**, read-only, continuously; agents track their own worktree diffs.
 Worktrees live in `${CODE_ROOT}/_roktcode-worktrees/<repo>/<branch>`. Note: these sit *under*
 `${CODE_ROOT}`, so the `:ro` mount still *sees* them — read-only prevents coderag from *writing*,
-but excluding worktrees (and dirty main) from indexing is the **indexer's** job (open item #4),
-not the mount's. Do not assume the mount alone keeps the graph pristine.
+but excluding worktrees (and dirty main) from indexing is the daemon's watcher config
+(`auto_watch`/`watcher_enabled`, see open item #4), not the mount's.
 
 ## Open items (resolve at implementation — do not commit a secret regardless)
 
-1. **hindsight keyless provider.** Its compose marks `HINDSIGHT_API_LLM_API_KEY` required, but the
-   README says `claude-code`/`codex` need no key. Confirm which `HINDSIGHT_API_LLM_PROVIDER` value
-   selects keyless and whether the key var can be empty. `.env.example` leaves the key blank.
+1. **hindsight needs a keyed LLM provider.** hindsight runs an LLM to extract facts on every
+   `retain`, so `HINDSIGHT_API_LLM_API_KEY` must be set (verified: e2e worked with
+   `HINDSIGHT_API_LLM_PROVIDER=openai` + key). Keyless subscription providers (`claude-code`)
+   do NOT work headless in a container — there is no logged-in session inside the container
+   (`Not logged in · Please run /login`). Do not use them for an unattended server; use a keyed
+   provider.
 2. **hindsight retain/recall REST paths.** `scripts/m0-verify.sh` check [3] uses
    `/v1/banks/{bank}/retain|recall` as a best guess; the upstream README documents the SDK, not raw
    REST. Verify against hindsight's API-reference and adjust the probe if paths differ. (The SDK or
    the per-bank MCP endpoint `/mcp/{bank}/` are alternatives.)
-3. **coderag persistent-indexer vs per-query spawn.** If continuous indexing needs a persistent
-   process, add coderag as a sidecar service writing a shared graph volume; otherwise it's spawned
-   per query. M0 spike decides.
-4. **dirty-main guard.** coderag must skip indexing a repo whose main worktree is dirty. Implement in
-   the coderag run wrapper; `scripts/m0-coderag-probe.sh` (to add during the spike) tests it.
+3. **coderag daemon in a container.** CBM's coordination daemon auto-starts from the first session
+   and shares one `CBM_CACHE_DIR`. Verify it runs cleanly as a long-lived container (not just
+   host-native) and that thin stdio frontends from other containers register against it over the
+   shared cache volume. If cross-container session coordination needs the daemon reachable beyond a
+   shared volume, resolve at implementation.
+4. **coderag watcher scope.** Exclude `_roktcode-worktrees` and dirty main from indexing via
+   `auto_watch`/`watcher_enabled` config, not the `:ro` mount. Confirm the config keys.
 
 ## Schema
 

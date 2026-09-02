@@ -1,3 +1,5 @@
 .env
 *.local
 .workflow-runs/
+.e2e-work/
+.swarmvault-vault/

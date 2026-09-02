@@ -28,7 +28,7 @@ Replace ~6 launchd cron bash scripts w/ pub/sub agent fleet. Producers enqueue. 
 
 | Service | Repo | Role | Deploy | Verified facts |
 |---|---|---|---|---|
-| hindsight | vectorize-io/hindsight | shared agent memory (decisions) | Docker container | REST :8888, UI :9999. Embeds own Postgres (`-v hindsight-data:/home/hindsight/.pg0`) OR external PG via `docker/docker-compose`. **Per-bank MCP endpoint `http://host:8888/mcp/{bank_id}/`** exposing retain/recall/reflect. Opt-in **Memory Defense**: scans every `retain` for secrets/PII (45 patterns), redact-or-block. LLM provider incl. `claude-code`/`codex` (no API key). macOS arm64 OK. |
+| hindsight | vectorize-io/hindsight | shared agent memory (decisions) | Docker container | REST :8888, UI :9999. Embeds own Postgres (`-v hindsight-data:/home/hindsight/.pg0`) OR external PG via `docker/docker-compose`. **Per-bank MCP endpoint `http://host:8888/mcp/{bank_id}/`** exposing retain/recall/reflect. Opt-in **Memory Defense**: scans every `retain` for secrets/PII (45 patterns), redact-or-block. Needs a **keyed** LLM provider for fact extraction (keyless `claude-code` does NOT work headless in a container — verified). macOS arm64 OK. |
 | codebase-memory-mcp | DeusData/codebase-memory-mcp | codebase memory + parser (code RAG) | **container, continuous, main-only** | stdio MCP, 15 tools, SQLite knowledge graph, tree-sitter 162 langs. No API key, 100% local. Runs as its own container bind-mounting `~/code` read-only, indexing main continuously (see Code layout section). Caveat: `install` writes to agent config files + reads the codebase — use its MCP/indexer, not its client-config mutation. |
 | swarmvault | swarmclawai/swarmvault | document maintainer (long-form wiki) | npm CLI (Node ≥24); has Dockerfile | MCP server (`swarmvault install --mcp`), git-backed `--commit`, watch mode, markdown wiki + local graph. Offline `heuristic` provider = no API key; optional Ollama for sharper extraction. Fills the slot zbrain would have (external owner). |
 
@@ -175,7 +175,7 @@ itself.
 - Audit what codebase-memory's `install` touches (writes to agent config files) before baking the container — we want its MCP server + indexer, not its client-config mutation.
 - hindsight: decide embedded-pg0 vs external-PG-via-compose (its `docker/docker-compose` supports external). Host-mount the data volume either way.
 - swarmvault: containerize via its Dockerfile; host-mount the vault dir so the wiki survives restart (git-backed `--commit` is a bonus durability layer).
-- Provider config: hindsight + swarmvault can run keyless (`claude-code`/`codex` for hindsight; `heuristic`/Ollama for swarmvault). codebase-memory-mcp needs no key.
+- Provider config: hindsight needs a **keyed** LLM provider (`HINDSIGHT_API_LLM_API_KEY`; keyless `claude-code` does not work headless in a container). swarmvault can run keyless (`heuristic`/Ollama). codebase-memory-mcp needs no key.
 - Prove data survives `docker compose down` + up for all stateful services.
 - Exit: our Postgres + Redis reachable from host; hindsight `/mcp/{bank}/` answers retain/recall; swarmvault MCP answers; coderag container indexes `~/code` main and answers a structural query, re-indexes on a main change, skips a deliberately-dirtied repo; restart loses nothing.
 
