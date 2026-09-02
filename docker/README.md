@@ -100,3 +100,20 @@ deliberate: the mount path is version-specific, and older tags (e.g. `pg16`) use
 PGDATA (`/var/lib/postgresql/data`), so changing the tag without migrating would mount the volume
 at the wrong path and silently re-init an empty cluster — data loss, no error. To move majors, do a
 `pg_upgrade` or dump/restore and update both the pinned tag and the mount path together.
+
+## Producers (M2)
+
+`bin/pr-producer <review|maintain>` is enqueue-only: it discovers matching PRs (assigned for
+`review`, authored for `maintain`), applies the repo allowlist + stale-age cutoff, resolves each
+PR's head sha, and inserts one `requests` row per PR (`dedupe_key = repo#num@headsha`). It never
+runs the agent — the serial `bin/agent-server` drains the queue.
+
+Dedupe is two-layered (see `lib/queue.sh`):
+- the partial unique index blocks a second **active** (queued|running) row for the same key;
+- `queue_enqueue` also skips a key that is already done/failed, so re-runs don't create churn rows.
+- a PR whose head advanced gets a **new** dedupe_key → a fresh row (re-review on the new commit).
+
+launchd templates: `launchd/com.example.agent-fleet-producer-{reviews,maintenance}.plist.template`.
+Run these **alongside** the legacy `bin/pr-automation` cron during the M2 trust period; retire the
+old inline loop only once the queue path is trusted (roadmap M2 exit). Keep the queue DB password
+out of the plist — source `.env` from a wrapper or use the keychain.

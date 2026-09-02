@@ -98,11 +98,27 @@ queue_already_posted() {
   [[ "${n:-0}" != "0" ]]
 }
 
-# Enqueue (used by producers in M2; here for tests). Payload passed as jsonb param.
+# Enqueue (used by producers). Payload passed as jsonb param. Prints '1' if a row was inserted,
+# empty if suppressed (so callers can distinguish real enqueues from dedupe no-ops).
+# Dedupe is two-layered: the partial unique index blocks a second active (queued|running) row, and
+# the NOT EXISTS guard skips re-enqueuing a key that is already queued/running/DONE (same head
+# already handled) so producers don't create churn rows. A 'failed' head IS allowed to re-enqueue
+# (transient agent/network error should be retried; permanent poison-PR protection is a future
+# max_attempts concern, not a permanent dead-letter here). Re-review on a NEW head still works
+# because a new head = a new dedupe_key.
 queue_enqueue() {
   local kind="$1" payload_json="$2" dedupe_key="$3"
-  _psql -v kind="$kind" -v payload="$payload_json" -v dk="$dedupe_key" \
-    <<<"INSERT INTO requests(kind, payload, dedupe_key) VALUES (:'kind', :'payload'::jsonb, :'dk') ON CONFLICT DO NOTHING;"
+  _psql -v kind="$kind" -v payload="$payload_json" -v dk="$dedupe_key" <<'SQL'
+INSERT INTO requests(kind, payload, dedupe_key)
+SELECT :'kind', :'payload'::jsonb, :'dk'
+WHERE NOT EXISTS (
+  SELECT 1 FROM requests
+   WHERE kind = :'kind' AND dedupe_key = :'dk'
+     AND status IN ('queued','running','done')
+)
+ON CONFLICT DO NOTHING
+RETURNING 1;
+SQL
 }
 
 # Route an agent-authored body to the human batch. NEVER auto-writes shared memory.

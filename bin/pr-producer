@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# pr-producer — enqueue-only producer for the agent-fleet queue (M2).
+# Discovers matching PRs (same logic as the old bin/pr-automation) and inserts one requests row
+# per PR for the serial agent-server (M1) to drain. Never invokes the agent runner.
+#
+# Usage: pr-producer <review|maintain>
+#   review   -> PRs assigned to @me      (kind=pr-review)
+#   maintain -> PRs authored by @me      (kind=pr-maintain)
+set -euo pipefail
+umask 077
+
+MODE="${1:-}"
+case "$MODE" in
+  review)   KIND=pr-review;   GH_FILTER=--assignee ;;
+  maintain) KIND=pr-maintain; GH_FILTER=--author ;;
+  *) echo "usage: pr-producer <review|maintain>" >&2; exit 2 ;;
+esac
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/queue.sh
+. "$HERE/lib/queue.sh"
+
+ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+log() { echo "$(ts) pr-producer[$MODE] $*"; }
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need gh; need jq; need psql
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+[[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
+
+GH_TIMEOUT_SECONDS="${PR_PRODUCER_GH_TIMEOUT_SECONDS:-60}"
+MAX_UPDATED_AGE_DAYS="${PR_PRODUCER_MAX_UPDATED_AGE_DAYS:-0}"   # 0 disables
+ALLOWED_REPOS="${PR_PRODUCER_REPOSITORIES:-}"
+ALLOWED_ORGS="${PR_PRODUCER_ORGS:-}"
+ALLOW_ALL_REPOS="${PR_PRODUCER_ALLOW_ALL_REPOS:-false}"
+
+if [[ "$ALLOW_ALL_REPOS" != true && -z "$ALLOWED_REPOS" && -z "$ALLOWED_ORGS" ]]; then
+  echo "configure PR_PRODUCER_REPOSITORIES or PR_PRODUCER_ORGS; set PR_PRODUCER_ALLOW_ALL_REPOS=true only after reviewing data boundaries" >&2
+  exit 2
+fi
+
+repo_allowed() {
+  local repo="$1" org="${1%%/*}"
+  [[ "$ALLOW_ALL_REPOS" == true ]] && return 0
+  [[ -n "$ALLOWED_REPOS" && ",${ALLOWED_REPOS}," == *",${repo},"* ]] && return 0
+  [[ -n "$ALLOWED_ORGS"  && ",${ALLOWED_ORGS},"  == *",${org},"*  ]] && return 0
+  return 1
+}
+
+log "discovering PRs ($GH_FILTER @me)"
+# TSV: repo <tab> number <tab> url <tab> title <tab> updated_epoch. jq @tsv escapes any tab/newline
+# inside fields, so the parse is injection-safe.
+gh_status=0
+prs="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" \
+  gh search prs "$GH_FILTER" @me --state open \
+    --json number,title,url,repository,updatedAt --limit 1000 \
+    --jq '.[] | [.repository.nameWithOwner, (.number|tostring), .url, .title, (.updatedAt|fromdateiso8601|tostring)] | @tsv' \
+  2>/dev/null)" || gh_status=$?
+if (( gh_status != 0 )); then
+  log "WARN: gh search failed (exit $gh_status); enqueued nothing this run"; exit 3
+fi
+if [[ -z "$prs" ]]; then log "no matching open PRs"; exit 0; fi
+
+now_epoch="$(date +%s)"
+cutoff=$(( now_epoch - (MAX_UPDATED_AGE_DAYS * 86400) ))
+enq=0 dedupe=0 skip=0
+
+while IFS=$'\t' read -r repo number url title updated_epoch; do
+  [[ -z "$repo" ]] && continue
+  if ! repo_allowed "$repo"; then skip=$((skip+1)); continue; fi
+  if (( MAX_UPDATED_AGE_DAYS > 0 )) && [[ "$updated_epoch" =~ ^[0-9]+$ ]] && (( updated_epoch < cutoff )); then
+    skip=$((skip+1)); continue
+  fi
+  # Resolve head sha so the dedupe key is per-commit: re-review only fires on a NEW head.
+  sha="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" gh pr view "$number" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+  if [[ -z "$sha" ]]; then log "skip $repo#$number: could not resolve head sha"; skip=$((skip+1)); continue; fi
+
+  payload="$(jq -cn --arg repo "$repo" --arg pr "$number" --arg url "$url" --arg title "$title" \
+    '{repo:$repo, pr:$pr, url:$url, title:$title}')"
+  dedupe_key="${repo}#${number}@${sha}"
+
+  # queue_enqueue prints '1' only when a row was actually inserted (empty = deduped no-op).
+  if [[ -n "$(queue_enqueue "$KIND" "$payload" "$dedupe_key")" ]]; then
+    enq=$((enq+1)); log "enqueued $KIND $dedupe_key"
+  else
+    dedupe=$((dedupe+1))
+  fi
+done <<< "$prs"
+
+log "done: enqueued=$enq deduped=$dedupe skipped=$skip"

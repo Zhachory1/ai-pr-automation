@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  agent-fleet PR-review PRODUCER (M2). Enqueue-only: discovers assigned PRs and inserts
+  requests rows for the agent-server to drain. Runs alongside the legacy cron during the
+  M2 trust period. Copy to ~/Library/LaunchAgents/, fill placeholders, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.agent-fleet-producer-reviews.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.agent-fleet-producer-reviews</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/TO/ai-pr-automation/bin/pr-producer</string>
+    <string>review</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Queue DB (must match the agent-server / docker-compose). Keep the password out of here;
+         prefer a wrapper that sources .env, or set PGPASSWORD via keychain, not in the plist. -->
+    <key>REQUESTS_DB_HOST</key><string>localhost</string>
+    <key>REQUESTS_DB_PORT</key><string>5432</string>
+    <key>REQUESTS_DB_USER</key><string>fleet</string>
+    <key>REQUESTS_DB_NAME</key><string>fleet</string>
+    <!-- Scope: never enqueue out-of-scope repos. -->
+    <key>PR_PRODUCER_REPOSITORIES</key><string>owner/repo1,owner/repo2</string>
+    <key>PR_PRODUCER_MAX_UPDATED_AGE_DAYS</key><string>14</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict><key>Minute</key><integer>15</integer></dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/CHANGE_ME/Library/Logs/agent-fleet-producer-reviews/out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/CHANGE_ME/Library/Logs/agent-fleet-producer-reviews/err.log</string>
+</dict>
+</plist>
