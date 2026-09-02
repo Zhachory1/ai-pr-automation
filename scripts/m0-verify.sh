@@ -2,7 +2,7 @@
 # M0 substrate verification. Runs the six PRD exit checks, prints pass/fail per check.
 # Prereq: cp .env.example .env, fill values, docker compose up -d.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "FATAL: cannot cd to repo root"; exit 1; }
 set -a; [ -f .env ] && . ./.env; set +a
 
 pass=0; fail=0
@@ -25,21 +25,21 @@ docker compose exec -T db-requests psql -U "${REQUESTS_DB_USER:-fleet}" -d "${RE
 
 echo "[3/6] hindsight retain->recall round-trip"
 BANK="m0-verify-$$"
-curl -fsS -X POST "http://localhost:8888/v1/banks/${BANK}/retain" \
-  -H 'content-type: application/json' \
-  -d '{"content":"m0 verify probe: the sky is teal"}' >/dev/null 2>&1
-recalled=""
-for _ in 1 2 3 4 5; do
-  if curl -fsS -X POST "http://localhost:8888/v1/banks/${BANK}/recall" \
-       -H 'content-type: application/json' -d '{"query":"what color is the sky"}' 2>/dev/null | grep -qi teal; then
-    recalled=1; break
-  fi
-  sleep 2
-done
-if [ -n "$recalled" ]; then
-  ok "hindsight retain/recall"
+if ! curl -fsS -X POST "http://localhost:8888/v1/banks/${BANK}/retain" \
+     -H 'content-type: application/json' \
+     -d '{"content":"m0 verify probe: the sky is teal"}' >/dev/null 2>&1; then
+  no "hindsight retain POST failed (endpoint path / provider / key config)"
 else
-  no "hindsight retain/recall (check endpoint paths against hindsight API-reference; provider/key config)"
+  recalled=""
+  for _ in 1 2 3 4 5; do
+    if curl -fsS -X POST "http://localhost:8888/v1/banks/${BANK}/recall" \
+         -H 'content-type: application/json' -d '{"query":"what color is the sky"}' 2>/dev/null | grep -qi teal; then
+      recalled=1; break
+    fi
+    sleep 2
+  done
+  [ -n "$recalled" ] && ok "hindsight retain/recall" \
+    || no "hindsight recall did not return the retained fact (check API paths / embedding delay)"
 fi
 
 echo "[4/6] swarmvault MCP image answers introspection"

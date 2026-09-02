@@ -67,8 +67,9 @@ not the mount's. Do not assume the mount alone keeps the graph pristine.
 against postgres:16: dedupe index blocks two active rows for the same `(kind, dedupe_key)` and
 allows re-enqueue after `done`.
 
-**hindsight data + PG major version:** `hindsight_pgdata` mounts at
-`/var/lib/postgresql/${HINDSIGHT_DB_VERSION}/docker`. Bumping `HINDSIGHT_DB_VERSION` changes that
-path, so the old cluster becomes invisible and PG re-inits empty — silent data orphaning, no error.
-A major bump requires `pg_upgrade` or dump/restore, not just an env change. Leave the version pinned
-unless you migrate.
+**hindsight data + PG major version:** `hindsight_pgdata` is mounted at the fixed pg18 PGDATA path
+(`/var/lib/postgresql/18/docker`) and the db image is pinned to `pgvector/pgvector:pg18`. This is
+deliberate: the mount path is version-specific, and older tags (e.g. `pg16`) use a *different*
+PGDATA (`/var/lib/postgresql/data`), so changing the tag without migrating would mount the volume
+at the wrong path and silently re-init an empty cluster — data loss, no error. To move majors, do a
+`pg_upgrade` or dump/restore and update both the pinned tag and the mount path together.

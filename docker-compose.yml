@@ -46,7 +46,9 @@ services:
   # --- hindsight: agent memory (network service, HTTP :8888 / UI :9999) ---
   # Structure adopted from vectorize-io/hindsight docker/docker-compose/external-pg.
   hindsight-db:
-    image: pgvector/pgvector:pg${HINDSIGHT_DB_VERSION:-18}
+    # Pinned major. hindsight_pgdata is mounted at the pg18 PGDATA path below; changing this tag
+    # WITHOUT migrating orphans data silently (older tags e.g. pg16 use a different PGDATA path).
+    image: pgvector/pgvector:pg18
     container_name: fleet-hindsight-db
     restart: unless-stopped
     environment:
@@ -54,7 +56,7 @@ services:
       POSTGRES_PASSWORD: ${HINDSIGHT_DB_PASSWORD:?set HINDSIGHT_DB_PASSWORD}
       POSTGRES_DB: ${HINDSIGHT_DB_NAME:-hindsight_db}
     volumes:
-      - hindsight_pgdata:/var/lib/postgresql/${HINDSIGHT_DB_VERSION:-18}/docker
+      - hindsight_pgdata:/var/lib/postgresql/18/docker
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${HINDSIGHT_DB_USER:-hindsight_user}"]
       interval: 5s
@@ -62,6 +64,7 @@ services:
       retries: 10
 
   hindsight:
+    # Pin a concrete version before relying on this in M1; :latest is non-reproducible.
     image: ghcr.io/vectorize-io/hindsight:${HINDSIGHT_VERSION:-latest}
     container_name: fleet-hindsight
     restart: unless-stopped
@@ -77,6 +80,7 @@ services:
       hindsight-db:
         condition: service_healthy
     healthcheck:
+      # Assumes curl in the hindsight image; if absent, swap for a wget/HTTP probe (see docker/README).
       test: ["CMD-SHELL", "curl -fsS http://localhost:8888/ >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
