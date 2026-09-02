@@ -80,8 +80,8 @@ services:
       hindsight-db:
         condition: service_healthy
     healthcheck:
-      # Assumes curl in the hindsight image; if absent, swap for a wget/HTTP probe (see docker/README).
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/ >/dev/null || exit 1"]
+      # /health returns 200; root (/) is 404. curl is present in the image (verified).
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12

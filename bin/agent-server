@@ -91,10 +91,11 @@ apply_write_path_gate() {
 
 hindsight_retain() {
   local bank="$1" content="$2"
+  # Real API (verified against live hindsight): POST /v1/default/banks/{bank}/memories with {items:[{content}]}.
   "$TIMEOUT_BIN" --kill-after=5s "${GATE_CALL_TIMEOUT}s" \
-    curl -fsS -X POST "$HINDSIGHT_URL/v1/banks/$bank/retain" \
+    curl -fsS -X POST "$HINDSIGHT_URL/v1/default/banks/$bank/memories" \
       -H 'content-type: application/json' \
-      --data "$(jq -cn --arg c "$content" '{content:$c}')" >/dev/null
+      --data "$(jq -cn --arg c "$content" '{async:false, items:[{content:$c}]}')" >/dev/null
 }
 
 process_one() {
