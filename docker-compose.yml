@@ -1,0 +1,92 @@
+# Agent fleet substrate. See docker/README.md.
+# Bring up:  cp .env.example .env  && edit  && docker compose up -d  && scripts/m0-verify.sh
+#
+# Transport note (verified 2026-09-02): only hindsight is a network service.
+# swarmvault and coderag are stdio MCP servers spawned per agent invocation (M1),
+# so their images are BUILT here but not run as long-lived compose services.
+
+name: agent-fleet
+
+services:
+  # --- our request tracking ---
+  db-requests:
+    image: postgres:16
+    container_name: fleet-db-requests
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${REQUESTS_DB_USER:-fleet}
+      POSTGRES_PASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      POSTGRES_DB: ${REQUESTS_DB_NAME:-fleet}
+    ports:
+      - "${REQUESTS_DB_PORT:-5432}:5432"
+    volumes:
+      - requests_pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: fleet-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- hindsight: agent memory (network service, HTTP :8888 / UI :9999) ---
+  # Structure adopted from vectorize-io/hindsight docker/docker-compose/external-pg.
+  hindsight-db:
+    # Pinned major. hindsight_pgdata is mounted at the pg18 PGDATA path below; changing this tag
+    # WITHOUT migrating orphans data silently (older tags e.g. pg16 use a different PGDATA path).
+    image: pgvector/pgvector:pg18
+    container_name: fleet-hindsight-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${HINDSIGHT_DB_USER:-hindsight_user}
+      POSTGRES_PASSWORD: ${HINDSIGHT_DB_PASSWORD:?set HINDSIGHT_DB_PASSWORD}
+      POSTGRES_DB: ${HINDSIGHT_DB_NAME:-hindsight_db}
+    volumes:
+      - hindsight_pgdata:/var/lib/postgresql/18/docker
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${HINDSIGHT_DB_USER:-hindsight_user}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  hindsight:
+    # Pin a concrete version before relying on this in M1; :latest is non-reproducible.
+    image: ghcr.io/vectorize-io/hindsight:${HINDSIGHT_VERSION:-latest}
+    container_name: fleet-hindsight
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+      - "9999:9999"
+    environment:
+      # For keyless providers (claude-code / codex) see docker/README.md; this may be optional.
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_API_LLM_API_KEY:-}
+      HINDSIGHT_API_LLM_PROVIDER: ${HINDSIGHT_API_LLM_PROVIDER:-openai}
+      HINDSIGHT_API_DATABASE_URL: postgresql://${HINDSIGHT_DB_USER:-hindsight_user}:${HINDSIGHT_DB_PASSWORD:?set HINDSIGHT_DB_PASSWORD}@hindsight-db:5432/${HINDSIGHT_DB_NAME:-hindsight_db}
+    depends_on:
+      hindsight-db:
+        condition: service_healthy
+    healthcheck:
+      # Assumes curl in the hindsight image; if absent, swap for a wget/HTTP probe (see docker/README).
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  requests_pgdata:
+  redisdata:
+  hindsight_pgdata:
