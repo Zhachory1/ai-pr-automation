@@ -69,9 +69,12 @@ but excluding worktrees (and dirty main) from indexing is the daemon's watcher c
 
 ## Open items (resolve at implementation — do not commit a secret regardless)
 
-1. **hindsight keyless provider.** Its compose marks `HINDSIGHT_API_LLM_API_KEY` required, but the
-   README says `claude-code`/`codex` need no key. Confirm which `HINDSIGHT_API_LLM_PROVIDER` value
-   selects keyless and whether the key var can be empty. `.env.example` leaves the key blank.
+1. **hindsight needs a keyed LLM provider.** hindsight runs an LLM to extract facts on every
+   `retain`, so `HINDSIGHT_API_LLM_API_KEY` must be set (verified: e2e worked with
+   `HINDSIGHT_API_LLM_PROVIDER=openai` + key). Keyless subscription providers (`claude-code`)
+   do NOT work headless in a container — there is no logged-in session inside the container
+   (`Not logged in · Please run /login`). Do not use them for an unattended server; use a keyed
+   provider.
 2. **hindsight retain/recall REST paths.** `scripts/m0-verify.sh` check [3] uses
    `/v1/banks/{bank}/retain|recall` as a best guess; the upstream README documents the SDK, not raw
    REST. Verify against hindsight's API-reference and adjust the probe if paths differ. (The SDK or
