@@ -11,6 +11,8 @@ REQUESTS_DB_HOST/PORT/USER/NAME + PGPASSWORD. Bind localhost only via compose po
 import html
 import os
 import subprocess
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DB = {
@@ -110,11 +112,26 @@ def render() -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Cache the rendered page for the refresh window so a burst of concurrent GETs (tab storm,
+    # aggressive refresh) shares ONE DB pass instead of each thread forking 5 psql procs.
+    _lock = threading.Lock()
+    _cache = None
+    _cache_ts = 0.0
+
+    @classmethod
+    def cached_page(cls) -> bytes:
+        now = time.monotonic()
+        with cls._lock:
+            if cls._cache is None or (now - cls._cache_ts) >= REFRESH_SECONDS:
+                cls._cache = render().encode()
+                cls._cache_ts = now
+            return cls._cache
+
     def do_GET(self):
         if self.path not in ("/", "/index.html"):
             self.send_response(404); self.end_headers(); return
         try:
-            page = render().encode()
+            page = self.cached_page()
         except Exception as ex:
             self.send_response(500); self.end_headers()
             self.wfile.write(f"error: {ex}".encode()); return
