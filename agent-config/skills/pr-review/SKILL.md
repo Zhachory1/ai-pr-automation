@@ -5,6 +5,12 @@ description: "Agent PR review workflow for correctness, safety, maintainability,
 
 # PR Review
 
+> **AGENT-FLEET OVERRIDE (unattended containerized runs):** this deployment NEVER submits `APPROVE`.
+> Map every non-blocking verdict to `COMMENT` and every blocking verdict to `REQUEST_CHANGES`.
+> Ignore the upstream "submit APPROVE when no findings / verdict mapping" lines below — the
+> agent-server prompt is authoritative and forbids APPROVE. Use the marker
+> `<!-- ai-pr-automation head=<sha> -->` (not the autopraxis-pr-review marker) for idempotency.
+
 Review a pull request against real intent, not guesswork. Produce prioritized, actionable feedback and preserve human accountability for merge.
 
 ## Core Principles
