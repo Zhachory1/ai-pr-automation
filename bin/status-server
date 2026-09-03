@@ -24,20 +24,23 @@ REFRESH_SECONDS = int(os.environ.get("STATUS_REFRESH_SECONDS", "5"))
 
 
 def query(sql: str) -> list[list[str]]:
-    """Run a SELECT via psql, return rows as lists of strings. Read-only by construction:
-    callers pass SELECT-only SQL; this helper never interpolates request data (fixed queries)."""
+    """Run a SELECT via psql and return rows as lists of strings. Read-only by construction:
+    callers pass fixed SELECT-only SQL; this helper never interpolates request data.
+    Wraps the query in json_agg so multi-line/odd-byte cell values (e.g. a fail_response with
+    embedded newlines) can't break row/column parsing — we parse one JSON doc, not split lines."""
+    wrapped = f"SELECT coalesce(json_agg(t.*), '[]') FROM ({sql}) t"
     proc = subprocess.run(
         ["psql", "-h", DB["host"], "-p", DB["port"], "-U", DB["user"], "-d", DB["name"],
-         "-qAtF", "\x1f", "-v", "ON_ERROR_STOP=1", "-c", sql],
+         "-qAt", "-v", "ON_ERROR_STOP=1", "-c", wrapped],
         capture_output=True, text=True, timeout=15,
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "psql failed")
+    import json
     rows = []
-    for line in proc.stdout.splitlines():
-        if line == "":
-            continue
-        rows.append(line.split("\x1f"))
+    for obj in json.loads(proc.stdout or "[]"):
+        # json_agg(t.*) yields objects keyed by column/alias, insertion-ordered to match SELECT.
+        rows.append(["" if v is None else str(v) for v in obj.values()])
     return rows
 
 
@@ -94,7 +97,7 @@ def render() -> str:
  th{{color:#555;font-weight:600;font-size:.85rem}}
  .empty{{color:#999}} .err{{color:#b00;font-weight:600}}
  .badge{{display:inline-block;padding:.05rem .4rem;border-radius:3px;font-size:.85rem}}
- td:has(+td){{max-width:40ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+ td{{max-width:60ch;overflow-wrap:anywhere}}
 </style></head><body>
 <h1>agent-fleet status <span class=empty>(refreshes {REFRESH_SECONDS}s, read-only)</span></h1>
 {banner}
