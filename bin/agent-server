@@ -134,10 +134,11 @@ process_one() {
   head_sha="$("$TIMEOUT_BIN" --kill-after=5s 60s gh pr view "$pr" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   [[ -z "$head_sha" ]] && { queue_mark_failed "$id" "could not resolve head sha"; return 0; }
 
-  # Idempotency (crash-proof): if a review with this head's marker is already on GitHub, no-op.
-  # This is the reconciliation the council required — GitHub marker, not the DB posted_ref column,
-  # so a crash between posting and mark_done cannot cause a double-post on the next claim.
-  if github_already_reviewed "$repo" "$pr" "$head_sha" "$GITHUB_LOGIN"; then
+  # Idempotency (crash-proof) for REVIEW: if a review with this head's marker is already on GitHub,
+  # no-op. GitHub marker, not the DB posted_ref column, so a crash between posting and mark_done
+  # cannot cause a double-post. Maintain posts REPLIES (no review marker), so this check does not
+  # apply to it — maintain idempotency is the per-head dedupe key + the side_effect_at fence.
+  if [[ "$kind" != pr-maintain ]] && github_already_reviewed "$repo" "$pr" "$head_sha" "$GITHUB_LOGIN"; then
     log "marker for $repo#$pr@$head_sha already on GitHub; marking done without re-running"
     queue_mark_done "$id" "head=$head_sha"; return 0
   fi
