@@ -110,7 +110,8 @@ runs the agent — the serial `bin/agent-server` drains the queue.
 
 Dedupe is two-layered (see `lib/queue.sh`):
 - the partial unique index blocks a second **active** (queued|running) row for the same key;
-- `queue_enqueue` also skips a key that is already done/failed, so re-runs don't create churn rows.
+- `queue_enqueue` also skips a key already queued/running/**done**, so re-runs don't create churn rows;
+  a **failed** head IS re-enqueued (a transient error should retry; permanent poison-PR protection is a future `max_attempts` concern, not a dead-letter here).
 - a PR whose head advanced gets a **new** dedupe_key → a fresh row (re-review on the new commit).
 
 launchd templates: `launchd/com.example.agent-fleet-producer-{reviews,maintenance}.plist.template`.
