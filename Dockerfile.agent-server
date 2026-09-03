@@ -5,6 +5,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash git jq curl ca-certificates coreutils postgresql-client gnupg \
+      python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
 
 # GitHub CLI (gh)
@@ -15,17 +16,28 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
-# --- agent runner ---
-# Default: expects a runner mounted/available at $AGENT_SERVER_RUNNER. To bake a specific coding
-# agent (e.g. roktcode) into the image, add its install here and set AGENT_SERVER_RUNNER to it.
-# roktcode reads OPENAI_API_KEY from env (no cached login needed), so no creds mount is required.
+# Node.js >=20 (mewritecode is a Node CLI; npx also drives the buildkite MCP via mcp-remote)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- agent runner: mewritecode (the public engine roktcode wraps) ---
+# roktcode is private (internal registry) and macOS-only, so it can't go in a public Linux image.
+# mewritecode is public on npm and is the same CLI (`mewritecode exec`). It reads OPENAI_API_KEY
+# from env. Skills + MCP load from $MEWRITE_CODING_AGENT_DIR (set below to the vendored config).
+RUN npm install -g @zhachory1/mewrite-code
 
 WORKDIR /app
 COPY bin/ ./bin/
 COPY lib/ ./lib/
-COPY tests/roktcode-runner.sh ./tests/roktcode-runner.sh
-RUN chmod +x bin/* tests/roktcode-runner.sh
+COPY agent-config/ ./agent-config/
+RUN chmod +x bin/*
+
+# mewritecode discovers skills/agents/mcp from this dir (vendored: pr-review + deps, personas,
+# buildkite MCP — no secrets; Buildkite auth is BUILDKITE_API_TOKEN via env at runtime).
+ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
 
 # Serial-per-kind worker. AGENT_SERVER_KIND selects the queue kind this container serves.
-# gh uses GH_TOKEN; roktcode uses OPENAI_API_KEY; both injected via env (compose env_file: .env).
+# gh uses GH_TOKEN; mewritecode uses OPENAI_API_KEY; buildkite MCP uses BUILDKITE_API_TOKEN.
+# All injected via env (compose env_file: .env). No creds baked into the image.
 ENTRYPOINT ["bin/agent-server"]
