@@ -13,6 +13,8 @@ Use this as universal first pass for dev workflow, ML experiments, PR review, de
 
 **Evidence before synthesis.** Separate observed facts from interpretation, assumptions, and guesses.
 
+**Reuse before build.** Before proposing a broker, proxy, service, datastore, queue, credential path, or platform abstraction, inventory plausible existing capabilities. Missing local code is not proof that capability is absent.
+
 **Use richest available context source.** Prefer long-term memory MCP for prior decisions and code RAG for codebase semantics; fall back to files, git, logs, and direct user-provided artifacts.
 
 **Preserve source links.** Every important claim needs a path, URL, command, log pointer, ticket, transcript, or explicit user statement.
@@ -45,6 +47,10 @@ Do not persist sensitive content to memory or third-party systems unless the ope
 ## Execution
 
 **Scope the brief.** State the workflow, decision to support, repositories/artifacts in scope, and out-of-scope areas.
+
+**Inventory reuse.** Before proposing new infrastructure or platform abstraction, search supplied artifacts, available MCP/tool and platform catalogs, known SDKs/service clients, and one bounded repository search. Record sources checked and each plausible capability's owner, consumers, access contract, deployment boundary, and evidence-based result: `reuse`, `cannot-satisfy`, or `clarify-first`. Record `no-candidate` only as inventory status when no plausible candidate exists. Stop when remaining sources are unavailable or further search is low-yield.
+
+**Clarify unknown access.** A plausible capability with unknown owner, access contract, or deployment boundary returns `clarify-first`, never `ready` or `build`. Ask for one smallest missing fact, name the owner, and state the resume condition; do not plan new infrastructure first.
 
 **Collect sources.** Query memory, code RAG, linked docs, tickets, code, logs, PR data, prior run dirs, and agent-fleet journals. Capture exact source pointers.
 
@@ -79,6 +85,21 @@ Do not persist sensitive content to memory or third-party systems unless the ope
   evidence:
   confidence:
 
+## Capability Reuse Inventory
+- search boundary:
+- sources checked:
+- candidate:
+  kind:
+  owner/consumers:
+  access contract/deployment boundary:
+  result: reuse | cannot-satisfy | clarify-first
+  evidence:
+- inventory status: complete | clarify-first | no-candidate
+- clarification needed:
+  owner:
+  requested fact:
+  resume condition:
+
 ## Prior Decisions And Context
 - decision/context:
   source:
@@ -98,11 +119,14 @@ Do not persist sensitive content to memory or third-party systems unless the ope
 - status: ready | clarify-first | council-first | blocked
 - reason:
 - next workflow step:
+- new infrastructure proposal allowed: yes | no
 ```
 
 ## Success Criteria
 
 - key claims have source pointers.
+- infrastructure proposals include a completed capability reuse inventory.
+- plausible capabilities with unknown access return `clarify-first`.
 - downstream agent can proceed without re-discovering intent.
 - assumptions are marked, not hidden.
 - stale/conflicting sources are visible.
