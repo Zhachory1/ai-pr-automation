@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Read-only status web view for the agent fleet (M3).
+
+Serves one auto-refreshing HTML page over the request Postgres. STRICTLY read-only:
+issues only SELECTs, no UPDATE/INSERT/DELETE anywhere. All dynamic values are HTML-escaped
+(request data — PR titles, dedupe_key, fail_response — is attacker-influenced).
+
+DB access via `psql` subprocess (already a dependency; no pip/driver/build). Config from env:
+REQUESTS_DB_HOST/PORT/USER/NAME + PGPASSWORD. Bind localhost only via compose port mapping.
+"""
+import html
+import os
+import subprocess
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+DB = {
+    "host": os.environ.get("REQUESTS_DB_HOST", "db-requests"),
+    "port": os.environ.get("REQUESTS_DB_PORT", "5432"),
+    "user": os.environ.get("REQUESTS_DB_USER", "fleet"),
+    "name": os.environ.get("REQUESTS_DB_NAME", "fleet"),
+}
+PORT = int(os.environ.get("STATUS_PORT", "8080"))
+REFRESH_SECONDS = int(os.environ.get("STATUS_REFRESH_SECONDS", "5"))
+
+
+def query(sql: str) -> list[list[str]]:
+    """Run a SELECT via psql, return rows as lists of strings. Read-only by construction:
+    callers pass SELECT-only SQL; this helper never interpolates request data (fixed queries)."""
+    proc = subprocess.run(
+        ["psql", "-h", DB["host"], "-p", DB["port"], "-U", DB["user"], "-d", DB["name"],
+         "-qAtF", "\x1f", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        capture_output=True, text=True, timeout=15,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "psql failed")
+    rows = []
+    for line in proc.stdout.splitlines():
+        if line == "":
+            continue
+        rows.append(line.split("\x1f"))
+    return rows
+
+
+def e(v) -> str:
+    """HTML-escape a value. ALL dynamic data goes through here (attacker-influenced)."""
+    return html.escape("" if v is None else str(v))
+
+
+def table(title: str, headers: list[str], rows: list[list[str]], empty: str) -> str:
+    if not rows:
+        return f"<section><h2>{e(title)}</h2><p class=empty>{e(empty)}</p></section>"
+    head = "".join(f"<th>{e(h)}</th>" for h in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{e(c)}</td>" for c in r) + "</tr>" for r in rows
+    )
+    return (f"<section><h2>{e(title)}</h2>"
+            f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></section>")
+
+
+def render() -> str:
+    try:
+        running = query(
+            "SELECT id, kind, dedupe_key, "
+            "to_char(now()-started_at,'HH24:MI:SS') AS elapsed "
+            "FROM requests WHERE status='running' ORDER BY started_at")
+        queued = query(
+            "SELECT kind, count(*) FROM requests WHERE status='queued' "
+            "GROUP BY kind ORDER BY kind")
+        recent = query(
+            "SELECT id, kind, status, dedupe_key, coalesce(fail_response,''), "
+            "to_char(finished_at,'MM-DD HH24:MI') "
+            "FROM requests WHERE status IN ('done','failed') "
+            "ORDER BY finished_at DESC NULLS LAST LIMIT 20")
+        pending = query(
+            "SELECT id, request_id, kind, to_char(created_at,'MM-DD HH24:MI') "
+            "FROM pending_decisions WHERE state='pending' ORDER BY created_at DESC LIMIT 20")
+        today = query(
+            "SELECT kind, status, count(*) FROM requests "
+            "WHERE created_at::date = now()::date GROUP BY kind, status ORDER BY kind, status")
+        db_err = None
+    except Exception as ex:  # DB down / unreachable: show it rather than 500
+        running = queued = recent = pending = today = []
+        db_err = str(ex)
+
+    banner = (f"<p class=err>DB unreachable: {e(db_err)}</p>" if db_err else "")
+    pending_n = len(pending)
+    return f"""<!doctype html><html><head><meta charset=utf-8>
+<meta http-equiv=refresh content={REFRESH_SECONDS}>
+<title>agent-fleet status</title>
+<style>
+ body{{font:14px/1.5 -apple-system,system-ui,sans-serif;margin:2rem;color:#111;background:#fafafa}}
+ h1{{font-size:1.3rem}} h2{{font-size:1rem;margin:1.5rem 0 .4rem}}
+ table{{border-collapse:collapse;width:100%}} th,td{{text-align:left;padding:.3rem .6rem;border-bottom:1px solid #ddd;font-variant-numeric:tabular-nums}}
+ th{{color:#555;font-weight:600;font-size:.85rem}}
+ .empty{{color:#999}} .err{{color:#b00;font-weight:600}}
+ .badge{{display:inline-block;padding:.05rem .4rem;border-radius:3px;font-size:.85rem}}
+ td:has(+td){{max-width:40ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+</style></head><body>
+<h1>agent-fleet status <span class=empty>(refreshes {REFRESH_SECONDS}s, read-only)</span></h1>
+{banner}
+{table("Running now", ["id","kind","dedupe_key","elapsed"], running, "nothing running")}
+{table("Queued", ["kind","count"], queued, "queue empty")}
+{table(f"Pending decisions ({pending_n})", ["id","request_id","kind","created"], pending, "no pending decisions")}
+{table("Recent (last 20)", ["id","kind","status","dedupe_key","fail_response","finished"], recent, "no completed runs")}
+{table("Today by kind", ["kind","status","count"], today, "nothing today")}
+</body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path not in ("/", "/index.html"):
+            self.send_response(404); self.end_headers(); return
+        try:
+            page = render().encode()
+        except Exception as ex:
+            self.send_response(500); self.end_headers()
+            self.wfile.write(f"error: {ex}".encode()); return
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.send_header("content-length", str(len(page)))
+        self.end_headers()
+        self.wfile.write(page)
+
+    def log_message(self, *a):  # quiet
+        pass
+
+
+if __name__ == "__main__":
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

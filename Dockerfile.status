@@ -1,0 +1,11 @@
+# Read-only status web view for the agent fleet (M3). Thin: python3 + psql client only.
+# Build: docker build -f Dockerfile.status -t agent-fleet/status .
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 postgresql-client ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY bin/status-server ./bin/status-server
+RUN chmod +x bin/status-server
+# Read-only: issues only SELECTs. Config + PGPASSWORD via env (compose env_file).
+ENTRYPOINT ["python3", "bin/status-server"]
