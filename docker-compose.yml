@@ -177,6 +177,28 @@ services:
       hindsight:
         condition: service_healthy
 
+  # --- status: read-only web view (M3) ---
+  # SELECT-only; renders running/queued/recent/pending-decisions/today. Port bound to LOCALHOST
+  # only (127.0.0.1) so it is not reachable off-box (it has no auth). Reads db by service name.
+  status:
+    image: agent-fleet/status:${STATUS_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.status
+    container_name: fleet-status
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${STATUS_PORT:-8080}:8080"
+    environment:
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_PORT: "5432"
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+    depends_on:
+      db-requests:
+        condition: service_healthy
+
 volumes:
   requests_pgdata:
   redisdata:
