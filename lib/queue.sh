@@ -115,13 +115,23 @@ queue_already_posted() {
 # because a new head = a new dedupe_key.
 queue_enqueue() {
   local kind="$1" payload_json="$2" dedupe_key="$3"
-  _psql -v kind="$kind" -v payload="$payload_json" -v dk="$dedupe_key" <<'SQL'
+  # Cap failed retries: a head that has already FAILED >= max_attempts times is a poison PR
+  # (persistent checkout/tool error). Stop re-enqueuing it so it can't retry-loop forever and
+  # burn tokens unattended. Default 3; 0 disables the cap. Dedup of queued/running/done is
+  # unchanged — an unchanged head is still never re-reviewed.
+  local max_attempts="${PR_PRODUCER_MAX_ATTEMPTS:-3}"
+  _psql -v kind="$kind" -v payload="$payload_json" -v dk="$dedupe_key" -v maxatt="$max_attempts" <<'SQL'
 INSERT INTO requests(kind, payload, dedupe_key)
 SELECT :'kind', :'payload'::jsonb, :'dk'
 WHERE NOT EXISTS (
   SELECT 1 FROM requests
    WHERE kind = :'kind' AND dedupe_key = :'dk'
      AND status IN ('queued','running','done')
+)
+AND (
+  :'maxatt' = '0'
+  OR (SELECT count(*) FROM requests
+        WHERE kind = :'kind' AND dedupe_key = :'dk' AND status = 'failed') < :'maxatt'::int
 )
 ON CONFLICT DO NOTHING
 RETURNING 1;

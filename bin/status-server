@@ -82,9 +82,15 @@ def render() -> str:
         today = query(
             "SELECT kind, status, count(*) FROM requests "
             "WHERE created_at::date = now()::date GROUP BY kind, status ORDER BY kind, status")
+        # Poison PRs: heads that failed >= the retry cap and are no longer being re-enqueued.
+        capped = query(
+            "SELECT kind, dedupe_key, count(*) AS fails, "
+            "to_char(max(finished_at),'MM-DD HH24:MI') AS last_fail "
+            "FROM requests WHERE status='failed' GROUP BY kind, dedupe_key "
+            "HAVING count(*) >= 3 ORDER BY max(finished_at) DESC NULLS LAST LIMIT 20")
         db_err = None
     except Exception as ex:  # DB down / unreachable: show it rather than 500
-        running = queued = recent = pending = today = []
+        running = queued = recent = pending = today = capped = []
         db_err = str(ex)
 
     banner = (f"<p class=err>DB unreachable: {e(db_err)}</p>" if db_err else "")
@@ -107,6 +113,7 @@ def render() -> str:
 {table("Queued", ["kind","count"], queued, "queue empty")}
 {table(f"Pending decisions ({pending_n})", ["id","request_id","kind","created"], pending, "no pending decisions")}
 {table("Recent (last 20)", ["id","kind","status","dedupe_key","fail_response","finished"], recent, "no completed runs")}
+{table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}
 {table("Today by kind", ["kind","status","count"], today, "nothing today")}
 </body></html>"""
 

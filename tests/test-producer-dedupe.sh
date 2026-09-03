@@ -33,6 +33,15 @@ out="$(queue_enqueue pr-review '{"repo":"o/r","pr":"9"}' "o/r#9@fail")"
 check "failed head: inserted (RETURNING 1)" "[[ \"\$out\" == 1 ]]"
 check "now a queued row exists alongside the failed one" "q \"SELECT count(*) FROM requests WHERE dedupe_key='o/r#9@fail' AND status='queued';\" | grep -qx 1"
 
+echo "[2c] retry cap: a head that has FAILED >= 3 times is NOT re-enqueued (poison PR)"
+q "INSERT INTO requests(kind,payload,dedupe_key,status) VALUES ('pr-review','{}','o/r#99@poison','failed'),('pr-review','{}','o/r#99@poison','failed'),('pr-review','{}','o/r#99@poison','failed');" >/dev/null
+out="$(queue_enqueue pr-review '{"repo":"o/r","pr":"99"}' "o/r#99@poison")"
+check "capped head: NOT inserted (empty return)" "[[ -z \"\$out\" ]]"
+check "no queued row created for capped head" "q \"SELECT count(*) FROM requests WHERE dedupe_key='o/r#99@poison' AND status='queued';\" | grep -qx 0"
+echo "[2d] cap is configurable: PR_PRODUCER_MAX_ATTEMPTS=0 disables it"
+out="$(PR_PRODUCER_MAX_ATTEMPTS=0 queue_enqueue pr-review '{"repo":"o/r","pr":"99"}' "o/r#99@poison")"
+check "cap disabled (=0): capped head re-enqueues" "[[ \"\$out\" == 1 ]]"
+
 echo "[3] NEW head -> new key -> fresh queued row (re-review on new commit)"
 queue_enqueue pr-review '{"repo":"o/r","pr":"1"}' "o/r#1@def" >/dev/null
 check "new-head row queued" "q \"SELECT status FROM requests WHERE dedupe_key='o/r#1@def';\" | grep -qx queued"
