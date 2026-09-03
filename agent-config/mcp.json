@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "buildkite": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@0.3.0",
+        "https://mcp.buildkite.com/mcp"
+      ]
+    }
+  }
+}

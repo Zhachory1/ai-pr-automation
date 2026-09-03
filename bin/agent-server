@@ -19,6 +19,13 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/queue.sh
 . "$HERE/lib/queue.sh"
 
+# The kind this worker serves. One serial container per kind; the advisory lock is per-kind, and
+# claim/reclaim are scoped to this kind, so a review worker never touches comment-handler rows.
+KIND="${AGENT_SERVER_KIND:?set AGENT_SERVER_KIND (e.g. pr-review, pr-maintain)}"
+# KIND is an operator-set identifier, not untrusted data. Constrain it so it is safe to embed in the
+# advisory-lock query (which runs in a coproc where psql -v binding is awkward) and as a bank suffix.
+[[ "$KIND" =~ ^[a-z0-9-]+$ ]] || { echo "AGENT_SERVER_KIND must match ^[a-z0-9-]+$" >&2; exit 2; }
+
 POLL_INTERVAL="${AGENT_SERVER_POLL_INTERVAL:-10}"
 PER_REQUEST_TIMEOUT="${AGENT_SERVER_PER_REQUEST_TIMEOUT:-1800}"   # 30m paid-agent ceiling
 GATE_CALL_TIMEOUT="${AGENT_SERVER_GATE_CALL_TIMEOUT:-60}"          # hindsight/gate external calls
@@ -43,7 +50,8 @@ LOCKSESSION_PID=""
 acquire_single_instance() {
   coproc LOCKSESSION { _psql 2>/dev/null; }
   LOCKSESSION_PID="$!"
-  printf "SELECT pg_try_advisory_lock(%s);\n" "$AGENT_SERVER_LOCK_KEY" >&"${LOCKSESSION[1]}"
+  # Per-kind two-int advisory lock: (namespace base, hashtext(KIND)).
+  printf "SELECT pg_try_advisory_lock(%s::int, hashtext('%s'));\n" "$AGENT_SERVER_LOCK_KEY" "$KIND" >&"${LOCKSESSION[1]}"
   local got; read -r got <&"${LOCKSESSION[0]}" || true
   if [[ "$got" != "t" ]]; then
     log "another agent-server holds the single-instance lock; refusing to start"
@@ -194,13 +202,18 @@ PROMPT
 acquire_single_instance
 if ! db_up; then log "FATAL: Postgres not reachable at startup; exiting for launchd backoff"; exit 3; fi
 # Resolve the authenticated GitHub login once; used to match our own head-dedup markers.
-GITHUB_LOGIN="$("$TIMEOUT_BIN" --kill-after=5s 60s gh api user --jq .login 2>/dev/null || true)"
-[[ -n "$GITHUB_LOGIN" ]] || { log "FATAL: could not resolve GitHub login"; exit 3; }
+# Resolve the authenticated GitHub login once; used to match our own head-dedup markers.
+# On bad creds `gh` exits nonzero and may print an error blob to stdout, so gate on exit status
+# AND validate the shape rather than trusting non-empty output.
+GITHUB_LOGIN="$("$TIMEOUT_BIN" --kill-after=5s 60s gh api user --jq .login 2>/dev/null)" || GITHUB_LOGIN=""
+if [[ ! "$GITHUB_LOGIN" =~ ^[A-Za-z0-9-]+$ ]]; then
+  log "FATAL: could not resolve a valid GitHub login (check GH_TOKEN); got: ${GITHUB_LOGIN:0:40}"; exit 3
+fi
 log "github login: $GITHUB_LOGIN"
-log "reclaiming stale running rows"
-queue_reclaim_stale || { log "FATAL: reclaim failed"; exit 3; }
+log "reclaiming stale running rows for kind=$KIND"
+queue_reclaim_stale "$KIND" || { log "FATAL: reclaim failed"; exit 3; }
 
-log "agent-server up (serial); poll ${POLL_INTERVAL}s, per-request ${PER_REQUEST_TIMEOUT}s"
+log "agent-server up (serial, kind=$KIND); poll ${POLL_INTERVAL}s, per-request ${PER_REQUEST_TIMEOUT}s"
 last_progress="$(date +%s)"
 mkdir -p "$WORK_ROOT"
 
@@ -215,7 +228,7 @@ while true; do
 
   run_id="$(date '+%Y%m%d-%H%M%S')-$$"
   nonce="$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  claim="$(queue_claim_one "$run_id" "$nonce" || true)"
+  claim="$(queue_claim_one "$KIND" "$run_id" "$nonce" || true)"
   if [[ -z "$claim" || "$claim" == "null" ]]; then sleep "$POLL_INTERVAL"; continue; fi
 
   # claim is a single JSON object; parse it as JSON (no intermediate TSV format).

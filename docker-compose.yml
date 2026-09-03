@@ -116,6 +116,67 @@ services:
     working_dir: /vault
     command: ["swarmvault", "watch", "/vault"]
 
+  # --- agent-servers: one SERIAL worker container per KIND ---
+  # Compose by kind, not by replicas. Each holds its own per-kind advisory lock and claims only its
+  # own kind's rows. Add a new kind = add a service (copy a block, change AGENT_SERVER_KIND).
+  # They reach the substrate by SERVICE NAME (db-requests / hindsight), not localhost.
+  # Secrets (REQUESTS_DB_PASSWORD, GH_TOKEN, OPENAI_API_KEY) come from .env via env_file.
+  agent-server-review:
+    image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.agent-server
+    container_name: fleet-agent-server-review
+    restart: unless-stopped
+    env_file: .env                      # GH_TOKEN, OPENAI_API_KEY, REQUESTS_DB_PASSWORD, ...
+    environment:
+      AGENT_SERVER_KIND: pr-review
+      AGENT_SERVER_RUNNER: /app/bin/mewritecode-runner.sh
+      AGENT_SERVER_SHARED_BANK: fleet-shared
+      REQUESTS_DB_HOST: db-requests       # in-network service name, NOT localhost
+      REQUESTS_DB_PORT: "5432"
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      HINDSIGHT_URL: http://hindsight:8888
+    volumes:
+      - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw          # same path in-container so worktrees resolve
+      - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
+    depends_on:
+      db-requests:
+        condition: service_healthy
+      hindsight:
+        condition: service_healthy
+
+  # Second kind: identical except AGENT_SERVER_KIND. maintain PRs push fix commits, so its GH_TOKEN
+  # (in .env, or a kind-specific token) needs Contents:write; review's token can stay read-only.
+  agent-server-maintain:
+    image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.agent-server
+    container_name: fleet-agent-server-maintain
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AGENT_SERVER_KIND: pr-maintain
+      AGENT_SERVER_RUNNER: /app/bin/mewritecode-runner.sh
+      AGENT_SERVER_SHARED_BANK: fleet-shared
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_PORT: "5432"
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      HINDSIGHT_URL: http://hindsight:8888
+    volumes:
+      - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw
+      - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
+    depends_on:
+      db-requests:
+        condition: service_healthy
+      hindsight:
+        condition: service_healthy
+
 volumes:
   requests_pgdata:
   redisdata:

@@ -39,7 +39,7 @@ GOT="$(q "SELECT dedupe_key FROM requests ORDER BY id LIMIT 1;")"
 check "dedupe_key stored verbatim" "[[ \"\$GOT\" == \"\$EVIL\" ]]"
 
 echo "[3] claim -> side_effect -> done sets posted_ref"
-CLAIM="$(queue_claim_one run3 nonce3)"
+CLAIM="$(queue_claim_one pr-review run3 nonce3)"
 check "claim returned a row" "[[ -n \"\$CLAIM\" ]]"
 ID="$(jq -r '.id' <<<"$CLAIM")"
 queue_mark_side_effect "$ID" >/dev/null
@@ -50,14 +50,14 @@ echo "[4] reclaim: not-posted running -> requeued (target rows by explicit id)"
 queue_enqueue "pr-review" '{}' "clean-1" >/dev/null
 ID_CLEAN="$(q "SELECT id FROM requests WHERE dedupe_key='clean-1';")"
 q "UPDATE requests SET status='running', started_at=now() WHERE id=$ID_CLEAN;" >/dev/null   # simulate a claimed, un-posted row
-queue_reclaim_stale >/dev/null
+queue_reclaim_stale pr-review >/dev/null
 check "clean running row requeued" "q \"SELECT status FROM requests WHERE id=$ID_CLEAN;\" | grep -qx queued"
 
 echo "[4b] reclaim: posted running (posted_ref set) -> done, never re-run"
 queue_enqueue "pr-review" '{}' "posted-1" >/dev/null
 ID_POSTED="$(q "SELECT id FROM requests WHERE dedupe_key='posted-1';")"
 q "UPDATE requests SET status='running', started_at=now(), side_effect_at=now(), posted_ref='head=abc' WHERE id=$ID_POSTED;" >/dev/null
-queue_reclaim_stale >/dev/null
+queue_reclaim_stale pr-review >/dev/null
 check "posted running row -> done" "q \"SELECT status FROM requests WHERE id=$ID_POSTED;\" | grep -qx done"
 
 echo "[5] already-posted detection via posted_ref"

@@ -41,5 +41,13 @@ echo "[4] different kind, same repo/pr coexists (maintain vs review)"
 queue_enqueue pr-maintain '{"repo":"o/r","pr":"1"}' "o/r#1@def" >/dev/null
 check "review + maintain rows both present for same key" "[[ \"\$(q \"SELECT count(*) FROM requests WHERE dedupe_key='o/r#1@def';\")\" == 2 ]]"
 
+echo "[5] kind-scoped claim: a pr-review worker never claims a pr-maintain row"
+# only pr-maintain rows are queued at a fresh key; a review claim must return nothing for them
+q "UPDATE requests SET status='done' WHERE kind='pr-review';" >/dev/null  # clear review queue
+claim_r="$(queue_claim_one pr-review rr nr)"
+check "pr-review claim returns empty when only pr-maintain is queued" "[[ -z \"\$claim_r\" ]]"
+claim_m="$(queue_claim_one pr-maintain rm nm)"
+check "pr-maintain claim returns the pr-maintain row" "[[ \"\$(jq -r '.kind' <<<\"\$claim_m\")\" == pr-maintain ]]"
+
 echo
 [[ $fail -eq 0 ]] && echo "ALL PASS" || { echo "FAILURES"; exit 1; }

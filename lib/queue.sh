@@ -10,7 +10,10 @@ set -euo pipefail
 : "${REQUESTS_DB_PORT:=5432}"
 # PGPASSWORD expected in env (from .env / launchd keychain), never on the command line.
 
-# Advisory lock key for single-instance enforcement (arbitrary stable int).
+# Advisory lock key for single-instance enforcement. Per-KIND so one serial worker runs per kind:
+# a review container and a comment-handler container each hold their own lock; a duplicate of the
+# SAME kind refuses to start. Derived from the kind via hashtext() at lock time (see
+# queue_try_single_instance_lock), with this constant as a namespace base for standalone/legacy use.
 AGENT_SERVER_LOCK_KEY="${AGENT_SERVER_LOCK_KEY:-774411}"
 
 _psql() {
@@ -22,39 +25,43 @@ _psql() {
     -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"
 }
 
-# Hold a session advisory lock for the life of THIS psql session. Returns t/f.
-# Caller must keep the returned coproc/session alive to hold the lock; see agent-server.
+# Hold a session advisory lock for the life of THIS psql session, scoped to a KIND. Returns t/f.
+# Two-int advisory lock: (namespace base, hashtext(kind)) so different kinds never collide and the
+# same kind always maps to the same key. Caller keeps the session alive to hold the lock.
 queue_try_single_instance_lock() {
-  # session-level try lock; if another live server holds it, returns f.
-  _psql <<<"SELECT pg_try_advisory_lock(${AGENT_SERVER_LOCK_KEY});"
+  local kind="${1:?kind}"
+  _psql -v base="$AGENT_SERVER_LOCK_KEY" -v kind="$kind" \
+    <<<"SELECT pg_try_advisory_lock(:'base'::int, hashtext(:'kind'));"
 }
 
-# Startup reclaim (fail-closed, but uses posted_ref as the 'posted' truth so transient
+# Startup reclaim for a KIND (fail-closed, uses posted_ref as the 'posted' truth so transient
 # pre-post failures are safely retried instead of dead-lettered):
 #   posted_ref present            -> genuinely posted; terminal 'done' (no re-run).
 #   side_effect intent, not posted -> safe to requeue (head-dedup marker prevents double-post).
 #   clean running                 -> requeue.
+# Scoped to KIND so a review worker never reclaims a comment-handler's rows.
 queue_reclaim_stale() {
-  _psql <<'SQL'
+  local kind="${1:?kind}"
+  _psql -v kind="$kind" <<'SQL'
 UPDATE requests
    SET status = 'done', finished_at = now()
- WHERE status = 'running' AND posted_ref IS NOT NULL;
+ WHERE status = 'running' AND kind = :'kind' AND posted_ref IS NOT NULL;
 
 UPDATE requests
    SET status = 'queued', started_at = NULL, run_id = NULL, run_nonce = NULL, side_effect_at = NULL
- WHERE status = 'running' AND posted_ref IS NULL;
+ WHERE status = 'running' AND kind = :'kind' AND posted_ref IS NULL;
 SQL
 }
 
-# Claim one queued row -> running, stamping run_id + nonce. Emits ONE json object (avoids
-# tab/newline parsing hazards from untrusted dedupe_key/payload). Empty if queue empty.
+# Claim one queued row OF THIS KIND -> running, stamping run_id + nonce. Emits ONE json object
+# (avoids tab/newline parsing hazards from untrusted dedupe_key/payload). Empty if none queued.
 # FOR UPDATE SKIP LOCKED keeps a future 2nd worker safe.
 queue_claim_one() {
-  local run_id="$1" nonce="$2"
-  _psql -v run_id="$run_id" -v nonce="$nonce" <<'SQL'
+  local kind="${1:?kind}" run_id="$2" nonce="$3"
+  _psql -v kind="$kind" -v run_id="$run_id" -v nonce="$nonce" <<'SQL'
 WITH claimed AS (
   SELECT id FROM requests
-   WHERE status = 'queued'
+   WHERE status = 'queued' AND kind = :'kind'
    ORDER BY created_at
    FOR UPDATE SKIP LOCKED
    LIMIT 1
