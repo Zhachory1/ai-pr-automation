@@ -20,25 +20,31 @@ set +e
 fail=0
 check(){ if eval "$2"; then echo "  PASS: $1"; else echo "  FAIL: $1"; fail=1; fi; }
 
-# Hold the lock in a long-lived coproc session (same pattern as bin/agent-server).
+# Hold the per-kind lock in a long-lived coproc session (same pattern + key as bin/agent-server:
+# two-int lock (base, hashtext(kind))).
+KIND=pr-review
 coproc HOLD { _psql 2>/dev/null; }
 HOLD_PID=$!
-printf "SELECT pg_try_advisory_lock(%s);\n" "$AGENT_SERVER_LOCK_KEY" >&"${HOLD[1]}"
+printf "SELECT pg_try_advisory_lock(%s::int, hashtext('%s'));\n" "$AGENT_SERVER_LOCK_KEY" "$KIND" >&"${HOLD[1]}"
 read -r r1 <&"${HOLD[0]}"
 exec {HOLD_KEEP}>&"${HOLD[1]}"   # keep write-fd open => session stays alive => lock held
-check "holder 1 acquires lock" "[[ \"$r1\" == t ]]"
+check "holder 1 acquires lock (kind=$KIND)" "[[ \"$r1\" == t ]]"
 
-# Second attempt in a separate one-shot session while holder 1 is alive.
-r2="$(_psql <<<"SELECT pg_try_advisory_lock($AGENT_SERVER_LOCK_KEY);")"
-check "holder 2 refused while holder 1 alive" "[[ \"$r2\" == f ]]"
+# Same kind, second session while holder 1 alive -> refused.
+r2="$(_psql <<<"SELECT pg_try_advisory_lock($AGENT_SERVER_LOCK_KEY::int, hashtext('$KIND'));")"
+check "holder 2 (same kind) refused while holder 1 alive" "[[ \"$r2\" == f ]]"
 
-# Kill holder 1's session -> lock releases.
+# DIFFERENT kind gets its OWN lock -> acquires even while holder 1 alive (the point of per-kind).
+r_other="$(_psql <<<"SELECT pg_try_advisory_lock($AGENT_SERVER_LOCK_KEY::int, hashtext('pr-maintain'));")"
+check "different kind (pr-maintain) acquires its own lock concurrently" "[[ \"$r_other\" == t ]]"
+
+# Kill holder 1's session -> its lock releases.
 exec {HOLD_KEEP}>&-      # close our kept fd
 kill "$HOLD_PID" 2>/dev/null
 wait "$HOLD_PID" 2>/dev/null
 sleep 1
-r3="$(_psql <<<"SELECT pg_try_advisory_lock($AGENT_SERVER_LOCK_KEY);")"
-check "holder 3 acquires after holder 1 dies" "[[ \"$r3\" == t ]]"
+r3="$(_psql <<<"SELECT pg_try_advisory_lock($AGENT_SERVER_LOCK_KEY::int, hashtext('$KIND'));")"
+check "holder 3 (same kind) acquires after holder 1 dies" "[[ \"$r3\" == t ]]"
 
 echo
 [[ $fail -eq 0 ]] && echo "ALL PASS" || { echo "FAILURES"; exit 1; }

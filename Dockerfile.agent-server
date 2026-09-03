@@ -1,0 +1,31 @@
+# agent-server image: one serial worker per kind. Carries gh + git + jq + psql + coreutils and the
+# agent runner. Postgres/Redis/hindsight run in OTHER containers; this reaches them by service name.
+# Build: docker build -f Dockerfile.agent-server -t agent-fleet/agent-server .
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash git jq curl ca-certificates coreutils postgresql-client gnupg \
+ && rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI (gh)
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- agent runner ---
+# Default: expects a runner mounted/available at $AGENT_SERVER_RUNNER. To bake a specific coding
+# agent (e.g. roktcode) into the image, add its install here and set AGENT_SERVER_RUNNER to it.
+# roktcode reads OPENAI_API_KEY from env (no cached login needed), so no creds mount is required.
+
+WORKDIR /app
+COPY bin/ ./bin/
+COPY lib/ ./lib/
+COPY tests/roktcode-runner.sh ./tests/roktcode-runner.sh
+RUN chmod +x bin/* tests/roktcode-runner.sh
+
+# Serial-per-kind worker. AGENT_SERVER_KIND selects the queue kind this container serves.
+# gh uses GH_TOKEN; roktcode uses OPENAI_API_KEY; both injected via env (compose env_file: .env).
+ENTRYPOINT ["bin/agent-server"]
