@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  agent-fleet SERIAL AGENT-SERVER (M1). Long-lived worker that drains the requests queue one at a
+  time. Unlike the producers (interval cron), this is KeepAlive: launchd restarts it if it exits.
+  The single-instance pg advisory lock makes a duplicate launch refuse to start, so KeepAlive is safe.
+
+  Copy to ~/Library/LaunchAgents/, fill placeholders, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.agent-fleet-agent-server.plist
+
+  Keep the DB password OUT of this plist. Prefer a wrapper that sources .env, or the keychain.
+  The wrapper must also export AGENT_SERVER_RUNNER (the agent runner) and the memory-stack env
+  (HINDSIGHT_URL, etc.) that the agent-server and its runner need.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.agent-fleet-agent-server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Point at a wrapper that sources .env then execs bin/agent-server, so secrets stay out of the plist. -->
+    <string>/ABSOLUTE/PATH/TO/ai-pr-automation/scripts/agent-server-launch.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>REQUESTS_DB_HOST</key><string>localhost</string>
+    <key>REQUESTS_DB_PORT</key><string>5432</string>
+    <key>REQUESTS_DB_USER</key><string>fleet</string>
+    <key>REQUESTS_DB_NAME</key><string>fleet</string>
+    <key>HINDSIGHT_URL</key><string>http://localhost:8888</string>
+    <key>AGENT_SERVER_SHARED_BANK</key><string>fleet-shared</string>
+  </dict>
+
+  <!-- Long-lived: restart on any exit (crash, wedged-server self-exit, sleep/wake). The advisory
+       lock prevents a double-runner; ThrottleInterval avoids a hot crash loop when Postgres is down. -->
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/CHANGE_ME/Library/Logs/agent-fleet-agent-server/out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/CHANGE_ME/Library/Logs/agent-fleet-agent-server/err.log</string>
+</dict>
+</plist>

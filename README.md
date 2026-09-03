@@ -1,19 +1,34 @@
 # AI PR Automation
 
-Fair, bounded automation for GitHub pull-request review and maintenance.
+Fair, bounded automation for GitHub pull-request review and maintenance — as a **pub/sub agent fleet**.
 
-The project handles scheduling, queue fairness, locking, time budgets, GitHub discovery, and prompt generation. You provide a small executable wrapper for your preferred coding agent.
+> **Architecture (M0–M2).** The original single-binary `bin/pr-automation` inline loop has been
+> retired. Work now flows through a durable queue:
+>
+> ```
+> bin/pr-producer  ──enqueue──▶  Postgres `requests`  ──drain──▶  bin/agent-server ──▶ posts review
+>   (cron: discover PRs)            (dedupe + record)               (serial, one at a time)
+> ```
+>
+> - **`bin/pr-producer <review|maintain>`** — discovers PRs (assigned / authored via `gh search`),
+>   applies the repo allowlist + stale-age cutoff, and enqueues one row per PR. Never runs an agent.
+> - **`bin/agent-server`** — long-lived serial worker; claims one request at a time, runs your agent
+>   runner, applies the write-path gate (server-owned memory writes; agent prose never auto-persists
+>   to shared memory), posts the review, marks the row terminal.
+> - Substrate (Postgres + Redis + memory/MCP stack) and full setup: **[`docker/README.md`](docker/README.md)**.
+> - launchd templates: `launchd/com.example.agent-fleet-{producer-reviews,producer-maintenance,agent-server}.plist.template`.
 
 ## Modes
 
-| Mode | GitHub query | Intended behavior |
+| Mode | GitHub query | Behavior |
 | --- | --- | --- |
-| `review` | Open PRs assigned to `@me` | Review only; submit `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` from verdict |
+| `review` | Open PRs assigned to `@me` | Review only; posts `COMMENT` or `REQUEST_CHANGES` from verdict (never auto-`APPROVE`) |
 | `maintain` | Open PRs authored by `@me` | Handle review feedback and CI with one bounded fix pass |
 
 ```bash
-bin/pr-automation review
-bin/pr-automation maintain
+bin/pr-producer review     # enqueue assigned PRs
+bin/pr-producer maintain   # enqueue authored PRs
+# bin/agent-server drains the queue (run it under launchd; see docker/README.md)
 ```
 
 ## Requirements
@@ -22,54 +37,37 @@ bin/pr-automation maintain
 - [GitHub CLI](https://cli.github.com/) authenticated with `gh auth login`
 - `jq`
 - GNU `timeout` (`timeout` on Linux, `gtimeout` from Homebrew coreutils on macOS)
-- An executable agent runner
+- Docker (for the substrate) + an executable agent runner
+- `psql` client (queue access)
 
 ## Quick start
 
-Clone and verify prerequisites:
+See **[`docker/README.md`](docker/README.md)** for the full bring-up (compose substrate, schema,
+producers, agent-server). In brief:
 
 ```bash
 gh auth status
 command -v timeout || command -v gtimeout
-git clone https://github.com/Zhachory1/ai-pr-automation.git
-cd ai-pr-automation
+cp .env.example .env    # fill CODE_ROOT, passwords, HINDSIGHT_API_LLM_API_KEY
+docker compose up -d    # substrate: Postgres + Redis + hindsight + memory stack
+scripts/m0-verify.sh    # substrate checks
+
+# enqueue (scoped to your repos) then let the agent-server drain:
+PR_PRODUCER_REPOSITORIES='owner/repo' bin/pr-producer review
 ```
 
-Create a safe print-only runner for setup validation:
-
-```bash
-mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/pr-automation-runner" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-cat "$1"
-EOF
-chmod +x "$HOME/.local/bin/pr-automation-runner"
-```
-
-Run a scoped dry run:
-
-```bash
-PR_AUTOMATION_RUNNER="$HOME/.local/bin/pr-automation-runner" \
-PR_AUTOMATION_REPOSITORIES='owner/repo' \
-PR_AUTOMATION_DRY_RUN=true \
-bin/pr-automation review
-```
-
-Then run one targeted print-only attempt and inspect logs:
-
-```bash
-PR_AUTOMATION_RUNNER="$HOME/.local/bin/pr-automation-runner" \
-PR_AUTOMATION_REPOSITORIES='owner/repo' \
-PR_AUTOMATION_ONLY='owner/repo#123' \
-bin/pr-automation review
-
-find "$HOME/.local/state/ai-pr-automation/logs" -name latest.log -print
-```
-
-Replace the print-only runner with your coding agent wrapper only after reviewing repository scope, provider data handling, GitHub permissions, and the generated prompts.
+The agent runner contract, queue fairness, and data-boundary guidance below still apply — the
+agent-server inherits them from the original design.
 
 ## Agent runner contract
+
+> **Note (M2 exit):** the reference sections below were written for the retired `bin/pr-automation`
+> loop and still use its `PR_AUTOMATION_*` env names and invocations. The *concepts* (runner
+> contract, per-attempt work root, queue ordering, stale cutoffs, data boundaries) carry over to
+> `bin/agent-server` + `bin/pr-producer`, but the exact variable names differ
+> (`AGENT_SERVER_RUNNER`, `PR_PRODUCER_REPOSITORIES`, …). For current, accurate setup use
+> **[`docker/README.md`](docker/README.md)**; treat the text below as design background pending a
+> full docs pass.
 
 Set `PR_AUTOMATION_REVIEW_RUNNER` and `PR_AUTOMATION_MAINTENANCE_RUNNER` to separate executable wrappers with mode-specific credentials. `PR_AUTOMATION_RUNNER` is an explicit shared fallback. The scheduler calls the selected runner with one argument: the generated prompt-file path.
 

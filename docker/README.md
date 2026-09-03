@@ -114,7 +114,8 @@ Dedupe is two-layered (see `lib/queue.sh`):
   a **failed** head IS re-enqueued (a transient error should retry; permanent poison-PR protection is a future `max_attempts` concern, not a dead-letter here).
 - a PR whose head advanced gets a **new** dedupe_key → a fresh row (re-review on the new commit).
 
-launchd templates: `launchd/com.example.agent-fleet-producer-{reviews,maintenance}.plist.template`.
-Run these **alongside** the legacy `bin/pr-automation` cron during the M2 trust period; retire the
-old inline loop only once the queue path is trusted (roadmap M2 exit). Keep the queue DB password
-out of the plist — source `.env` from a wrapper or use the keychain.
+launchd templates: `launchd/com.example.agent-fleet-producer-{reviews,maintenance}.plist.template`
+(the producers) and `com.example.agent-fleet-agent-server.plist.template` (the drain worker). The
+legacy `bin/pr-automation` inline loop has been retired (M2 exit) — the producers + agent-server
+fully replace it. Keep the queue DB password out of the plist — source `.env` via
+`scripts/agent-server-launch.sh` (the agent-server wrapper) or use the keychain.
