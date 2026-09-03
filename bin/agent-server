@@ -112,12 +112,12 @@ hindsight_retain() {
 github_already_reviewed() {
   local repo="$1" pr="$2" sha="$3" login="$4"
   local marker="<!-- ai-pr-automation head=$sha -->"
-  {
-    "$TIMEOUT_BIN" --kill-after=5s 60s gh api --paginate "repos/$repo/pulls/$pr/reviews" \
-      --jq '.[] | select(.state != "DISMISSED" and .state != "PENDING") | [.user.login, (.body // "")] | @tsv' 2>/dev/null || true
-    "$TIMEOUT_BIN" --kill-after=5s 60s gh api --paginate "repos/$repo/issues/$pr/comments" \
-      --jq '.[] | [.user.login, (.body // "")] | @tsv' 2>/dev/null || true
-  } | awk -F '\t' -v login="$login" -v marker="$marker" '$1 == login && index($0, marker) { found=1 } END { exit !found }'
+  # "Posted" truth = a REVIEW (not a plain comment) that WE authored carrying this exact marker.
+  # Scoping to reviews-only + our login means a marker pasted by anyone else, or in a mere issue
+  # comment, cannot suppress a required review.
+  "$TIMEOUT_BIN" --kill-after=5s 60s gh api --paginate "repos/$repo/pulls/$pr/reviews" \
+    --jq '.[] | select(.state != "DISMISSED" and .state != "PENDING") | [.user.login, (.body // "")] | @tsv' 2>/dev/null \
+  | awk -F '\t' -v login="$login" -v marker="$marker" '$1 == login && index($0, marker) { found=1 } END { exit !found }'
 }
 
 process_one() {

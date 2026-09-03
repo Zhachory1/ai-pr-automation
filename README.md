@@ -273,13 +273,19 @@ Tool-specific CLI tokens can be separate from MCP OAuth. For example, a CI CLI m
 
 ## launchd setup
 
-Templates are in [`launchd/`](launchd/). Replace:
+The fleet primarily runs via `docker compose` (see [`docker/README.md`](docker/README.md)) — the
+agent-servers are containers. launchd is used for the **producers** (cron discovery that enqueues):
+[`launchd/com.example.agent-fleet-producer-{reviews,maintenance}.plist.template`](launchd/), and
+optionally the non-container [`agent-server`](launchd/com.example.agent-fleet-agent-server.plist.template)
+for a host-run worker. Copy a template to `~/Library/LaunchAgents/`, fill the placeholders, keep the
+DB password out of the plist (source `.env` via a wrapper or use the keychain), then
+`launchctl bootstrap gui/$(id -u) <plist>`.
 
-- `__INSTALL_DIR__` with this repository's absolute path
-- `__HOME__` with your home directory
-- `__RUNNER__` with your agent runner's absolute path
-- `__REPOSITORIES__` with a comma-separated exact repository allowlist
-- `__LABEL_PREFIX__` with a reverse-DNS prefix you own, such as `com.yourname`
+The sections below describe the original single-binary env contract (`PR_AUTOMATION_*`); the current
+env names are `AGENT_SERVER_*` / `PR_PRODUCER_*` (see `docker/README.md` and `.env.example`). Retained
+as design background pending a full docs pass.
+
+### (legacy env reference)
 - `__GITHUB_ACCOUNT__` with the exact account shown by `gh auth status`
 
 Copy them to `~/Library/LaunchAgents/`, then load:
@@ -323,11 +329,15 @@ The repository files are templates; copy them to names without `.template` after
 ## Testing
 
 ```bash
-bash -n bin/pr-automation
-bash tests/test-scheduler.sh
+# queue layer: parameterized SQL (';DROP fixture), claim/reclaim/posted_ref state machine
+bash tests/test-queue-injection.sh
+# per-kind single-instance advisory lock
+bash tests/test-single-instance.sh
+# producer enqueue + dedupe semantics
+bash tests/test-producer-dedupe.sh
 ```
 
-The test uses fixture PR data and fake runner/timeout executables. It does not contact GitHub or an AI provider.
+The tests use a throwaway `postgres:16` container. They do not contact GitHub or an AI provider.
 
 ## Exit status and operational notes
 

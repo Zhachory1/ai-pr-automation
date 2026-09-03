@@ -28,6 +28,8 @@
     <!-- Scope: never enqueue out-of-scope repos. -->
     <key>PR_PRODUCER_REPOSITORIES</key><string>owner/repo1,owner/repo2</string>
     <key>PR_PRODUCER_MAX_UPDATED_AGE_DAYS</key><string>14</string>
+    <!-- Stop re-reviewing a PR head after this many failed attempts (poison-PR guard). 0 disables. -->
+    <key>PR_PRODUCER_MAX_ATTEMPTS</key><string>3</string>
   </dict>
 
   <key>StartCalendarInterval</key>
