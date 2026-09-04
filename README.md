@@ -14,7 +14,8 @@ Fair, bounded automation for GitHub pull-request review and maintenance — as a
 >   applies the repo allowlist + stale-age cutoff, and enqueues one row per PR. Never runs an agent.
 > - **`bin/agent-server`** — long-lived serial worker; claims one request at a time, runs your agent
 >   runner, applies the write-path gate (server-owned memory writes; agent prose never auto-persists
->   to shared memory), posts the review, marks the row terminal.
+>   to shared memory), posts the review, marks the row terminal. Blocked maintenance findings enter
+>   the local human-review queue instead of disappearing with the worker workspace.
 > - Substrate (Postgres + Redis + memory/MCP stack) and full setup: **[`docker/README.md`](docker/README.md)**.
 > - launchd templates: `launchd/com.example.agent-fleet-{producer-reviews,producer-maintenance,agent-server}.plist.template`.
 
@@ -176,6 +177,9 @@ Maintenance mode prompts enforce:
 - at most one low-risk fix pass
 - changed files must finish committed+pushed, reverted to a clean diff, or explicitly blocked by permission/head/conflict
 - fixed review comments receive commit/validation replies and are resolved when possible
+- ambiguous maintenance findings enter the local human-review queue at `http://localhost:8080`; use
+  **Reviewed** or **Dismiss** after handling them. These controls update local queue state only —
+  they never write to GitHub.
 - focused validation
 - at most one unrelated CI-flake retry
 
