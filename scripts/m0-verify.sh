@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # M0 substrate verification. Runs the six PRD exit checks, prints pass/fail per check.
-# Prereq: cp .env.example .env, fill values, docker compose up -d.
+# Prereq: cp .env.example .env, fill values, scripts/compose.sh up -d.
 set -uo pipefail
 cd "$(dirname "$0")/.." || { echo "FATAL: cannot cd to repo root"; exit 1; }
 set -a; [ -f .env ] && . ./.env; set +a
-TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
-
+"$PWD/scripts/validate-swarmvault-vault.sh" || exit 2
 pass=0; fail=0
 ok(){ echo "  PASS: $1"; pass=$((pass+1)); }
 no(){ echo "  FAIL: $1"; fail=$((fail+1)); }
@@ -43,13 +42,47 @@ else
     || no "hindsight recall did not return the retained fact (check API paths / embedding delay)"
 fi
 
-echo "[4/6] swarmvault MCP answers against mounted vault"
-if [[ -n "$TIMEOUT_BIN" ]] && docker image inspect agent-fleet/swarmvault >/dev/null 2>&1; then
-  printf '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n' \
-    | "$TIMEOUT_BIN" 30 docker compose run --rm --no-deps -T swarmvault-watch swarmvault mcp 2>/dev/null | grep -q '"result"' \
-    && ok "swarmvault mcp" || no "swarmvault mcp introspection"
+echo "[4/6] swarmvault internal MCP bridge"
+if docker image inspect agent-fleet/swarmvault >/dev/null 2>&1 \
+   && docker compose up -d swarmvault-watch swarmvault-mcp >/dev/null 2>&1 \
+   && docker compose exec -T swarmvault-mcp node - <<'NODE'
+const endpoint = "http://127.0.0.1:9760/mcp";
+const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+async function rpc(payload, session) {
+  const response = await fetch(endpoint, { method: "POST", headers: { ...headers, ...(session ? { "mcp-session-id": session } : {}) }, body: JSON.stringify(payload) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffered += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let newline;
+    while ((newline = buffered.indexOf("\n")) >= 0) {
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      if (!line.startsWith("data: ")) continue;
+      const message = JSON.parse(line.slice(6));
+      if (message.error) throw new Error(message.error.message);
+      if (message.result) return { message, session: response.headers.get("mcp-session-id") || session };
+    }
+    if (done) throw new Error("MCP response ended without a result");
+  }
+}
+(async () => {
+  const init = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "m0-verify", version: "1" } } });
+  if (!init.session) throw new Error("missing MCP session id");
+  const initialized = await fetch(endpoint, { method: "POST", headers: { ...headers, "mcp-session-id": init.session }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) });
+  if (!initialized.ok) throw new Error(`initialized HTTP ${initialized.status}`);
+  const tools = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, init.session);
+  if (!Array.isArray(tools.message.result.tools)) throw new Error("tools/list returned no tools");
+})().catch(error => { console.error(error.message); process.exit(1); });
+NODE
+   && ! docker compose exec -T swarmvault-mcp sh -c 'touch /vault/.mcp-write-probe'
+then
+  ok "swarmvault MCP tools/list + read-only vault"
 else
-  no "swarmvault image or GNU timeout missing"
+  no "swarmvault MCP bridge or read-only vault (check docker compose logs swarmvault-mcp)"
 fi
 
 echo "[5/6] coderag UI + internal MCP bridge"
@@ -108,7 +141,7 @@ else
 fi
 
 echo "[6/6] durability across down/up"
-echo "  MANUAL: docker compose down && docker compose up -d && re-run this script;"
+echo "  MANUAL: scripts/compose.sh down && scripts/compose.sh up -d && re-run this script;"
 echo "          request rows, hindsight memory, swarmvault vault, coderag graph must survive."
 
 echo

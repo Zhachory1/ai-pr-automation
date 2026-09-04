@@ -7,7 +7,7 @@ One `docker-compose.yml` (repo root) + this dir. Stands up the services the seri
 
 ```bash
 cp .env.example .env      # then edit: CODE_ROOT (host-absolute), passwords, provider
-docker compose up -d --build  # builds and starts all local services
+scripts/compose.sh up -d --build  # validates vault path, then builds and starts all services
 scripts/m0-verify.sh      # runs the six exit checks
 ```
 
@@ -33,7 +33,7 @@ across agents** — the transport differs but none is spawned-fresh-per-agent-wi
 | redis | TCP 6379 | yes, `up` |
 | hindsight (+ hindsight-db) | network service, HTTP :8888 / UI :9999 | yes, `up` |
 | coderag (codebase-memory-mcp) | **shared coordination daemon** + per-agent thin stdio frontend | yes, `up` (daemon) |
-| swarmvault | **shared vault volume + `watch` daemon**; per-agent stdio MCP is read+trigger only | yes, `up` (watcher) |
+| swarmvault | **shared vault volume + `watch` daemon**; internal HTTP MCP bridge | yes, `up` |
 
 ### coderag — native shared daemon (verified)
 
@@ -50,10 +50,10 @@ so the bridge cannot create a private graph. Agent configuration lands in a late
 
 swarmvault's MCP is stdio, but sharing does NOT go through the MCP as a content-write path. Model:
 
-- One **shared vault dir** on a host volume; a persistent `swarmvault watch` container ingests it.
-- Agents **write doc files directly into the vault dir** (filesystem — distinct files, no
-  contention), then call the MCP only to **signal ingest / query**. The MCP is read + trigger,
-  never a content-write RPC.
+- One **Finder-visible shared vault dir** outside `CODE_ROOT`; persistent watcher ingests it.
+- `swarmvault-mcp` exposes Streamable HTTP at `http://swarmvault-mcp:9760/mcp` on the Compose
+  network. It mounts the vault read-only, so agent MCP calls cannot write or promote content.
+- Agents use the MCP for read/query. The watcher is the only fleet component with vault write access.
 - Content-trust gate still applies to the SHARED vault: a malicious PR could make an agent drop an
   injected doc and trigger ingest → poisoned recall. Run-scoped scratch docs = free; promotion into
   the shared vault = server-gated + provenance-tagged (same discipline as hindsight; enforced in M1
@@ -62,8 +62,8 @@ swarmvault's MCP is stdio, but sharing does NOT go through the MCP as a content-
 ## Building the optional services
 
 ```bash
-docker compose build coderag swarmvault-watch
-docker compose up -d coderag swarmvault-watch
+scripts/compose.sh build coderag swarmvault-watch swarmvault-mcp
+scripts/compose.sh up -d coderag swarmvault-watch swarmvault-mcp
 ```
 
 Both images build from pinned upstream commits. `coderag` starts codebase-memory-mcp's permanent

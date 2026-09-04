@@ -5,7 +5,7 @@ Sources verified 2026-09-02 via `gh` (repo contents/READMEs). Key facts cited in
 
 ## Architecture
 
-Five services, one `docker-compose.yml` in `ai-pr-automation`. Split by transport, which is the
+One `docker-compose.yml` in `ai-pr-automation`. Split by transport, which is the
 load-bearing design fact discovered while reading the repos:
 
 | Service | Transport | Long-running? | Notes |
@@ -13,7 +13,7 @@ load-bearing design fact discovered while reading the repos:
 | our Postgres | TCP 5432 | yes | request tracking (`requests`, `pending_decisions`). |
 | Redis | TCP 6379 | yes | dispatch (used M1+; stood up now). |
 | hindsight | **HTTP :8888 / UI :9999** | yes | network service; per-bank MCP at `/mcp/{bank}/`. Has its own pgvector Postgres (`hindsight-db`). |
-| swarmvault | **stdio MCP** (`swarmvault mcp`) + local watcher | yes | Compose watcher owns mounted vault. MCP still starts per client. |
+| swarmvault | local watcher + internal HTTP MCP bridge | yes | Watcher owns RW vault. Bridge exposes read-only MCP. |
 | coderag | **stdio MCP** (static binary) + local UI | yes | Compose keeps daemon stdin open. Index is limited to `${CODE_ROOT}` read-only. |
 
 ### Transport now
@@ -21,7 +21,7 @@ load-bearing design fact discovered while reading the repos:
 MCP uses stdio. Shared local state needs long-running services.
 
 - hindsight runs HTTP with healthcheck.
-- swarmvault watcher runs in Compose over mounted vault. `swarmvault mcp` still starts per client.
+- swarmvault watcher runs in Compose over mounted vault. Internal bridge converts stdio MCP to HTTP.
 - coderag keeps its native daemon and local UI alive. UI is localhost-only. Code mount is read-only.
 - agent clients must use same `CBM_CACHE_DIR` before attaching to coderag daemon.
 
@@ -92,7 +92,7 @@ Schema shipped as a migration file the Postgres service runs on first boot
   hindsight's is pgvector-specific and its schema is theirs; coupling buys nothing and risks their
   migrations touching our tables.
 - **One `.sql` init file, no migration framework.** M0 has one schema version; a tool is premature.
-- **swarmvault/coderag as local sidecars.** User needs durable watcher and graph UI. MCP stays stdio.
+- **swarmvault/coderag as local sidecars.** User needs durable watcher and graph UI. Stdio MCP gets internal HTTP bridge.
 
 ## Observability / rollout
 
