@@ -218,6 +218,10 @@ services:
         condition: service_healthy
       hindsight:
         condition: service_healthy
+      coderag:
+        condition: service_healthy
+      swarmvault-mcp:
+        condition: service_healthy
 
   # Second kind: identical except AGENT_SERVER_KIND. maintain PRs push fix commits, so its GH_TOKEN
   # (in .env, or a kind-specific token) needs Contents:write; review's token can stay read-only.
@@ -246,6 +250,10 @@ services:
       db-requests:
         condition: service_healthy
       hindsight:
+        condition: service_healthy
+      coderag:
+        condition: service_healthy
+      swarmvault-mcp:
         condition: service_healthy
       schema-migrate:
         condition: service_completed_successfully

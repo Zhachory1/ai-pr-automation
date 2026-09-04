@@ -34,10 +34,12 @@ COPY agent-config/ ./agent-config/
 RUN chmod +x bin/*
 
 # mewritecode discovers skills/agents/mcp from this dir (vendored: pr-review + deps, personas,
-# buildkite MCP — no secrets; Buildkite auth is BUILDKITE_API_TOKEN via env at runtime).
+# Buildkite MCP plus internal Coderag and SwarmVault HTTP MCP bridges; Buildkite auth is
+# BUILDKITE_API_TOKEN via env at runtime).
 ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
 
 # Serial-per-kind worker. AGENT_SERVER_KIND selects the queue kind this container serves.
 # gh uses GH_TOKEN; mewritecode uses OPENAI_API_KEY; buildkite MCP uses BUILDKITE_API_TOKEN.
+# Coderag and SwarmVault MCP bridges use only internal Compose DNS.
 # All injected via env (compose env_file: .env). No creds baked into the image.
 ENTRYPOINT ["bin/agent-server"]
