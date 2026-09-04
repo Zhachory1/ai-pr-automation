@@ -52,6 +52,7 @@ command -v timeout || command -v gtimeout
 cp .env.example .env    # fill CODE_ROOT, passwords, HINDSIGHT_API_LLM_API_KEY
 scripts/compose.sh up -d --build  # validates vault path, then builds and starts local fleet
 scripts/m0-verify.sh    # substrate checks
+scripts/verify-agent-mcps.sh  # worker -> bridge -> MCP tool-call checks
 
 # enqueue (scoped to your repos) then let the agent-server drain:
 PR_PRODUCER_REPOSITORIES='owner/repo' bin/pr-producer review
