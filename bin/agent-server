@@ -92,7 +92,9 @@ apply_write_path_gate() {
   hindsight_retain "$SHARED_BANK" "$fact" || log "gate: shared-fact retain failed (non-fatal)"
   # Memory proposals await memory-specific human review. Blocked maintenance work uses its own
   # local queue so marking it handled cannot authorize a shared-memory write.
-  if jq -e '(.memory.decisions // [] | length) > 0' "$result" >/dev/null 2>&1; then
+  local decisions
+  decisions="$(jq -c 'if (.memory | type) == "object" then (.memory.decisions // []) else [] end' "$result")"
+  if valid_memory_decisions <<<"$decisions"; then
     local proposal; proposal="$(jq -c '{decisions: (.memory.decisions // []), findings: (.findings // []), summary: (.summary // "")}' "$result")"
     pending_decision_insert "$id" "$kind" "$proposal" "$prov" \
       && log "gate: routed agent-authored proposal to pending_decisions"
@@ -334,13 +336,18 @@ Boundaries:
   Use this marker, NOT any skill-default marker. Before posting, search existing reviews/comments
   for it and skip if present.
 - Emit typed structured output to: $work_root/result.json
-    {"nonce":"$nonce","verdict":"comment|request-changes","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"ready_for_human_review":true|false,"memory":{"decisions":[..]}}
+    {"nonce":"$nonce","verdict":"comment|request-changes","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"ready_for_human_review":true|false,"memory":{"decisions":[{"scope":"repository","rule":"...","rationale":"..."}]}}
   The nonce MUST equal exactly: $nonce
   Set ready_for_human_review to TRUE only when, after reviewing exactly this commit, you found no
   blocking issues and believe the PR is ready for a human to approve+merge. This does NOT approve the
   PR — it only surfaces it on the operator's human-review stack for a human decision. If you set it
   true, still post your COMMENT review (never APPROVE). When there are blocking findings, set it false.
-  Only 'decisions' bodies are considered for durable memory, and only via human review; do not expect free-text to be stored.
+  `memory.decisions` is eligible for durable memory only via human review. It MUST be either `[]` or
+  a non-empty array where every item is exactly structured as
+  `{"scope":"repository","rule":"non-empty stable reusable rule","rationale":"non-empty reason"}`;
+  `scope` must be exactly `repository` or `fleet`. Emit a non-empty array ONLY for stable reusable rules.
+  Ordinary PR findings, review URLs/SHA, run status, and temporary validation limits MUST leave
+  `memory.decisions` empty. Do not expect any other free-text to be stored.
 - Finish within the external timeout.
 PROMPT
 }
@@ -401,11 +408,16 @@ Push rules (the branch is yours; still strict):
 - Do NOT merge, close, or dismiss.
 
 Emit typed structured output to: $work_root/result.json
-    {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"maintenance":{"needs_human_review":true|false},"memory":{"decisions":[..]}}
+    {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"maintenance":{"needs_human_review":true|false},"memory":{"decisions":[{"scope":"repository","rule":"...","rationale":"..."}]}}
   The nonce MUST equal exactly: $nonce. Set maintenance.needs_human_review to true ONLY when you
   skipped unresolved feedback because it needs human judgment; otherwise false. 'summary' should list:
-  fixes committed+pushed, threads replied/resolved, and anything skipped as pending. Only 'decisions'
-  bodies are eligible for durable memory, via human review only.
+  fixes committed+pushed, threads replied/resolved, and anything skipped as pending.
+  `memory.decisions` is eligible for durable memory only via human review. It MUST be either `[]` or
+  a non-empty array where every item is exactly structured as
+  `{"scope":"repository","rule":"non-empty stable reusable rule","rationale":"non-empty reason"}`;
+  `scope` must be exactly `repository` or `fleet`. Emit a non-empty array ONLY for stable reusable rules.
+  Ordinary PR findings, review URLs/SHA, run status, and temporary validation limits MUST leave
+  `memory.decisions` empty.
 - Finish within the external timeout.
 PROMPT
 }

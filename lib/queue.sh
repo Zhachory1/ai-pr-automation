@@ -138,6 +138,11 @@ RETURNING 1;
 SQL
 }
 
+# A durable decision is an explicit reusable rule, never a run summary or finding.
+valid_memory_decisions() {
+  jq -e 'type == "array" and length > 0 and all(.[]; type == "object" and (keys | sort) == ["rationale","rule","scope"] and (.scope == "repository" or .scope == "fleet") and (.rule | type == "string" and test("\\S")) and (.rationale | type == "string" and test("\\S")))' >/dev/null 2>&1
+}
+
 # Route an agent-authored memory proposal to its human batch. NEVER auto-writes shared memory.
 pending_decision_insert() {
   local request_id="$1" kind="$2" proposal_json="$3" provenance_json="$4"
