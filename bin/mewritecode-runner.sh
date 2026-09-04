@@ -23,7 +23,7 @@ printf '%s\n' "$out" | tail -20 >&2
 if ! jq -e --arg n "$AGENT_RUN_NONCE" '.nonce == $n' "$AGENT_RESULT_FILE" >/dev/null 2>&1; then
   log "agent did not write a valid result.json; synthesizing minimal one"
   jq -cn --arg nonce "$AGENT_RUN_NONCE" --arg summary "$(printf '%s' "$out" | tail -c 800)" \
-    '{nonce:$nonce, verdict:"comment", findings:[], summary:$summary, memory:{decisions:[]}}' \
+    '{nonce:$nonce, verdict:"comment", findings:[], summary:$summary, ready_for_human_review:false, memory:{decisions:[]}}' \
     > "$AGENT_RESULT_FILE"
 fi
 
