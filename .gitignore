@@ -1,5 +1,6 @@
 .env
 *.local
+__pycache__/
 .workflow-runs/
 .e2e-work/
 .swarmvault-vault/

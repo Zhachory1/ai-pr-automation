@@ -36,7 +36,7 @@ services:
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
     volumes:
       - ./docker/initdb:/migrations:ro
-    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql"]
+    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql -f /migrations/04-pending-decision-approval.sql"]
     depends_on:
       db-requests:
         condition: service_healthy
@@ -225,6 +225,8 @@ services:
       PR_PRODUCER_REPOSITORIES: ${PR_PRODUCER_REPOSITORIES:-}
       PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
       PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
+      HINDSIGHT_URL: http://hindsight:8888
+      STATUS_BIND: 0.0.0.0
     depends_on:
       db-requests:
         condition: service_healthy

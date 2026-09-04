@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Status and human-review web view for the agent fleet (M3 read + M4 write).
+"""Status and human-review web view for the agent fleet (M3 read + M4 writes).
 
 Serves one auto-refreshing HTML page over the request Postgres. Writes are a SMALL whitelisted set:
-cancel a queued row, force-inject a PR, or mark local human-review work reviewed/dismissed — never
-f-string SQL or GitHub actions. All dynamic values are HTML-escaped (request data is attacker-influenced).
+cancel a queued row, force-inject a PR, update local human-review work, or retain an approved stored
+decision to configured Hindsight shared memory — never f-string SQL or GitHub actions. All dynamic values
+are HTML-escaped (request data is attacker-influenced).
 
 Binds 127.0.0.1 in-code (not just compose). No auth by design (localhost single-user); writes are
 CSRF-guarded (POST + custom header + Origin + Host + per-render token). Config from env:
 REQUESTS_DB_HOST/PORT/USER/NAME + PGPASSWORD; PR_PRODUCER_ORGS/REPOSITORIES/ALLOW_ALL_REPOS reuse the
-producer's repo allowlist so inject cannot target an out-of-scope repo.
+producer's repo allowlist so inject cannot target an out-of-scope repo; HINDSIGHT_URL configures
+memory promotion to fleet-shared.
 """
 import html
 import json
@@ -19,7 +21,8 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
+from urllib.request import Request, urlopen
 
 DB = {
     "host": os.environ.get("REQUESTS_DB_HOST", "db-requests"),
@@ -29,6 +32,9 @@ DB = {
 }
 PORT = int(os.environ.get("STATUS_PORT", "8080"))
 REFRESH_SECONDS = int(os.environ.get("STATUS_REFRESH_SECONDS", "5"))
+HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "http://hindsight:8888").rstrip("/")
+HINDSIGHT_SHARED_BANK = "fleet-shared"
+PUBLISH_LOCK = threading.Lock()
 # Reuse the producer's repo-scope semantics so inject cannot target out-of-scope repos.
 ALLOWED_REPOS = set(filter(None, os.environ.get("PR_PRODUCER_REPOSITORIES", "").split(",")))
 ALLOWED_ORGS = set(filter(None, os.environ.get("PR_PRODUCER_ORGS", "").split(",")))
@@ -117,6 +123,102 @@ def update_human_review_state(review_id: int, state: str) -> str:
     return f"{state} human-review #{review_id}" if proc.stdout.strip() else f"#{review_id} not pending"
 
 
+def _decision_from_psql(proc: subprocess.CompletedProcess) -> dict | None:
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "pending-decision update failed")
+    return json.loads(proc.stdout) if proc.stdout.strip() else None
+
+
+def claim_pending_decision(decision_id: int) -> dict | None:
+    proc = _psql(["-v", f"id={decision_id}"],
+                 "UPDATE pending_decisions SET state = 'publishing', publish_started_at = now(), "
+                 "publish_error = NULL WHERE id = :'id'::bigint AND state = 'pending' "
+                 "RETURNING json_build_object('id', id, 'request_id', request_id, 'kind', kind, "
+                 "'proposal', proposal, 'provenance', provenance)::text")
+    return _decision_from_psql(proc)
+
+
+def retry_publishing_decision(decision_id: int) -> dict | None:
+    proc = _psql(["-v", f"id={decision_id}"],
+                 "SELECT json_build_object('id', id, 'request_id', request_id, 'kind', kind, "
+                 "'proposal', proposal, 'provenance', provenance)::text FROM pending_decisions "
+                 "WHERE id = :'id'::bigint AND state = 'publishing'")
+    return _decision_from_psql(proc)
+
+
+def reject_pending_decision(decision_id: int) -> str:
+    proc = _psql(["-v", f"id={decision_id}"],
+                 "UPDATE pending_decisions SET state = 'rejected', decided_at = now() "
+                 "WHERE id = :'id'::bigint AND state = 'pending' RETURNING id")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "pending-decision update failed")
+    return f"rejected pending-decision #{decision_id}" if proc.stdout.strip() else f"#{decision_id} not pending"
+
+
+def _mark_decision_publish_error(decision_id: int, error: str) -> None:
+    proc = _psql(["-v", f"id={decision_id}", "-v", f"error={error}"],
+                 "UPDATE pending_decisions SET publish_error = :'error' "
+                 "WHERE id = :'id'::bigint AND state = 'publishing'")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "pending-decision error update failed")
+
+
+def _retain_decision(decision: dict) -> None:
+    decision_id = int(decision["id"])
+    content = json.dumps({"pending_decision_id": decision_id, "proposal": decision["proposal"],
+                          "provenance": decision["provenance"]}, sort_keys=True, separators=(",", ":"))
+    payload = json.dumps({
+        "async": False,
+        "items": [{
+            "content": content,
+            "document_id": f"pending-decision-{decision_id}",
+            "metadata": {"pending_decision_id": str(decision_id),
+                         "request_id": str(decision["request_id"]), "kind": str(decision["kind"])},
+            "tags": ["human-approved", "pending-decision"],
+            "update_mode": "replace",
+        }],
+    }).encode()
+    request = Request(f"{HINDSIGHT_URL}/v1/default/banks/{quote(HINDSIGHT_SHARED_BANK, safe='')}/memories",
+                      data=payload, headers={"content-type": "application/json"}, method="POST")
+    response = urlopen(request, timeout=60)
+    try:
+        result = json.loads(response.read())
+    finally:
+        response.close()
+    if not (isinstance(result, dict) and result.get("success") is True and result.get("async") is False
+            and result.get("bank_id") == HINDSIGHT_SHARED_BANK and result.get("items_count") == 1):
+        raise RuntimeError("unexpected Hindsight retain response")
+
+
+def _publish_decision(decision: dict) -> str:
+    decision_id = int(decision["id"])
+    try:
+        _retain_decision(decision)
+        proc = _psql(["-v", f"id={decision_id}"],
+                     "UPDATE pending_decisions SET state = 'approved', decided_at = now(), publish_error = NULL "
+                     "WHERE id = :'id'::bigint AND state = 'publishing' RETURNING id")
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "pending-decision approval update failed")
+        if not proc.stdout.strip():
+            raise RuntimeError("pending-decision no longer publishing")
+    except Exception as ex:
+        _mark_decision_publish_error(decision_id, f"publish failed ({type(ex).__name__})")
+        return f"publish failed; retry pending-decision #{decision_id}"
+    return f"approved pending-decision #{decision_id}"
+
+
+def approve_pending_decision(decision_id: int) -> str:
+    with PUBLISH_LOCK:
+        decision = claim_pending_decision(decision_id)
+        return _publish_decision(decision) if decision else f"#{decision_id} not pending"
+
+
+def retry_pending_decision(decision_id: int) -> str:
+    with PUBLISH_LOCK:
+        decision = retry_publishing_decision(decision_id)
+        return _publish_decision(decision) if decision else f"#{decision_id} not publishing"
+
+
 def e(v) -> str:
     """HTML-escape a value. ALL dynamic data goes through here (attacker-influenced)."""
     return html.escape("" if v is None else str(v))
@@ -176,6 +278,47 @@ def human_review_table(rows: list[list[str]]) -> str:
             "<th>findings</th><th>created</th><th>queue</th></tr></thead><tbody>" + body + "</tbody></table></section>")
 
 
+def json_html(raw: str) -> str:
+    try:
+        return f"<pre>{e(json.dumps(json.loads(raw), indent=2, sort_keys=True))}</pre>"
+    except (TypeError, json.JSONDecodeError):
+        return f"<pre>{e(raw)}</pre>"
+
+
+def pending_decision_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return "<section><h2>Pending decisions (0)</h2><p class=empty>no pending decisions</p></section>"
+    body = ""
+    for decision_id, request_id, kind, url, proposal, provenance, state, created, started, publish_error in rows:
+        try:
+            proposal_data = json.loads(proposal)
+        except (TypeError, json.JSONDecodeError):
+            proposal_data = {}
+        summary = proposal_data.get("summary", "") if isinstance(proposal_data, dict) else ""
+        decisions = proposal_data.get("decisions", []) if isinstance(proposal_data, dict) else []
+        findings = proposal_data.get("findings", []) if isinstance(proposal_data, dict) else []
+        if state == "pending":
+            actions = (f'<form class=inline method=post action="/pending-decisions/{e(decision_id)}/approve">'
+                       f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Approve</button></form>'
+                       f'<form class=inline method=post action="/pending-decisions/{e(decision_id)}/reject">'
+                       f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Reject</button></form>')
+        else:
+            actions = (f'<form class=inline method=post action="/pending-decisions/{e(decision_id)}/retry">'
+                       f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Retry</button></form>')
+        status = e(state) + (f"<br><span class=err>{e(publish_error)}</span>" if publish_error else "")
+        body += ("<tr>"
+                 f"<td>{e(decision_id)}</td><td>{github_pr_link(url)}</td><td>{e(kind)}</td>"
+                 f"<td>{e(summary).replace(chr(10), '<br>')}<details><summary>proposal</summary>{json_html(proposal)}</details></td>"
+                 f"<td>{json_html(json.dumps(decisions))}</td><td>{findings_html(json.dumps(findings))}</td>"
+                 f"<td>{json_html(provenance)}</td><td>{status}<br>{e(started or created)}</td><td>{actions}</td></tr>")
+    return (f"<section><h2>Pending decisions ({len(rows)})</h2>"
+            "<p class=hint>Approve retains stored proposal and provenance to shared memory. Publishing items retry "
+            "with the same document ID; reject only changes this local queue.</p>"
+            "<table><thead><tr><th>id</th><th>source PR</th><th>kind</th><th>summary / proposal</th>"
+            "<th>decisions</th><th>findings</th><th>provenance</th><th>state</th><th>decision</th>"
+            "</tr></thead><tbody>" + body + "</tbody></table></section>")
+
+
 def table(title: str, headers: list[str], rows: list[list[str]], empty: str) -> str:
     if not rows:
         return f"<section><h2>{e(title)}</h2><p class=empty>{e(empty)}</p></section>"
@@ -211,8 +354,11 @@ def render(flash: str = "") -> str:
             "FROM pending_maintenance_reviews d JOIN requests r ON r.id = d.request_id "
             "WHERE d.state='pending' ORDER BY d.created_at DESC")
         pending = query(
-            "SELECT id, request_id, kind, to_char(created_at,'MM-DD HH24:MI') "
-            "FROM pending_decisions WHERE state='pending' ORDER BY created_at DESC LIMIT 20")
+            "SELECT d.id, d.request_id, d.kind, coalesce(r.payload->>'url',''), d.proposal::text, "
+            "d.provenance::text, d.state, to_char(d.created_at,'MM-DD HH24:MI'), "
+            "coalesce(to_char(d.publish_started_at,'MM-DD HH24:MI'),''), coalesce(d.publish_error,'') "
+            "FROM pending_decisions d JOIN requests r ON r.id = d.request_id "
+            "WHERE d.state IN ('pending','publishing') ORDER BY d.created_at DESC LIMIT 20")
         today = query(
             "SELECT kind, status, count(*) FROM requests "
             "WHERE created_at::date = now()::date GROUP BY kind, status ORDER BY kind, status")
@@ -228,8 +374,6 @@ def render(flash: str = "") -> str:
 
     banner = (f"<p class=err>DB unreachable: {e(db_err)}</p>" if db_err else "")
     flash_html = f"<p class=flash>{e(flash)}</p>" if flash else ""
-    pending_n = len(pending)
-
     # Queued section: each row gets a cancel button (POST /cancel, token+method-guarded).
     if queued:
         qrows = "".join(
@@ -258,6 +402,8 @@ def render(flash: str = "") -> str:
  th{{color:var(--mut);font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}}
  tr:last-child td{{border-bottom:none}}
  td{{max-width:60ch;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem}}
+ pre{{white-space:pre-wrap;margin:.4rem 0;font:inherit}}
+ details summary{{cursor:pointer;color:var(--mut)}}
  .empty{{color:var(--mut)}} .hint{{color:var(--mut)}} .err{{color:#ff6b6b;font-weight:600}}
  .flash{{color:#111;background:#7ee787;border-radius:6px;padding:.4rem .7rem;font-weight:600}}
  .chip{{display:inline-block;padding:.05rem .5rem;border-radius:999px;font-size:.75rem;font-weight:600;font-family:system-ui}}
@@ -285,7 +431,7 @@ def render(flash: str = "") -> str:
 {table("Running now", ["id","kind","dedupe_key","elapsed"], running, "nothing running")}
 {queued_html}
 {human_review_table(human_review)}
-{table(f"Pending decisions ({pending_n})", ["id","request_id","kind","created"], pending, "no pending decisions")}
+{pending_decision_table(pending)}
 {recent_table(recent)}
 {table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}
 {table("Today by kind", ["kind","status","count"], today, "nothing today")}
@@ -384,9 +530,19 @@ class Handler(BaseHTTPRequestHandler):
                                 params.get("kind", [""])[0].strip())
             else:
                 review_match = re.fullmatch(r"/human-reviews/(\d+)/(reviewed|dismissed)", self.path)
-                if not review_match:
+                decision_match = re.fullmatch(r"/pending-decisions/(\d+)/(approve|retry|reject)", self.path)
+                if review_match:
+                    result = update_human_review_state(int(review_match.group(1)), review_match.group(2))
+                elif decision_match:
+                    decision_id, action = int(decision_match.group(1)), decision_match.group(2)
+                    if action == "approve":
+                        result = approve_pending_decision(decision_id)
+                    elif action == "retry":
+                        result = retry_pending_decision(decision_id)
+                    else:
+                        result = reject_pending_decision(decision_id)
+                else:
                     self.send_response(404); self.end_headers(); return
-                result = update_human_review_state(int(review_match.group(1)), review_match.group(2))
         except (ValueError, RuntimeError) as ex:
             result = f"rejected: {ex}"
         # Audit trail (single line, stderr) — mutating a work queue should not be silent.
@@ -398,9 +554,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    # Bind: inside the container we must bind 0.0.0.0 so the compose port-map can reach us; HOST
-    # exposure is restricted to localhost by the compose mapping (127.0.0.1:PORT:PORT). The Host
-    # header allowlist below (ALLOWED_HOSTS) is the in-code defense that stops DNS-rebinding /
-    # off-host POSTs regardless of bind. Override bind via STATUS_BIND for a direct (non-container)
-    # run where you want 127.0.0.1.
-    ThreadingHTTPServer((os.environ.get("STATUS_BIND", "0.0.0.0"), PORT), Handler).serve_forever()
+    # Compose explicitly sets 0.0.0.0 so its localhost-only port-map can reach this process.
+    # Direct runs default to loopback; Host/Origin/CSRF provide defense in depth for POSTs.
+    ThreadingHTTPServer((os.environ.get("STATUS_BIND", "127.0.0.1"), PORT), Handler).serve_forever()
