@@ -156,9 +156,11 @@ def human_review_table(rows: list[list[str]]) -> str:
     if not rows:
         return "<section><h2>Human review queue (0)</h2><p class=empty>nothing needs review</p></section>"
     body = ""
-    for review_id, request_id, url, summary, findings, created in rows:
+    for review_id, request_id, url, summary, findings, created, rtype in rows:
+        type_chip = ('<span class="chip s-done">review-ready</span>' if rtype == "review-ready"
+                     else '<span class="chip s-queued">maintenance</span>')
         body += ("<tr>"
-                 f"<td>{e(review_id)}</td><td>{e(request_id)}</td><td>{github_pr_link(url)}</td>"
+                 f"<td>{e(review_id)}</td><td>{type_chip}</td><td>{github_pr_link(url)}</td>"
                  f"<td>{e(summary).replace(chr(10), '<br>')}</td><td>{findings_html(findings)}</td>"
                  f"<td>{e(created)}</td>"
                  f"<td><form class=inline method=post action=\"/human-reviews/{e(review_id)}/reviewed\">"
@@ -167,9 +169,10 @@ def human_review_table(rows: list[list[str]]) -> str:
                  f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\"><button>Dismiss</button></form></td>"
                  "</tr>")
     return ("<section><h2>Human review queue (" + str(len(rows)) + ")</h2>"
-            "<p class=hint>Review agent-blocked maintenance work, then mark it reviewed or dismiss it. "
-            "These controls only update this local queue; they never write to GitHub.</p>"
-            "<table><thead><tr><th>id</th><th>request</th><th>PR</th><th>agent summary</th>"
+            "<p class=hint>Agent-flagged work: <b>review-ready</b> PRs the agent judged done (your call to "
+            "approve+merge on GitHub), and <b>maintenance</b> work it left for a human. Reviewed/Dismiss "
+            "only update this local queue; they never write to GitHub.</p>"
+            "<table><thead><tr><th>id</th><th>type</th><th>PR</th><th>agent summary</th>"
             "<th>findings</th><th>created</th><th>queue</th></tr></thead><tbody>" + body + "</tbody></table></section>")
 
 
@@ -200,8 +203,11 @@ def render(flash: str = "") -> str:
             "FROM requests WHERE status IN ('done','failed') "
             "ORDER BY finished_at DESC NULLS LAST LIMIT 20")
         human_review = query(
-            "SELECT d.id, d.request_id, coalesce(r.payload->>'url',''), coalesce(d.proposal->>'summary',''), "
-            "coalesce((d.proposal->'findings')::text,'[]'), to_char(d.created_at,'MM-DD HH24:MI') "
+            "SELECT d.id AS id, d.request_id AS request_id, "
+            "coalesce(r.payload->>'url','') AS url, coalesce(d.proposal->>'summary','') AS summary, "
+            "coalesce((d.proposal->'findings')::text,'[]') AS findings, "
+            "to_char(d.created_at,'MM-DD HH24:MI') AS created, "
+            "CASE WHEN d.proposal->>'ready' = 'true' THEN 'review-ready' ELSE 'maintenance' END AS rtype "
             "FROM pending_maintenance_reviews d JOIN requests r ON r.id = d.request_id "
             "WHERE d.state='pending' ORDER BY d.created_at DESC")
         pending = query(

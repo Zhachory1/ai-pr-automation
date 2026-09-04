@@ -105,6 +105,18 @@ apply_write_path_gate() {
     fi
     log "gate: routed blocked maintenance work to human-review queue"
   fi
+  # Review that the agent judges READY (no blocking findings) is surfaced to the SAME human-review
+  # stack for a human approve/merge decision. It does NOT auto-approve on GitHub — the agent still
+  # posts only a COMMENT. This just puts "agent thinks this is done" in front of the operator.
+  if [[ "$kind" == pr-review ]] && jq -e '.ready_for_human_review == true' "$result" >/dev/null 2>&1; then
+    local ready_proposal
+    ready_proposal="$(jq -c '{ready: true, summary: (.summary // ""), findings: (.findings // [])}' "$result")"
+    if ! pending_maintenance_review_insert "$id" "$ready_proposal" "$prov"; then
+      log "gate: failed to route review-ready PR to human-review queue"
+      return 1
+    fi
+    log "gate: routed review-ready $repo#$pr to human-review queue"
+  fi
 }
 
 hindsight_retain() {
@@ -182,7 +194,8 @@ process_one() {
   if [[ "$status" -eq 0 ]]; then
     local verdict; verdict="$(jq -r '.verdict // "unknown"' "$work_root/result.json" 2>/dev/null || echo unknown)"
     # verdict is agent-authored: whitelist before it can touch the server fact / shared bank.
-    case "$verdict" in comment|request-changes|approve) ;; *) verdict=unknown ;; esac
+    # approve is not a permitted egress verdict; whitelist to the two the agent may post.
+    case "$verdict" in comment|request-changes) ;; *) verdict=unknown ;; esac
     if ! apply_write_path_gate "$id" "$kind" "$repo" "$pr" "$head_sha" "$run_id" "$nonce" "$work_root" "$verdict"; then
       queue_mark_failed "$id" "human-review queue insert failed"
       log "failed $repo#$pr: human-review queue insert failed"
@@ -321,8 +334,12 @@ Boundaries:
   Use this marker, NOT any skill-default marker. Before posting, search existing reviews/comments
   for it and skip if present.
 - Emit typed structured output to: $work_root/result.json
-    {"nonce":"$nonce","verdict":"comment|request-changes|approve","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"memory":{"decisions":[..]}}
+    {"nonce":"$nonce","verdict":"comment|request-changes","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"ready_for_human_review":true|false,"memory":{"decisions":[..]}}
   The nonce MUST equal exactly: $nonce
+  Set `ready_for_human_review` to TRUE only when, after reviewing exactly this commit, you found no
+  blocking issues and believe the PR is ready for a human to approve+merge. This does NOT approve the
+  PR — it only surfaces it on the operator's human-review stack for a human decision. If you set it
+  true, still post your COMMENT review (never APPROVE). When there are blocking findings, set it false.
   Only 'decisions' bodies are considered for durable memory, and only via human review; do not expect free-text to be stored.
 - Finish within the external timeout.
 PROMPT
