@@ -78,11 +78,14 @@ async function rpc(payload, session) {
   if (!Array.isArray(tools.message.result.tools)) throw new Error("tools/list returned no tools");
 })().catch(error => { console.error(error.message); process.exit(1); });
 NODE
-   && ! docker compose exec -T swarmvault-mcp sh -c 'touch /vault/.mcp-write-probe'
 then
-  ok "swarmvault MCP tools/list + read-only vault"
+  if ! docker compose exec -T swarmvault-mcp sh -c 'touch /vault/.mcp-write-probe'; then
+    ok "swarmvault MCP tools/list + read-only vault"
+  else
+    no "swarmvault MCP bridge can write its vault"
+  fi
 else
-  no "swarmvault MCP bridge or read-only vault (check docker compose logs swarmvault-mcp)"
+  no "swarmvault MCP bridge (check docker compose logs swarmvault-mcp)"
 fi
 
 echo "[5/6] coderag UI + internal MCP bridge"
