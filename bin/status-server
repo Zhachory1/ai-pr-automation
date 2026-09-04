@@ -354,9 +354,12 @@ def render(flash: str = "") -> str:
             "FROM pending_maintenance_reviews d JOIN requests r ON r.id = d.request_id "
             "WHERE d.state='pending' ORDER BY d.created_at DESC")
         pending = query(
-            "SELECT d.id, d.request_id, d.kind, coalesce(r.payload->>'url',''), d.proposal::text, "
-            "d.provenance::text, d.state, to_char(d.created_at,'MM-DD HH24:MI'), "
-            "coalesce(to_char(d.publish_started_at,'MM-DD HH24:MI'),''), coalesce(d.publish_error,'') "
+            "SELECT d.id AS id, d.request_id AS request_id, d.kind AS kind, "
+            "coalesce(r.payload->>'url','') AS url, d.proposal::text AS proposal, "
+            "d.provenance::text AS provenance, d.state AS state, "
+            "to_char(d.created_at,'MM-DD HH24:MI') AS created, "
+            "coalesce(to_char(d.publish_started_at,'MM-DD HH24:MI'),'') AS started, "
+            "coalesce(d.publish_error,'') AS publish_error "
             "FROM pending_decisions d JOIN requests r ON r.id = d.request_id "
             "WHERE d.state IN ('pending','publishing') ORDER BY d.created_at DESC LIMIT 20")
         today = query(

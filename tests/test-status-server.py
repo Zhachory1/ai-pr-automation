@@ -47,9 +47,12 @@ class StatusServerTest(unittest.TestCase):
               "pending", "09-04 12:00", "", ""]],
             [], [],
         ]
-        with patch.object(status_server, "query", side_effect=rows):
+        with patch.object(status_server, "query", side_effect=rows) as query:
             page = status_server.render()
 
+        pending_query = query.call_args_list[4].args[0]
+        for alias in ("AS url", "AS proposal", "AS provenance", "AS state", "AS created", "AS started", "AS publish_error"):
+            self.assertIn(alias, pending_query)
         self.assertIn("Use &lt;cache&gt;", page)
         self.assertIn("keep &lt;value&gt;", page)
         self.assertIn("check &lt;input&gt;", page)
