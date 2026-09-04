@@ -2,7 +2,7 @@
   "messages": [
     {
       "name": "spaces/AAAA/messages/authorized-1",
-      "sender": { "name": "users/alice", "type": "HUMAN" },
+      "sender": { "name": "users/123456789", "type": "BOT" },
       "text": "/pr-safety review https://github.com/owner/repo/pull/7"
     }
   ]
