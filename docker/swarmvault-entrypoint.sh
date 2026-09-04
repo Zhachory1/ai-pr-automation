@@ -20,8 +20,17 @@ if [ "${1:-watch}" = "mcp" ]; then
   exec node /app/packages/cli/dist/index.js mcp "$@"
 fi
 
-if [ "${1:-watch}" = "watch" ] && [ ! -f swarmvault.config.json ]; then
-  node /app/packages/cli/dist/index.js init
+if [ "${1:-watch}" = "watch" ]; then
+  if [ ! -f swarmvault.config.json ]; then
+    node /app/packages/cli/dist/index.js init
+  fi
+  mkdir -p state
+  node /app/packages/cli/dist/index.js "$@" &
+  pid="$!"
+  printf '%s\n' "$pid" > state/watcher.pid
+  trap 'kill -TERM "$pid" 2>/dev/null || true; wait "$pid"; exit' INT TERM
+  wait "$pid"
+  exit "$?"
 fi
 
 exec node /app/packages/cli/dist/index.js "$@"

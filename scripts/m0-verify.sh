@@ -5,8 +5,6 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || { echo "FATAL: cannot cd to repo root"; exit 1; }
 set -a; [ -f .env ] && . ./.env; set +a
 "$PWD/scripts/validate-swarmvault-vault.sh" || exit 2
-TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
-
 pass=0; fail=0
 ok(){ echo "  PASS: $1"; pass=$((pass+1)); }
 no(){ echo "  FAIL: $1"; fail=$((fail+1)); }
@@ -80,10 +78,11 @@ async function rpc(payload, session) {
   if (!Array.isArray(tools.message.result.tools)) throw new Error("tools/list returned no tools");
 })().catch(error => { console.error(error.message); process.exit(1); });
 NODE
+   && ! docker compose exec -T swarmvault-mcp sh -c 'touch /vault/.mcp-write-probe'
 then
-  ok "swarmvault MCP tools/list"
+  ok "swarmvault MCP tools/list + read-only vault"
 else
-  no "swarmvault MCP bridge (check docker compose logs swarmvault-mcp)"
+  no "swarmvault MCP bridge or read-only vault (check docker compose logs swarmvault-mcp)"
 fi
 
 echo "[5/6] coderag UI + internal MCP bridge"
