@@ -1,9 +1,8 @@
 # Agent fleet substrate. See docker/README.md.
-# Bring up:  cp .env.example .env  && edit  && docker compose up -d  && scripts/m0-verify.sh
+# Bring up:  cp .env.example .env  && edit  && docker compose up -d --build  && scripts/m0-verify.sh
 #
-# Transport note (verified 2026-09-02): only hindsight is a network service.
-# swarmvault and coderag are stdio MCP servers spawned per agent invocation (M1),
-# so their images are BUILT here but not run as long-lived compose services.
+# Optional local sidecars: coderag serves its graph UI and swarmvault watches its mounted vault.
+# Both use local-only storage and build from pinned upstream commits in docker/.
 
 name: agent-fleet
 
@@ -101,34 +100,46 @@ services:
       timeout: 5s
       retries: 12
 
-  # --- coderag: shared code-graph coordination daemon (stdio frontends attach per agent) ---
-  # CBM shares one graph + watcher across all agents via CBM_CACHE_DIR. Runs the daemon here;
-  # agents mount the same coderag_cache volume + ${CODE_ROOT}:ro and attach thin stdio frontends.
+  # --- coderag: shared code-graph coordination daemon ---
   coderag:
-    image: agent-fleet/coderag:${CODERAG_VERSION:-latest}   # built locally; see docker/README
+    image: agent-fleet/coderag:${CODERAG_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.coderag
+      args:
+        CBM_REF: ${CBM_REF:-ffb5ebe9e8ad2763fc6388c001ca8a16ca834d88}
     container_name: fleet-coderag
     restart: unless-stopped
     environment:
       CBM_CACHE_DIR: /cache
+      CBM_ALLOWED_ROOT: /code
+      CBM_UI_PORT: "9749"
     volumes:
       - coderag_cache:/cache
       - ${CODE_ROOT:?set CODE_ROOT}:/code:ro
-    # daemon + UI; watcher scope (exclude worktrees/dirty main) set via CBM config, not the mount.
-    command: ["--ui=true", "--port=9749"]
+    command: ["serve-ui"]
     ports:
-      - "9749:9749"
+      - "127.0.0.1:9749:9749"
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'GET / HTTP/1.1\\r\\nHost: 127.0.0.1:9749\\r\\nConnection: close\\r\\n\\r\\n' | socat -T 3 - TCP:$$(hostname -i):9749 | grep -q '200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
-  # --- swarmvault: shared doc vault + continuous ingest watcher ---
-  # Doc-drop model: agents write files into the shared vault volume directly and trigger ingest
-  # over a per-agent stdio MCP (read+trigger only). This service is the persistent watcher.
+  # --- swarmvault: shared doc vault + continuous inbox watcher ---
   swarmvault-watch:
-    image: agent-fleet/swarmvault:${SWARMVAULT_VERSION:-latest}   # built locally; see docker/README
+    image: agent-fleet/swarmvault:${SWARMVAULT_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.swarmvault
+      args:
+        SWARMVAULT_REF: ${SWARMVAULT_REF:-815412d24298e59e5073ded1ddd6c0e6aee9b91b}
     container_name: fleet-swarmvault-watch
     restart: unless-stopped
     volumes:
       - ${SWARMVAULT_VAULT:-./.swarmvault-vault}:/vault
     working_dir: /vault
-    command: ["swarmvault", "watch", "/vault"]
 
   # --- agent-servers: one SERIAL worker container per KIND ---
   # Compose by kind, not by replicas. Each holds its own per-kind advisory lock and claims only its

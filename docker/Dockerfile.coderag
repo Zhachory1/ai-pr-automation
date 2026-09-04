@@ -1,0 +1,19 @@
+FROM node:24-bookworm AS build
+
+ARG CBM_REF=ffb5ebe9e8ad2763fc6388c001ca8a16ca834d88
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential git pkg-config zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/DeusData/codebase-memory-mcp.git /src \
+ && git -C /src checkout "$CBM_REF"
+WORKDIR /src
+RUN scripts/build.sh --with-ui
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libstdc++6 socat zlib1g \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/build/c/codebase-memory-mcp /usr/local/bin/codebase-memory-mcp
+COPY docker/coderag-entrypoint.sh /usr/local/bin/coderag-entrypoint
+RUN chmod +x /usr/local/bin/coderag-entrypoint
+ENTRYPOINT ["/usr/local/bin/coderag-entrypoint"]

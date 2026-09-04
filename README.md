@@ -50,7 +50,7 @@ producers, agent-server). In brief:
 gh auth status
 command -v timeout || command -v gtimeout
 cp .env.example .env    # fill CODE_ROOT, passwords, HINDSIGHT_API_LLM_API_KEY
-docker compose up -d    # substrate: Postgres + Redis + hindsight + memory stack
+docker compose up -d --build  # builds and starts local fleet + memory sidecars
 scripts/m0-verify.sh    # substrate checks
 
 # enqueue (scoped to your repos) then let the agent-server drain:

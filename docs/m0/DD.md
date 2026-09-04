@@ -13,28 +13,17 @@ load-bearing design fact discovered while reading the repos:
 | our Postgres | TCP 5432 | yes | request tracking (`requests`, `pending_decisions`). |
 | Redis | TCP 6379 | yes | dispatch (used M1+; stood up now). |
 | hindsight | **HTTP :8888 / UI :9999** | yes | network service; per-bank MCP at `/mcp/{bank}/`. Has its own pgvector Postgres (`hindsight-db`). |
-| swarmvault | **stdio MCP** (`swarmvault mcp`) | **no — spawned per client** | Dockerfile is `docker run --rm -i`. Not a daemon. |
-| coderag | **stdio MCP** (static binary) | continuous indexer, but MCP is stdio | Indexes `${CODE_ROOT}` main read-only. |
+| swarmvault | **stdio MCP** (`swarmvault mcp`) + local watcher | yes | Compose watcher owns mounted vault. MCP still starts per client. |
+| coderag | **stdio MCP** (static binary) + local UI | yes | Compose keeps daemon stdin open. Index is limited to `${CODE_ROOT}` read-only. |
 
-### The transport finding (updates the roadmap)
+### Transport now
 
-Roadmap framed all three memory services as "always-on containers." Verified reality:
-**only hindsight is a network service.** swarmvault and coderag are **stdio MCP servers** —
-they're *spawned per agent invocation* over stdin/stdout, not connected to over a port.
+MCP uses stdio. Shared local state needs long-running services.
 
-Consequence for M0:
-- hindsight runs as a compose service with a healthcheck (real endpoint to probe).
-- swarmvault + coderag: M0 builds their **images** and verifies each starts and answers MCP
-  introspection via `docker run --rm -i`. The agent-server (M1) will launch them per-run with the
-  code/vault dirs mounted, via the existing `MCP_REMOTE_CONFIG_DIR` hook. They are NOT `depends_on`
-  services that must be "up."
-- coderag "continuous indexing": the indexer watches a mounted tree, but agents reach the *graph*
-  through a stdio MCP spawn. M0 proves the indexer builds a graph over `${CODE_ROOT}` main and the
-  stdio server answers a query against it. Whether the indexer runs as a persistent sidecar writing
-  to a shared graph volume, or is re-run per query, is an M0 spike outcome (see risks).
-
-This does not change the milestone's value — it changes what "the container is up" means for two of
-five services, and it's cheaper to learn now than in M1.
+- hindsight runs HTTP with healthcheck.
+- swarmvault watcher runs in Compose over mounted vault. `swarmvault mcp` still starts per client.
+- coderag keeps its native daemon and local UI alive. UI is localhost-only. Code mount is read-only.
+- agent clients must use same `CBM_CACHE_DIR` before attaching to coderag daemon.
 
 ## Data / control flow (M0 scope only)
 
@@ -42,11 +31,9 @@ five services, and it's cheaper to learn now than in M1.
 docker compose up
   ├─ postgres (ours)  ──── volume: pgdata ────────────► host
   ├─ redis            ──── volume: redisdata ─────────► host
-  └─ hindsight + hindsight-db  ── volume: hs_pgdata ──► host   (HTTP :8888)
-
-images built, verified via `docker run --rm -i` (not up):
-  ├─ swarmvault   (vault dir mounted at M1)
-  └─ coderag      (${CODE_ROOT}:ro mounted; graph volume ──► host)
+  ├─ hindsight + hindsight-db  ── volume: hs_pgdata ──► host   (HTTP :8888)
+  ├─ swarmvault watcher ─────── mounted vault ─────────► host
+  └─ coderag daemon + UI ────── graph volume ──────────► host
 ```
 
 No service consumes another in M0. Schema is created, not read. Redis is idle. This is
@@ -105,20 +92,18 @@ Schema shipped as a migration file the Postgres service runs on first boot
   hindsight's is pgvector-specific and its schema is theirs; coupling buys nothing and risks their
   migrations touching our tables.
 - **One `.sql` init file, no migration framework.** M0 has one schema version; a tool is premature.
-- **swarmvault/coderag as build-and-verify, not up.** Forced by stdio transport; see finding above.
+- **swarmvault/coderag as local sidecars.** User needs durable watcher and graph UI. MCP stays stdio.
 
 ## Observability / rollout
 
-- No telemetry in M0 (nothing runs yet). A probe script (`scripts/m0-verify.sh`) runs the six exit
-  checks and prints pass/fail.
-- Rollout: merge to main behind nothing — files are inert until M1 wires them. Reversible: delete
-  the files.
+- A probe script (`scripts/m0-verify.sh`) runs six exit checks and prints pass/fail.
+- Rollout: merge to main, then build and start optional sidecars. Reversible: stop sidecars and keep
+  persisted data volumes.
 
 ## Risks
 
-1. **coderag persistent-indexer vs per-query spawn is unresolved** (stdio finding). M0 spike
-   determines it; if it must be a persistent sidecar writing a shared graph volume, that's a small
-   addition, not a redesign.
+1. **coderag client wiring is unresolved.** Clients must share `CBM_CACHE_DIR` and exact build before
+   using daemon state.
 2. **hindsight may require an LLM API key even for keyless providers.** Its compose marks
    `HINDSIGHT_API_LLM_API_KEY` required (`:?`). README says `claude-code`/`codex` need none —
    resolve which env var selects keyless at implementation; do not commit a key regardless.

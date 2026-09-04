@@ -4,6 +4,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || { echo "FATAL: cannot cd to repo root"; exit 1; }
 set -a; [ -f .env ] && . ./.env; set +a
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 
 pass=0; fail=0
 ok(){ echo "  PASS: $1"; pass=$((pass+1)); }
@@ -42,20 +43,29 @@ else
     || no "hindsight recall did not return the retained fact (check API paths / embedding delay)"
 fi
 
-echo "[4/6] swarmvault MCP image answers introspection"
-if docker image inspect agent-fleet/swarmvault >/dev/null 2>&1; then
+echo "[4/6] swarmvault MCP answers against mounted vault"
+if [[ -n "$TIMEOUT_BIN" ]] && docker image inspect agent-fleet/swarmvault >/dev/null 2>&1; then
   printf '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n' \
-    | timeout 30 docker run --rm -i agent-fleet/swarmvault swarmvault mcp 2>/dev/null | grep -q '"result"' \
+    | "$TIMEOUT_BIN" 30 docker compose run --rm --no-deps -T swarmvault-watch swarmvault mcp 2>/dev/null | grep -q '"result"' \
     && ok "swarmvault mcp" || no "swarmvault mcp introspection"
 else
-  no "swarmvault image not built (docker build -t agent-fleet/swarmvault docker/swarmvault)"
+  no "swarmvault image or GNU timeout missing"
 fi
 
-echo "[5/6] coderag indexes CODE_ROOT main + answers a query"
-if docker image inspect agent-fleet/coderag >/dev/null 2>&1; then
-  ok "coderag image present (structural-query probe: run scripts/m0-coderag-probe.sh)"
+echo "[5/6] coderag UI starts on localhost"
+ready=""
+if docker image inspect agent-fleet/coderag >/dev/null 2>&1 \
+   && docker compose up -d coderag swarmvault-watch >/dev/null 2>&1; then
+  for _ in $(seq 1 20); do
+    curl -fsS http://localhost:9749/ >/dev/null 2>&1 && { ready=1; break; }
+    sleep 1
+  done
+fi
+if [[ -n "$ready" ]] \
+   && docker compose ps --status running --services swarmvault-watch | grep -qx swarmvault-watch; then
+  ok "coderag UI + swarmvault watcher"
 else
-  no "coderag image not built (see docker/README.md)"
+  no "coderag UI or swarmvault watcher (check docker compose logs coderag swarmvault-watch)"
 fi
 
 echo "[6/6] durability across down/up"

@@ -7,7 +7,7 @@ One `docker-compose.yml` (repo root) + this dir. Stands up the services the seri
 
 ```bash
 cp .env.example .env      # then edit: CODE_ROOT (host-absolute), passwords, provider
-docker compose up -d      # brings up: db-requests, redis, hindsight (+ hindsight-db)
+docker compose up -d --build  # builds and starts all local services
 scripts/m0-verify.sh      # runs the six exit checks
 ```
 
@@ -51,25 +51,21 @@ swarmvault's MCP is stdio, but sharing does NOT go through the MCP as a content-
   the shared vault = server-gated + provenance-tagged (same discipline as hindsight; enforced in M1
   write-path).
 
-## Building the images
+## Building the optional services
 
 ```bash
-# swarmvault — from its own Dockerfile. Runs as: (a) a persistent `swarmvault watch` container
-# over the shared vault volume, and (b) per-agent `docker run --rm -i ... swarmvault mcp` for
-# read+trigger, both mounting the same vault dir.
-git clone https://github.com/swarmclawai/swarmvault /tmp/swarmvault
-docker build -t agent-fleet/swarmvault /tmp/swarmvault
-
-# coderag — codebase-memory-mcp. Run the coordination daemon in a container with a shared
-# CBM_CACHE_DIR volume + ${CODE_ROOT}:ro; agents attach thin stdio frontends against it.
-# Do NOT run its `install` (mutates agent client config files); invoke the binary directly.
+docker compose build coderag swarmvault-watch
+docker compose up -d coderag swarmvault-watch
 ```
 
-coderag indexes **main only**, read-only, continuously; agents track their own worktree diffs.
-Worktrees live in `${CODE_ROOT}/_roktcode-worktrees/<repo>/<branch>`. Note: these sit *under*
-`${CODE_ROOT}`, so the `:ro` mount still *sees* them — read-only prevents coderag from *writing*,
-but excluding worktrees (and dirty main) from indexing is the daemon's watcher config
-(`auto_watch`/`watcher_enabled`, see open item #4), not the mount's.
+Both images build from pinned upstream commits. `coderag` starts codebase-memory-mcp's permanent
+daemon and exposes its UI only at `http://localhost:9749`; its index is confined to the read-only
+`/code` mount. `swarmvault-watch` initializes an empty mounted vault once, then
+watches its inbox. The coderag entrypoint rejects codebase-memory-mcp lifecycle commands that could
+mutate agent configuration.
+
+coderag can only index paths selected beneath its read-only `/code` mount. This setup does not
+configure automatic indexing or watcher scope; agents still own their worktree diffs.
 
 ## Open items (resolve at implementation — do not commit a secret regardless)
 
@@ -83,13 +79,8 @@ but excluding worktrees (and dirty main) from indexing is the daemon's watcher c
    `/v1/banks/{bank}/retain|recall` as a best guess; the upstream README documents the SDK, not raw
    REST. Verify against hindsight's API-reference and adjust the probe if paths differ. (The SDK or
    the per-bank MCP endpoint `/mcp/{bank}/` are alternatives.)
-3. **coderag daemon in a container.** CBM's coordination daemon auto-starts from the first session
-   and shares one `CBM_CACHE_DIR`. Verify it runs cleanly as a long-lived container (not just
-   host-native) and that thin stdio frontends from other containers register against it over the
-   shared cache volume. If cross-container session coordination needs the daemon reachable beyond a
-   shared volume, resolve at implementation.
-4. **coderag watcher scope.** Exclude `_roktcode-worktrees` and dirty main from indexing via
-   `auto_watch`/`watcher_enabled` config, not the `:ro` mount. Confirm the config keys.
+3. **coderag client wiring.** Thin stdio clients must mount the same `CBM_CACHE_DIR` and use the
+   exact same binary build before they can attach to the daemon.
 
 ## Schema
 

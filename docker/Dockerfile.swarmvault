@@ -1,0 +1,20 @@
+FROM node:24-alpine AS build
+
+ARG SWARMVAULT_REF=815412d24298e59e5073ded1ddd6c0e6aee9b91b
+RUN apk add --no-cache git
+RUN git clone https://github.com/swarmclawai/swarmvault.git /src \
+ && git -C /src checkout "$SWARMVAULT_REF"
+WORKDIR /src
+RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @swarmvaultai/viewer build \
+ && pnpm --filter @swarmvaultai/engine build \
+ && pnpm --filter @swarmvaultai/cli build
+
+FROM node:24-alpine
+WORKDIR /app
+COPY --from=build /src /app
+COPY docker/swarmvault-entrypoint.sh /usr/local/bin/swarmvault-watch
+RUN chmod +x /usr/local/bin/swarmvault-watch
+ENV NODE_ENV=production
+ENTRYPOINT ["/usr/local/bin/swarmvault-watch"]
