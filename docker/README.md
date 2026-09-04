@@ -42,8 +42,9 @@ watchers, continuous indexing, and the UI (:9749). The first session starts it; 
 **thin stdio MCP frontend** that registers a session against the shared daemon (clean JSON-RPC on
 stdout; the daemon owns long-lived state). All CBM processes MUST share one canonical cache root
 (`CBM_CACHE_DIR`) and the exact same build — a different root is rejected while any process is
-active. So "persistent + shared" is coderag's native design, not a bridge we build. Requirement:
-every agent mounts the same `CBM_CACHE_DIR` volume + `${CODE_ROOT}:ro`.
+active. So "persistent + shared" is coderag's native design. The Coderag container bridges its
+stdio frontend to `http://coderag:9750/mcp` on the Compose network. It runs bridge and daemon together
+so the bridge cannot create a private graph. Agent configuration lands in a later PR.
 
 ### swarmvault — shared vault + doc-drop model (verified)
 
@@ -86,8 +87,8 @@ configure automatic indexing or watcher scope; agents still own their worktree d
    `/v1/banks/{bank}/retain|recall` as a best guess; the upstream README documents the SDK, not raw
    REST. Verify against hindsight's API-reference and adjust the probe if paths differ. (The SDK or
    the per-bank MCP endpoint `/mcp/{bank}/` are alternatives.)
-3. **coderag client wiring.** Thin stdio clients must mount the same `CBM_CACHE_DIR` and use the
-   exact same binary build before they can attach to the daemon.
+3. **coderag agent wiring.** Agents use the internal HTTP bridge at `http://coderag:9750/mcp`.
+   They must not mount Coderag cache or binary files.
 
 ## Schema
 
