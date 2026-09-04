@@ -28,6 +28,20 @@ services:
       timeout: 3s
       retries: 10
 
+  # Re-runs additive migrations for existing database volumes. New volumes receive these files
+  # through Postgres initdb before this service verifies the same schema idempotently.
+  schema-migrate:
+    image: postgres:16
+    restart: "no"
+    environment:
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+    volumes:
+      - ./docker/initdb:/migrations:ro
+    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql"]
+    depends_on:
+      db-requests:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
     container_name: fleet-redis
@@ -176,10 +190,12 @@ services:
         condition: service_healthy
       hindsight:
         condition: service_healthy
+      schema-migrate:
+        condition: service_completed_successfully
 
-  # --- status: read-only web view (M3) ---
-  # SELECT-only; renders running/queued/recent/pending-decisions/today. Port bound to LOCALHOST
-  # only (127.0.0.1) so it is not reachable off-box (it has no auth). Reads db by service name.
+  # --- status: local web view (M3) ---
+  # Renders running/queued/recent plus the human-review queue. Queue controls only update local
+  # maintenance-review state; the port stays bound to LOCALHOST because there is no auth.
   status:
     image: agent-fleet/status:${STATUS_VERSION:-latest}
     build:
@@ -201,6 +217,8 @@ services:
     depends_on:
       db-requests:
         condition: service_healthy
+      schema-migrate:
+        condition: service_completed_successfully
 
 volumes:
   requests_pgdata:

@@ -11,6 +11,10 @@ docker compose up -d      # brings up: db-requests, redis, hindsight (+ hindsigh
 scripts/m0-verify.sh      # runs the six exit checks
 ```
 
+Open `http://localhost:8080` for agent status. Blocked `pr-maintain` findings appear in its
+human-review queue with an **Open PR** link, agent summary, findings, and local **Reviewed** /
+**Dismiss** controls. These controls do not write to GitHub.
+
 ## What runs as a service vs. what does not
 
 Verified 2026-09-02 by reading each upstream repo. **All memory services are persistent + shared
@@ -90,9 +94,11 @@ but excluding worktrees (and dirty main) from indexing is the daemon's watcher c
 ## Schema
 
 `docker/initdb/01-schema.sql` loads once on first Postgres boot. `requests` (queue+record) and
-`pending_decisions` (the daily human-review batch for decision-shaped memory writes). Validated
-against postgres:16: dedupe index blocks two active rows for the same `(kind, dedupe_key)` and
-allows re-enqueue after `done`.
+`pending_decisions` (the daily human-review batch for decision-shaped memory writes). The
+`schema-migrate` service reapplies additive schema changes for existing database volumes, including
+`pending_maintenance_reviews`, the local queue for maintenance findings needing human judgment.
+Validated against postgres:16: dedupe index blocks two active rows for the same `(kind, dedupe_key)`
+and allows re-enqueue after `done`.
 
 **hindsight data + PG major version:** `hindsight_pgdata` is mounted at the fixed pg18 PGDATA path
 (`/var/lib/postgresql/18/docker`) and the db image is pinned to `pgvector/pgvector:pg18`. This is
