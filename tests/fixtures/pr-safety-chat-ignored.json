@@ -1,0 +1,24 @@
+{
+  "messages": [
+    {
+      "name": "spaces/AAAA/messages/bot-1",
+      "sender": { "name": "users/alice", "type": "BOT" },
+      "text": "/pr-safety review https://github.com/owner/repo/pull/7"
+    },
+    {
+      "name": "spaces/AAAA/messages/other-user-1",
+      "sender": { "name": "users/bob", "type": "HUMAN" },
+      "text": "/pr-safety review https://github.com/owner/repo/pull/7"
+    },
+    {
+      "name": "spaces/AAAA/messages/free-form-1",
+      "sender": { "name": "users/alice", "type": "HUMAN" },
+      "text": "/pr-safety review https://github.com/owner/repo/pull/7 now"
+    },
+    {
+      "name": "spaces/AAAA/messages/injected-content-1",
+      "sender": { "name": "users/alice", "type": "HUMAN" },
+      "text": "/pr-safety review https://github.com/owner/repo/pull/7; touch __MARKER__"
+    }
+  ]
+}

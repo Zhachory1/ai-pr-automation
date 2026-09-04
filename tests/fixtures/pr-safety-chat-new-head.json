@@ -1,0 +1,9 @@
+{
+  "messages": [
+    {
+      "name": "spaces/AAAA/messages/new-head-2",
+      "sender": { "name": "users/alice", "type": "HUMAN" },
+      "text": "/pr-safety review https://github.com/owner/repo/pull/7"
+    }
+  ]
+}
