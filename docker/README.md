@@ -89,7 +89,8 @@ configure automatic indexing or watcher scope; agents still own their worktree d
    REST. Verify against hindsight's API-reference and adjust the probe if paths differ. (The SDK or
    the per-bank MCP endpoint `/mcp/{bank}/` are alternatives.)
 3. **coderag agent wiring.** Complete. Agents use `http://coderag:9750/mcp` and
-   `http://swarmvault-mcp:9760/mcp` through `mcp-remote`; they mount neither Coderag cache nor vault.
+   `http://swarmvault-mcp:9760/mcp` through `mcp-remote --allow-http`; they mount neither Coderag
+   cache nor vault.
 
 ## Schema
 

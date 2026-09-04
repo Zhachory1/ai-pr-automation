@@ -13,7 +13,8 @@
       "args": [
         "-y",
         "mcp-remote@0.3.0",
-        "http://coderag:9750/mcp"
+        "http://coderag:9750/mcp",
+        "--allow-http"
       ]
     },
     "swarmvault": {
@@ -21,7 +22,8 @@
       "args": [
         "-y",
         "mcp-remote@0.3.0",
-        "http://swarmvault-mcp:9760/mcp"
+        "http://swarmvault-mcp:9760/mcp",
+        "--allow-http"
       ]
     }
   }
