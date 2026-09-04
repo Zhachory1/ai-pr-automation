@@ -7,6 +7,22 @@
         "mcp-remote@0.3.0",
         "https://mcp.buildkite.com/mcp"
       ]
+    },
+    "coderag": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@0.3.0",
+        "http://coderag:9750/mcp"
+      ]
+    },
+    "swarmvault": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@0.3.0",
+        "http://swarmvault-mcp:9760/mcp"
+      ]
     }
   }
 }
