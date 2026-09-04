@@ -49,11 +49,11 @@ gh api graphql --paginate -f query='
   }' -f owner=OWNER -f repo=REPO -F pr=PR_NUMBER
 ```
 
-Join each REST comment to its thread by `fullDatabaseId` (the REST comment `id`), then resolve that thread's `id`.
+Join each REST comment to its thread by `fullDatabaseId` (the REST comment `id`), then resolve that thread's `id`. Treat the THREAD as the unit of work: classify each unresolved thread exactly once, using its root review comment and replies as context. Do not classify replies (including your own) as separate work items.
 
-### Step 2: Classify Each Comment
+### Step 2: Classify Each Unresolved Thread
 
-Assign each comment to one of these categories:
+Assign each unresolved thread to one category, using its root comment and replies as context:
 
 | Category       | Description                    | Action                           |
 | -------------- | ------------------------------ | -------------------------------- |
@@ -73,7 +73,7 @@ Assign each comment to one of these categories:
 
 ### Step 3: Present Classification Summary
 
-Show a table of all comments with their classification:
+Show one row per unresolved thread with its classification:
 
 | #   | Reviewer | Category   | Summary             | File:Line         |
 | --- | -------- | ---------- | ------------------- | ----------------- |
@@ -85,13 +85,14 @@ Interactive mode: ask the user to confirm classifications before proceeding.
 
 Unattended scheduler mode: if the caller explicitly says the run is approved
 for unattended/automatic/hourly PR maintenance, do **not** stop for human
-classification confirmation. Proceed only on low-risk, unambiguous ACTIONABLE or
-NITS items. QUESTION and DISCUSSION items must be reported as drafts/pending
-human decisions only; do not post them.
+classification confirmation. Apply code changes only for low-risk, unambiguous
+ACTIONABLE or NITS items. If the caller also explicitly enables full reply
+autonomy, post grounded replies to QUESTION and DISCUSSION items and resolve
+their threads; do not invent facts or expand code-change scope to answer them.
 
-### Step 4: Address Comments by Category
+### Step 4: Address Threads by Category
 
-**ACTIONABLE comments:**
+**ACTIONABLE threads:**
 
 1. Read the referenced file and line
 2. Understand the requested change in context
@@ -101,25 +102,28 @@ human decisions only; do not post them.
 
 Push and verify (Step 5) before replying or resolving — do not reply to or resolve a thread whose fixing commit is not yet on the remote.
 
-**QUESTION comments:**
+**QUESTION threads:**
 
 1. Analyze the code context around the referenced line
 2. Draft a response explaining the design decision or rationale
-3. Present the draft to the user for approval before posting
-4. Post as a reply on the PR
+3. Interactive mode: present the draft to the user for approval before posting
+4. Unattended full-reply-autonomy mode: post the grounded response without stopping
+5. Resolve the thread after the response posts successfully
 
-**NITS comments:**
+**NITS threads:**
 
 1. Apply all nit fixes (formatting, naming, whitespace)
 2. Batch into a single commit: `style: address review nits`
 
 Push and verify (Step 5) before replying to or resolving the nit threads.
 
-**DISCUSSION comments:**
+**DISCUSSION threads:**
 
-1. Summarize the discussion thread
-2. Present options to the user
-3. Wait for user decision before responding
+1. Summarize the discussion thread and inspect the relevant code/history
+2. Interactive mode: present options and wait for the user before responding
+3. Unattended full-reply-autonomy mode: choose and post the best grounded response without stopping;
+   do not make higher-risk code changes merely to close the discussion
+4. Resolve the thread after the response posts successfully
 
 ### Step 5: Push First, Then Reply and Resolve
 
@@ -129,7 +133,7 @@ Push the tested commits and confirm the push succeeded **before** replying to or
 git push
 ```
 
-Only after the push lands, reply to each addressed comment, then resolve its thread. Resolve every thread that was addressed (ACTIONABLE, NITS, and any QUESTION answered with an approved reply), using the thread `id` fetched in Step 1:
+Only after the push lands, reply to each addressed thread, then resolve it. Post at most ONE new reply per unresolved thread per run. Immediately record the thread ID after posting so later steps cannot reply to it again; re-fetch before posting if the run has revisited the thread. Resolve every addressed ACTIONABLE/NITS thread, plus QUESTION/DISCUSSION threads whose reply was approved interactively or posted under explicit unattended full-reply-autonomy, using the thread `id` fetched in Step 1:
 
 ```bash
 gh api graphql -f query='
@@ -140,7 +144,7 @@ gh api graphql -f query='
   }' -f threadId=THREAD_ID
 ```
 
-Do not resolve DISCUSSION threads, or QUESTION threads whose reply the user has not approved — the reviewer resolves those.
+In interactive mode, do not resolve QUESTION/DISCUSSION threads until the user approves the reply. In explicit unattended full-reply-autonomy mode, the caller's approval covers both posting the grounded reply and resolving its thread.
 
 Confirm each addressed thread returned `isResolved: true` from the mutation, then present a summary of actions taken.
 
@@ -156,32 +160,32 @@ state must be one of:
 
 ## Constraints
 
-- **DO** classify all comments before taking any action
+- **DO** classify each unresolved thread exactly once before taking any action
 - **DO** confirm classifications with the user before proceeding in interactive mode
 - **DO** proceed without confirmation only when the caller explicitly grants unattended/automatic PR-maintenance mode
 - **DO** run tests after applying ACTIONABLE changes
-- **DO** get user approval before posting QUESTION responses
+- **DO** get user approval before posting QUESTION responses in interactive mode; explicit unattended full-reply-autonomy mode is approval
 - **DO** batch NITS into a single commit
 - **DO** push the fixing commit and confirm it landed before replying to or resolving its thread
 - **DO** resolve each thread after it is addressed (reply is not enough)
+- **DO** process each unresolved thread once and post at most one new reply to it per run
 - **DO** verify addressed threads show `isResolved: true` before reporting
 - **DO** end with no local diff, or with validated fixes committed+pushed+replied+resolved
 - **DO NOT** leave validated local fixes uncommitted or unpushed
-- **DO NOT** auto-respond to DISCUSSION comments without user input
-- **DO NOT** resolve DISCUSSION threads, or QUESTION threads with an unapproved reply
-- **DO NOT** reply to or resolve a thread whose fixing commit is not yet pushed
+- **DO NOT** auto-respond to QUESTION/DISCUSSION unless the caller explicitly enables full reply autonomy
+- **DO NOT** reply to or resolve a thread whose required fixing commit is not yet pushed
 - **DO NOT** dismiss review comments without addressing them
 - **DO NOT** push changes without running tests first
-- **DO NOT** post responses the user hasn't approved
+- **DO NOT** post unapproved responses in interactive mode; unattended full-reply-autonomy mode is explicit approval
 
 ## Output Format
 
-**Classification table:** All comments categorized with reviewer, category,
+**Classification table:** One row per unresolved thread with reviewer, category,
 summary, and file:line reference.
 
-**Action log:** For each addressed comment: what was done, test results, commit
+**Action log:** For each addressed thread: what was done, test results, commit
 hash.
 
-**Summary:** Comments received (by category), threads resolved count, threads
+**Summary:** Threads received (by category), threads resolved count, threads
 left open (with reason), pending user decisions, approval status, and final
 worktree state (clean / pushed / blocked with reason).
