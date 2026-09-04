@@ -14,8 +14,12 @@ docker run --rm -d --name "$CID" -e POSTGRES_PASSWORD=t -e POSTGRES_DB=fleet -p 
 for _ in $(seq 1 30); do docker exec "$CID" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
 docker cp docker/initdb/01-schema.sql "$CID:/tmp/01.sql"
 docker cp docker/initdb/02-agent-server.sql "$CID:/tmp/02.sql"
+docker cp docker/initdb/03-human-review-queue.sql "$CID:/tmp/03.sql"
 docker exec "$CID" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 -f /tmp/01.sql >/dev/null
 docker exec "$CID" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 -f /tmp/02.sql >/dev/null
+docker exec "$CID" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 -f /tmp/03.sql >/dev/null
+# Existing database volumes already have 01/02; schema-migrate must safely replay additive files.
+docker exec "$CID" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 -f /tmp/02.sql -f /tmp/03.sql >/dev/null
 docker exec "$CID" psql -U postgres -d fleet -q -c "CREATE TABLE sentinel(x int);" >/dev/null
 
 export REQUESTS_DB_USER=postgres REQUESTS_DB_NAME=fleet REQUESTS_DB_HOST=localhost REQUESTS_DB_PORT="$PORT"
@@ -67,6 +71,12 @@ check "false for unposted (clean-1)" "! queue_already_posted pr-review clean-1"
 echo "[6] pending_decisions insert (human-batch path)"
 pending_decision_insert "$ID" "pr-review" '{"decision":"x"}' '{"run_id":"r","written_by":"agent-server"}' >/dev/null
 check "pending_decisions row present + pending" "q \"SELECT state FROM pending_decisions WHERE request_id=$ID;\" | grep -qx pending"
+
+echo "[7] blocked maintenance uses separate deduplicated human-review queue"
+pending_maintenance_review_insert "$ID" '{"finding":"retry semantics need human review"}' '{"run_id":"retry","written_by":"agent-server"}' >/dev/null
+pending_maintenance_review_insert "$ID" '{"finding":"duplicate"}' '{"run_id":"retry","written_by":"agent-server"}' >/dev/null
+check "one maintenance review item per request" "q \"SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=$ID;\" | grep -qx 1"
+check "maintenance review is pending" "q \"SELECT state FROM pending_maintenance_reviews WHERE request_id=$ID;\" | grep -qx pending"
 
 echo
 [[ $fail -eq 0 ]] && echo "ALL PASS" || { echo "FAILURES"; exit 1; }

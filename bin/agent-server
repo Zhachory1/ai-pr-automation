@@ -74,7 +74,8 @@ db_up() { _psql <<<"SELECT 1;" >/dev/null 2>&1; }
 
 # --- write-path gate: server writes memory, agent does NOT ---
 # Reads $work_root/result.json. Validates schema + nonce. Auto-retains ONLY server-synthesized
-# facts. Routes all agent-authored bodies to pending_decisions. Never inlines agent prose to shared.
+# facts. Routes memory proposals and blocked maintenance findings to separate human queues. Never
+# inlines agent prose to shared.
 apply_write_path_gate() {
   local id="$1" kind="$2" repo="$3" pr="$4" head_sha="$5" run_id="$6" nonce="$7" work_root="$8" verdict="$9"
   local result="$work_root/result.json"
@@ -89,11 +90,20 @@ apply_write_path_gate() {
   prov="$(jq -cn --arg run "$run_id" --arg repo "$repo" --arg pr "$pr" --arg head "$head_sha" \
     '{run_id:$run, repo:$repo, pr:$pr, head_sha:$head, written_by:"agent-server"}')"
   hindsight_retain "$SHARED_BANK" "$fact" || log "gate: shared-fact retain failed (non-fatal)"
-  # agent-authored bodies -> human batch, never shared memory:
-  if jq -e '.memory.decisions != null and (.memory.decisions | length > 0)' "$result" >/dev/null 2>&1; then
-    local proposal; proposal="$(jq -c '{decisions: .memory.decisions, findings: .findings, summary: .summary}' "$result")"
+  # Memory proposals await memory-specific human review. Blocked maintenance work uses its own
+  # local queue so marking it handled cannot authorize a shared-memory write.
+  if jq -e '(.memory.decisions // [] | length) > 0' "$result" >/dev/null 2>&1; then
+    local proposal; proposal="$(jq -c '{decisions: (.memory.decisions // []), findings: (.findings // []), summary: (.summary // "")}' "$result")"
     pending_decision_insert "$id" "$kind" "$proposal" "$prov" \
-      && log "gate: routed agent-authored bodies to pending_decisions (human batch)"
+      && log "gate: routed agent-authored proposal to pending_decisions"
+  fi
+  if [[ "$kind" == pr-maintain ]] && jq -e '.maintenance.needs_human_review == true' "$result" >/dev/null 2>&1; then
+    local maintenance_proposal; maintenance_proposal="$(jq -c '{findings: (.findings // []), summary: (.summary // "")}' "$result")"
+    if ! pending_maintenance_review_insert "$id" "$maintenance_proposal" "$prov"; then
+      log "gate: failed to route blocked maintenance work to human-review queue"
+      return 1
+    fi
+    log "gate: routed blocked maintenance work to human-review queue"
   fi
 }
 
@@ -173,9 +183,13 @@ process_one() {
     local verdict; verdict="$(jq -r '.verdict // "unknown"' "$work_root/result.json" 2>/dev/null || echo unknown)"
     # verdict is agent-authored: whitelist before it can touch the server fact / shared bank.
     case "$verdict" in comment|request-changes|approve) ;; *) verdict=unknown ;; esac
-    apply_write_path_gate "$id" "$kind" "$repo" "$pr" "$head_sha" "$run_id" "$nonce" "$work_root" "$verdict"
-    queue_mark_done "$id" "head=$head_sha"
-    log "done $repo#$pr (verdict=$verdict)"
+    if ! apply_write_path_gate "$id" "$kind" "$repo" "$pr" "$head_sha" "$run_id" "$nonce" "$work_root" "$verdict"; then
+      queue_mark_failed "$id" "human-review queue insert failed"
+      log "failed $repo#$pr: human-review queue insert failed"
+    else
+      queue_mark_done "$id" "head=$head_sha"
+      log "done $repo#$pr (verdict=$verdict)"
+    fi
   else
     queue_mark_failed "$id" "runner exited $status (side_effect_at set: not auto-retried)"
     log "failed $repo#$pr (exit $status)"
@@ -370,10 +384,11 @@ Push rules (the branch is yours; still strict):
 - Do NOT merge, close, or dismiss.
 
 Emit typed structured output to: $work_root/result.json
-    {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"memory":{"decisions":[..]}}
-  The nonce MUST equal exactly: $nonce . 'summary' should list: fixes committed+pushed, threads
-  replied/resolved, and anything skipped as pending. Only 'decisions' bodies are eligible for durable
-  memory, via human review only.
+    {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"maintenance":{"needs_human_review":true|false},"memory":{"decisions":[..]}}
+  The nonce MUST equal exactly: $nonce. Set `maintenance.needs_human_review` to true ONLY when you
+  skipped unresolved feedback because it needs human judgment; otherwise false. 'summary' should list:
+  fixes committed+pushed, threads replied/resolved, and anything skipped as pending. Only 'decisions'
+  bodies are eligible for durable memory, via human review only.
 - Finish within the external timeout.
 PROMPT
 }
