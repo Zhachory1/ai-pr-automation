@@ -249,8 +249,11 @@ def findings_html(raw: str) -> str:
             location += f":{finding['line']}"
         severity = finding.get("severity")
         prefix = " — ".join(part for part in (str(severity) if severity is not None else "", location) if part)
-        text = str(finding.get("text", ""))
-        items.append(f"<li><strong>{e(prefix)}</strong>{': ' if prefix and text else ''}{e(text)}</li>")
+        text = str(finding.get("text", finding.get("claim", "")))
+        risk = str(finding.get("risk", ""))
+        remediation = str(finding.get("recommended_remediation", ""))
+        detail = " — ".join(part for part in (text, risk, remediation) if part)
+        items.append(f"<li><strong>{e(prefix)}</strong>{': ' if prefix and detail else ''}{e(detail)}</li>")
     return "<ul>" + "".join(items) + "</ul>"
 
 
@@ -258,13 +261,14 @@ def human_review_table(rows: list[list[str]]) -> str:
     if not rows:
         return "<section><h2>Human review queue (0)</h2><p class=empty>nothing needs review</p></section>"
     body = ""
-    for review_id, request_id, url, summary, findings, created, rtype in rows:
+    for review_id, request_id, url, summary, findings, handoff, created, rtype in rows:
         type_chip = ('<span class="chip s-done">review-ready</span>' if rtype == "review-ready"
+                     else '<span class="chip s-running">pr-safety</span>' if rtype == "pr-safety-review"
                      else '<span class="chip s-queued">maintenance</span>')
         body += ("<tr>"
                  f"<td>{e(review_id)}</td><td>{type_chip}</td><td>{github_pr_link(url)}</td>"
                  f"<td>{e(summary).replace(chr(10), '<br>')}</td><td>{findings_html(findings)}</td>"
-                 f"<td>{e(created)}</td>"
+                 f"<td>{e(handoff)}</td><td>{e(created)}</td>"
                  f"<td><form class=inline method=post action=\"/human-reviews/{e(review_id)}/reviewed\">"
                  f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\"><button>Reviewed</button></form>"
                  f"<form class=inline method=post action=\"/human-reviews/{e(review_id)}/dismissed\">"
@@ -272,10 +276,10 @@ def human_review_table(rows: list[list[str]]) -> str:
                  "</tr>")
     return ("<section><h2>Human review queue (" + str(len(rows)) + ")</h2>"
             "<p class=hint>Agent-flagged work: <b>review-ready</b> PRs the agent judged done (your call to "
-            "approve+merge on GitHub), and <b>maintenance</b> work it left for a human. Reviewed/Dismiss "
-            "only update this local queue; they never write to GitHub.</p>"
+            "approve+merge on GitHub), <b>maintenance</b> work it left for a human, and <b>pr-safety</b> "
+            "handoff recommendations. Reviewed/Dismiss only update this local queue; they never write to GitHub.</p>"
             "<table><thead><tr><th>id</th><th>type</th><th>PR</th><th>agent summary</th>"
-            "<th>findings</th><th>created</th><th>queue</th></tr></thead><tbody>" + body + "</tbody></table></section>")
+            "<th>findings</th><th>handoff</th><th>created</th><th>queue</th></tr></thead><tbody>" + body + "</tbody></table></section>")
 
 
 def json_html(raw: str) -> str:
@@ -347,10 +351,11 @@ def render(flash: str = "") -> str:
             "ORDER BY finished_at DESC NULLS LAST LIMIT 20")
         human_review = query(
             "SELECT d.id AS id, d.request_id AS request_id, "
-            "coalesce(r.payload->>'url','') AS url, coalesce(d.proposal->>'summary','') AS summary, "
+            "coalesce(r.payload->>'url','') AS url, coalesce(d.proposal->>'summary', d.proposal->>'status','') AS summary, "
             "coalesce((d.proposal->'findings')::text,'[]') AS findings, "
+            "coalesce(d.proposal->>'handoff_path','') AS handoff, "
             "to_char(d.created_at,'MM-DD HH24:MI') AS created, "
-            "CASE WHEN d.proposal->>'ready' = 'true' THEN 'review-ready' ELSE 'maintenance' END AS rtype "
+            "CASE WHEN d.proposal->>'ready' = 'true' THEN 'review-ready' ELSE r.kind END AS rtype "
             "FROM pending_maintenance_reviews d JOIN requests r ON r.id = d.request_id "
             "WHERE d.state='pending' ORDER BY d.created_at DESC")
         pending = query(

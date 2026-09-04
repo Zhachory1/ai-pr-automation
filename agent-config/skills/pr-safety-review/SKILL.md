@@ -12,7 +12,7 @@ head commit and return evidence-backed structured findings.
 
 Controller supplies all of these fields:
 
-- `operation_id`, `repo`, `pr_number`, `head_sha`, `base_sha`, and `diff_hash`;
+- `operation_id`, `repo`, `pr`, `head_sha`, `base_sha`, `diff_hash`, and `policy_version`;
 - read-only repository snapshot checked out at `head_sha`;
 - policy bundle version with pinned document revisions and repository rules;
 - allowed read-only commands and time budget;
@@ -50,7 +50,8 @@ Use `needs_human_decision` when intent or authoritative evidence is missing. Do 
 from PR description alone. Set `datadog_terraform_candidate` only when evidence supports a
 proposal; it is never authorization to create one. Write Markdown `handoff.md` only to controller-
 supplied `PR_SAFETY_HANDOFF_DRAFT` inside your private per-operation output workspace. `Return JSON
-only` applies to stdout and structured response; Markdown goes only to that draft path. Controller
+only` applies to stdout and structured response; Markdown goes only to that draft path. Handoff
+must include exact JSON status, every finding claim, and every finding evidence source. Controller
 verifies identity and result schema, then atomically promotes draft into immutable local
 `HANDOFF_ROOT` and queues it for human review. Do not select final path, overwrite another handoff,
 or publish document.
@@ -79,10 +80,12 @@ Return JSON only:
 {
   "operation_id": "string",
   "repo": "owner/repo",
-  "pr_number": 123,
+  "pr": 123,
   "head_sha": "40-hex SHA",
+  "base_sha": "40-hex SHA",
   "diff_hash": "string",
   "policy_version": "string",
+  "policy_digest": "SHA-256",
   "status": "clear | changes_requested | needs_human_decision | incident_candidate | superseded",
   "intent": {
     "claimed": "string",

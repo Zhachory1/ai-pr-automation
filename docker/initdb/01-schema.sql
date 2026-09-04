@@ -7,7 +7,7 @@ CREATE TABLE requests (
   payload       JSONB NOT NULL,                      -- identifiers only, never secrets
   dedupe_key    TEXT NOT NULL,                       -- e.g. 'owner/repo#123@sha'
   status        TEXT NOT NULL DEFAULT 'queued'
-                  CHECK (status IN ('queued','running','done','failed')),
+                  CHECK (status IN ('queued','running','done','failed','superseded')),
   fail_response TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   started_at    TIMESTAMPTZ,

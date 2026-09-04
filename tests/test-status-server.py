@@ -20,11 +20,12 @@ loader.exec_module(status_server)
 
 
 class StatusServerTest(unittest.TestCase):
-    def test_render_shows_escaped_maintenance_human_queue_item(self):
+    def test_render_shows_escaped_pr_safety_human_queue_item(self):
         rows = [
             [], [], [],
             [["17", "42", "https://github.com/ROKT/repo/pull/7", "Needs <review>",
-              '[{"file":"x.py","line":12,"severity":"major","text":"Fix <this>"}]', "09-03 20:43", "maintenance"]],
+              '[{"file":"x.py","line":12,"severity":"major","claim":"Fix <this>","risk":"break","recommended_remediation":"test"}]',
+              "/private/handoff.md", "09-03 20:43", "pr-safety-review"]],
             [], [], [],
         ]
         with patch.object(status_server, "query", side_effect=rows):
@@ -34,6 +35,8 @@ class StatusServerTest(unittest.TestCase):
         self.assertIn('href="https://github.com/ROKT/repo/pull/7"', page)
         self.assertIn("Needs &lt;review&gt;", page)
         self.assertIn("Fix &lt;this&gt;", page)
+        self.assertIn("/private/handoff.md", page)
+        self.assertIn("pr-safety", page)
         self.assertIn('/human-reviews/17/reviewed', page)
         self.assertIn('/human-reviews/17/dismissed', page)
 

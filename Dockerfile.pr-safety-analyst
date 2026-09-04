@@ -1,0 +1,11 @@
+# Isolated draft-only analyst. No git, gh, psql, curl, MCP configuration, or credentials are baked in.
+FROM node:20-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @zhachory1/mewrite-code
+WORKDIR /app
+RUN mkdir -p /output /input
+COPY agent-config/skills/pr-safety-review/ /app/agent-config/skills/pr-safety-review/
+ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
+USER 65532:65532
+ENTRYPOINT ["mewritecode", "exec"]

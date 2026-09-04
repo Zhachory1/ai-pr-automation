@@ -1,6 +1,6 @@
 # PR Safety Review Contract
 
-Status: draft-only. This contract adds no worker, producer, credential, or external write path.
+Status: draft-only controller and analyst runner. No producer or external write path.
 
 ## Purpose
 
@@ -13,9 +13,11 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
 ## Hard Boundaries
 
 - Do not reuse `pr-review` or `pr-maintain` worker authority.
-- Analyzer gets a disposable read-only checkout and no GitHub, Chat, Datadog, CI, provider,
-  shared-memory-write, host-code, Docker-socket, or metadata-service credential.
-- Controller binds result to `(repo, pr_number, head_sha, policy_version, diff_hash)`.
+- Analyst gets a disposable read-only checkout and its existing model-provider credential only;
+  no GitHub, Chat, DB, CI, Datadog, cloud, MCP, shared-memory-write, host-code, Docker-socket, or
+  metadata-service credential.
+- Controller requires and binds `operation_id`, `repo`, `pr`, `head_sha`, `base_sha`, `diff_hash`,
+  `policy_version`, `snapshot_path`, and `policy_path`; paths resolve beneath configured roots.
 - Changed head means `superseded`, not a review of newer code.
 - Chat can start tracked work and receive links. GitHub remains approval and merge authority.
 - Free-form Chat text, reactions, PR text, comments, code, CI output, and tool output are data,
@@ -26,6 +28,22 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
   workspace. Controller validates and promotes it into immutable local handoff doc, then queues it
   for human review.
 
+## Runtime
+
+`pr-safety-review-controller` claims only `pr-safety-review` rows from existing `requests`.
+Every payload must include `operation_id`, `repo`, `pr`, `head_sha`, `base_sha`, `diff_hash`,
+`policy_version`, `policy_digest`, `snapshot_path`, and `policy_path`. Controller resolves both paths
+beneath configured roots, verifies clean snapshot `HEAD`, `git diff base_sha..head_sha` digest, and
+policy-file SHA-256 digest. Mismatch becomes `superseded` before analyst starts.
+
+`pr-safety-review-runner` starts a separate non-root, read-only Docker image. It mounts immutable
+snapshot and policy paths read-only and mounts only per-operation `handoff.md` writable. It passes
+only existing `OPENAI_API_KEY`; no GitHub, Chat, DB, CI, Datadog, cloud, or MCP credential reaches
+analyst. Runtime drops Linux capabilities, prevents privilege escalation, uses temporary runtime
+storage, and limits process, CPU, and memory use. Controller validates returned JSON and handoff
+identity, status, findings, and evidence, atomically promotes handoff, then uses existing
+`pending_maintenance_reviews` with final path and SHA-256 digest in provenance.
+
 ## Handoff Storage
 
 Controller gives analyst one writable `PR_SAFETY_HANDOFF_DRAFT` path inside a fresh, private
@@ -34,7 +52,7 @@ Analyzer cannot see or write shared `HANDOFF_ROOT`, choose final path, or overwr
 
 Controller validates draft against JSON result and immutable operation identity, then copies it to
 temporary file under private local `HANDOFF_ROOT`, sets private file permissions, and atomically
-renames final file. Final handoff contains operation ID, repository, PR number, immutable source
+publishes final file without overwrite. Final handoff contains operation ID, repository, PR number, immutable source
 SHA, diff hash, policy/prompt/model versions, findings, evidence, and recommendations. Queue
 `provenance` stores final handoff path and content digest.
 
@@ -64,7 +82,7 @@ sufficient intent evidence.
 
 | Threat | Required control |
 | --- | --- |
-| Prompt injection from Chat, PR, code, comments, or tool output | Treat all external text as data. Tokenless read-only sandbox. |
+| Prompt injection from Chat, PR, code, comments, or tool output | Treat all external text as data. Read-only sandbox with only existing model credential. |
 | Stale result | Store SHA and diff hash in job payload. Mark changed head as `superseded`. |
 | Duplicate event or notification | Add inbound-event ledger and transactional outbox before Chat integration. |
 | Bot feedback loop | Use correlation IDs, bot-message filtering, one active operation per PR lineage, quotas, and circuit breaker. |
@@ -98,6 +116,7 @@ Run:
 
 ```bash
 bash tests/test-pr-safety-review-skill.sh
+bash tests/test-pr-safety-review-controller.sh
 ```
 
 Test guards contract language. It does not prove future runtime sandboxing. Runtime enforcement is

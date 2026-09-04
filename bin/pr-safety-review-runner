@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Runs analyst with only its existing model-provider credential and fixed mounts.
+set -euo pipefail
+
+prompt="${1:?prompt file}"
+: "${OPENAI_API_KEY:?set OPENAI_API_KEY}"
+: "${PR_SAFETY_SNAPSHOT_PATH:?}"
+: "${PR_SAFETY_POLICY_PATH:?}"
+: "${PR_SAFETY_HANDOFF_DRAFT:?}"
+: "${PR_SAFETY_RESULT_FILE:?}"
+
+image="${PR_SAFETY_ANALYST_IMAGE:-agent-fleet/pr-safety-analyst:latest}"
+docker run --rm --stop-timeout 10 --network bridge --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges \
+  --pids-limit 256 --memory 2g --cpus 2 --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=1777 \
+  --mount "type=bind,src=$PR_SAFETY_SNAPSHOT_PATH,dst=/snapshot,readonly" \
+  --mount "type=bind,src=$PR_SAFETY_POLICY_PATH,dst=/policy,readonly" \
+  --mount "type=bind,src=$PR_SAFETY_HANDOFF_DRAFT,dst=/output/handoff.md" \
+  --mount "type=bind,src=$prompt,dst=/input/prompt.md,readonly" \
+  --workdir /snapshot -e OPENAI_API_KEY -e PR_SAFETY_HANDOFF_DRAFT=/output/handoff.md \
+  "$image" "$(<"$prompt")" > "$PR_SAFETY_RESULT_FILE"

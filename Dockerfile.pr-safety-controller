@@ -1,0 +1,8 @@
+# Trusted controller: queue/database access plus Docker CLI to launch isolated analyst containers.
+FROM docker:27-cli
+RUN apk add --no-cache bash jq git postgresql-client coreutils python3
+WORKDIR /app
+COPY bin/pr-safety-review-controller bin/pr-safety-review-runner /app/bin/
+COPY lib/queue.sh /app/lib/queue.sh
+RUN chmod +x /app/bin/*
+ENTRYPOINT ["/app/bin/pr-safety-review-controller"]
