@@ -15,6 +15,13 @@ Open `http://localhost:8080` for agent status. Blocked `pr-maintain` findings ap
 human-review queue with an **Open PR** link, agent summary, findings, and local **Reviewed** /
 **Dismiss** controls. These controls do not write to GitHub.
 
+Pending decisions show their stored proposal, findings, and provenance before action. **Approve**
+synchronously retains that exact stored data to `fleet-shared` as
+`pending-decision-<id>`, then marks the local row approved. **Reject** only updates the local row.
+A retain failure remains `publishing`; use **Retry** to replace the same Hindsight document safely.
+For rollback, delete that Hindsight document by its deterministic ID, then investigate before
+changing database history.
+
 ## What runs as a service vs. what does not
 
 Verified 2026-09-02 by reading each upstream repo. **All memory services are persistent + shared
@@ -87,7 +94,8 @@ configure automatic indexing or watcher scope; agents still own their worktree d
 `docker/initdb/01-schema.sql` loads once on first Postgres boot. `requests` (queue+record) and
 `pending_decisions` (the daily human-review batch for decision-shaped memory writes). The
 `schema-migrate` service reapplies additive schema changes for existing database volumes, including
-`pending_maintenance_reviews`, the local queue for maintenance findings needing human judgment.
+`pending_maintenance_reviews`, the local queue for maintenance findings needing human judgment, and
+pending-decision `publishing` recovery fields.
 Validated against postgres:16: dedupe index blocks two active rows for the same `(kind, dedupe_key)`
 and allows re-enqueue after `done`.
 
