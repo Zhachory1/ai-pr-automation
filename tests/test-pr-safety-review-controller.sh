@@ -23,6 +23,7 @@ BASE="$(git -C "$PR_SAFETY_SNAPSHOT_ROOT/op" rev-parse HEAD)"; printf 'head\n' >
 HEAD="$(git -C "$PR_SAFETY_SNAPSHOT_ROOT/op" rev-parse HEAD)"; DIFF="$(git -C "$PR_SAFETY_SNAPSHOT_ROOT/op" diff --no-ext-diff "$BASE" "$HEAD" | shasum -a 256 | awk '{print $1}')"
 printf 'policy\n' > "$PR_SAFETY_POLICY_ROOT/policy.md"
 POLICY_DIGEST="$(shasum -a 256 "$PR_SAFETY_POLICY_ROOT/policy.md" | awk '{print $1}')"
+export PR_SAFETY_POLICY_PATH="$PR_SAFETY_POLICY_ROOT/policy.md" PR_SAFETY_POLICY_VERSION=v1 PR_SAFETY_POLICY_DIGEST="$POLICY_DIGEST"
 # shellcheck source=../lib/queue.sh
 . lib/queue.sh
 q() { docker exec "$CID" psql -U postgres -d fleet -tAc "$1"; }
@@ -34,6 +35,18 @@ queue_enqueue pr-safety-review "$(payload op-success "$HEAD" "$DIFF")" op-succes
 bin/pr-safety-review-controller
 check "success promoted private handoff" '[[ -f "$HANDOFF_ROOT/op-success.md" ]] && [[ "$(stat -f "%Lp" "$HANDOFF_ROOT/op-success.md")" == 600 ]]'
 check "success queued once with digest provenance" "q \"SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=(SELECT id FROM requests WHERE dedupe_key='op-success');\" | grep -qx 1 && q \"SELECT provenance->>'handoff_digest' FROM pending_maintenance_reviews;\" | grep -Eq '^[0-9a-f]{64}$'"
+export TEST_OPERATION_ID=op-clear TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
+queue_enqueue pr-safety-review "$(payload op-clear "$HEAD" "$DIFF")" op-clear >/dev/null
+bin/pr-safety-review-controller
+check "clear result needs no handoff or human queue item" "q \"SELECT status||'/'||coalesce(posted_ref,'') FROM requests WHERE dedupe_key='op-clear';\" | grep -qx 'done/clear' && [[ ! -e \"$HANDOFF_ROOT/op-clear.md\" ]] && q \"SELECT count(*) FROM pending_maintenance_reviews;\" | grep -qx 1"
+export TEST_OPERATION_ID=op-clear-with-finding TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
+queue_enqueue pr-safety-review "$(payload op-clear-with-finding "$HEAD" "$DIFF")" op-clear-with-finding >/dev/null
+bin/pr-safety-review-controller
+check "clear with finding fails without discarding evidence" "q \"SELECT status FROM requests WHERE dedupe_key='op-clear-with-finding';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/op-clear-with-finding.md\" ]]"
+policy_mismatch="$(payload op-policy-mismatch "$HEAD" "$DIFF" | jq '.policy_version = "v2"')"
+queue_enqueue pr-safety-review "$policy_mismatch" op-policy-mismatch >/dev/null
+bin/pr-safety-review-controller
+check "active policy mismatch fails without analyst handoff" "q \"SELECT status FROM requests WHERE dedupe_key='op-policy-mismatch';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/op-policy-mismatch.md\" ]]"
 _psql -v payload="$(payload op-success "$HEAD" "$DIFF")" <<'SQL' >/dev/null
 INSERT INTO requests(kind, payload, dedupe_key) VALUES ('pr-safety-review', :'payload'::jsonb, 'op-success');
 SQL

@@ -52,14 +52,16 @@ policy-file SHA-256 digest. Mismatch becomes `superseded` before analyst starts.
 snapshot and policy paths read-only and mounts only per-operation `handoff.md` writable. It passes
 only existing `OPENAI_API_KEY`; no GitHub, Chat, DB, CI, Datadog, cloud, or MCP credential reaches
 analyst. Runtime drops Linux capabilities, prevents privilege escalation, uses temporary runtime
-storage, and limits process, CPU, and memory use. Controller validates returned JSON and handoff
-identity, status, findings, and evidence, atomically promotes handoff, then uses existing
-`pending_maintenance_reviews` with final path and SHA-256 digest in provenance.
+storage, and limits process, CPU, and memory use. Controller marks a valid `clear` result done without
+a handoff. For every other terminal result, it validates result and handoff identity, findings, and
+evidence, atomically promotes handoff, then uses existing `pending_maintenance_reviews` with final
+path and SHA-256 digest in provenance.
 
 ## Handoff Storage
 
-Controller gives analyst one writable `PR_SAFETY_HANDOFF_DRAFT` path inside a fresh, private
-per-operation output workspace. Analyst writes `handoff.md` there with recommendation content.
+For non-clear results, controller gives analyst one writable `PR_SAFETY_HANDOFF_DRAFT` path inside
+a fresh, private per-operation output workspace. Analyst writes `handoff.md` there with recommendation
+content.
 Analyzer cannot see or write shared `HANDOFF_ROOT`, choose final path, or overwrite other handoffs.
 
 Controller validates draft against JSON result and immutable operation identity, then copies it to
@@ -76,6 +78,17 @@ Reuse existing `pending_maintenance_reviews` queue for v1. Its `reviewed` and `d
 mean acknowledgement only. A later automatic-PR stage adds explicit `approved_for_pr` state.
 Only authenticated, policy-qualified operator can set it. Record actor, reason, source SHA,
 handoff digest, and timestamp.
+
+## Controller Activation
+
+Set all `PR_SAFETY_*` roots, policy path/version/digest, and `HANDOFF_ROOT` in private `.env`. Then run:
+
+```bash
+scripts/pr-safety-up.sh
+```
+
+The script resolves paths, requires an exact policy SHA-256 match, creates private runtime directories,
+and starts only the `pr-safety` controller profile. It refuses placeholder or invalid policy inputs.
 
 ## Policy Bundle
 
@@ -129,6 +142,7 @@ Run:
 ```bash
 bash tests/test-pr-safety-review-skill.sh
 bash tests/test-pr-safety-review-controller.sh
+bash tests/test-pr-safety-runtime.sh
 bash tests/test-pr-safety-chat-producer.sh
 ```
 
