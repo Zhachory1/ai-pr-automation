@@ -1,4 +1,4 @@
-# Read-only status web view for the agent fleet (M3). Thin: python3 + psql client only.
+# Local status and human-review web view for the agent fleet (M3). Thin: python3 + psql client only.
 # Build: docker build -f Dockerfile.status -t agent-fleet/status .
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -7,5 +7,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY bin/status-server ./bin/status-server
 RUN chmod +x bin/status-server
-# Read-only: issues only SELECTs. Config + PGPASSWORD via env (compose env_file).
+# Only queue-state POSTs are allowed; it cannot invoke GitHub. Config + PGPASSWORD via env.
 ENTRYPOINT ["python3", "bin/status-server"]

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Status web view for the agent fleet (M3 read + M4 write).
+"""Status and human-review web view for the agent fleet (M3 read + M4 write).
 
-Serves one auto-refreshing HTML page over the request Postgres. Reads are SELECT-only. Writes are a
-SMALL whitelisted set (cancel a queued row; force-inject a PR) via parameterized psql — never
-f-string SQL. All dynamic values are HTML-escaped (request data is attacker-influenced).
+Serves one auto-refreshing HTML page over the request Postgres. Writes are a SMALL whitelisted set:
+cancel a queued row, force-inject a PR, or mark local human-review work reviewed/dismissed — never
+f-string SQL or GitHub actions. All dynamic values are HTML-escaped (request data is attacker-influenced).
 
 Binds 127.0.0.1 in-code (not just compose). No auth by design (localhost single-user); writes are
 CSRF-guarded (POST + custom header + Origin + Host + per-render token). Config from env:
@@ -105,9 +105,72 @@ def inject(repo: str, pr: str, kind: str) -> str:
     return f"injected {kind} {repo}#{pr}"
 
 
+def update_human_review_state(review_id: int, state: str) -> str:
+    """Mark one local maintenance-review item reviewed or dismissed."""
+    if state not in ("reviewed", "dismissed"):
+        raise ValueError("bad review state")
+    proc = _psql(["-v", f"id={review_id}", "-v", f"state={state}"],
+                 "UPDATE pending_maintenance_reviews SET state = :'state', reviewed_at = now() "
+                 "WHERE id = :'id'::bigint AND state = 'pending' RETURNING id")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "human-review update failed")
+    return f"{state} human-review #{review_id}" if proc.stdout.strip() else f"#{review_id} not pending"
+
+
 def e(v) -> str:
     """HTML-escape a value. ALL dynamic data goes through here (attacker-influenced)."""
     return html.escape("" if v is None else str(v))
+
+
+def github_pr_link(url: str) -> str:
+    if not re.fullmatch(r"https://github\.com/[^/]+/[^/]+/pull/\d+", url):
+        return e(url)
+    return f'<a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener">Open PR</a>'
+
+
+def findings_html(raw: str) -> str:
+    try:
+        findings = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return e(raw)
+    if not findings:
+        return "—"
+    if not isinstance(findings, list):
+        return e(raw)
+    items = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            items.append(f"<li>{e(finding)}</li>")
+            continue
+        location = str(finding.get("file", ""))
+        if finding.get("line") is not None:
+            location += f":{finding['line']}"
+        severity = finding.get("severity")
+        prefix = " — ".join(part for part in (str(severity) if severity is not None else "", location) if part)
+        text = str(finding.get("text", ""))
+        items.append(f"<li><strong>{e(prefix)}</strong>{': ' if prefix and text else ''}{e(text)}</li>")
+    return "<ul>" + "".join(items) + "</ul>"
+
+
+def human_review_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return "<section><h2>Human review queue (0)</h2><p class=empty>nothing needs review</p></section>"
+    body = ""
+    for review_id, request_id, url, summary, findings, created in rows:
+        body += ("<tr>"
+                 f"<td>{e(review_id)}</td><td>{e(request_id)}</td><td>{github_pr_link(url)}</td>"
+                 f"<td>{e(summary).replace(chr(10), '<br>')}</td><td>{findings_html(findings)}</td>"
+                 f"<td>{e(created)}</td>"
+                 f"<td><form class=inline method=post action=\"/human-reviews/{e(review_id)}/reviewed\">"
+                 f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\"><button>Reviewed</button></form>"
+                 f"<form class=inline method=post action=\"/human-reviews/{e(review_id)}/dismissed\">"
+                 f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\"><button>Dismiss</button></form></td>"
+                 "</tr>")
+    return ("<section><h2>Human review queue (" + str(len(rows)) + ")</h2>"
+            "<p class=hint>Review agent-blocked maintenance work, then mark it reviewed or dismiss it. "
+            "These controls only update this local queue; they never write to GitHub.</p>"
+            "<table><thead><tr><th>id</th><th>request</th><th>PR</th><th>agent summary</th>"
+            "<th>findings</th><th>created</th><th>queue</th></tr></thead><tbody>" + body + "</tbody></table></section>")
 
 
 def table(title: str, headers: list[str], rows: list[list[str]], empty: str) -> str:
@@ -136,6 +199,11 @@ def render(flash: str = "") -> str:
             "to_char(finished_at,'MM-DD HH24:MI') "
             "FROM requests WHERE status IN ('done','failed') "
             "ORDER BY finished_at DESC NULLS LAST LIMIT 20")
+        human_review = query(
+            "SELECT d.id, d.request_id, coalesce(r.payload->>'url',''), coalesce(d.proposal->>'summary',''), "
+            "coalesce((d.proposal->'findings')::text,'[]'), to_char(d.created_at,'MM-DD HH24:MI') "
+            "FROM pending_maintenance_reviews d JOIN requests r ON r.id = d.request_id "
+            "WHERE d.state='pending' ORDER BY d.created_at DESC")
         pending = query(
             "SELECT id, request_id, kind, to_char(created_at,'MM-DD HH24:MI') "
             "FROM pending_decisions WHERE state='pending' ORDER BY created_at DESC LIMIT 20")
@@ -149,7 +217,7 @@ def render(flash: str = "") -> str:
             "HAVING count(*) >= 3 ORDER BY max(finished_at) DESC NULLS LAST LIMIT 20")
         db_err = None
     except Exception as ex:
-        running = queued = recent = pending = today = capped = []
+        running = queued = recent = human_review = pending = today = capped = []
         db_err = str(ex)
 
     banner = (f"<p class=err>DB unreachable: {e(db_err)}</p>" if db_err else "")
@@ -184,7 +252,7 @@ def render(flash: str = "") -> str:
  th{{color:var(--mut);font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}}
  tr:last-child td{{border-bottom:none}}
  td{{max-width:60ch;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem}}
- .empty{{color:var(--mut)}} .err{{color:#ff6b6b;font-weight:600}}
+ .empty{{color:var(--mut)}} .hint{{color:var(--mut)}} .err{{color:#ff6b6b;font-weight:600}}
  .flash{{color:#111;background:#7ee787;border-radius:6px;padding:.4rem .7rem;font-weight:600}}
  .chip{{display:inline-block;padding:.05rem .5rem;border-radius:999px;font-size:.75rem;font-weight:600;font-family:system-ui}}
  .s-queued{{background:#2b2f3a;color:#c8ccd8}} .s-running{{background:#12324f;color:#5ab0ff}}
@@ -210,6 +278,7 @@ def render(flash: str = "") -> str:
 </form></section>
 {table("Running now", ["id","kind","dedupe_key","elapsed"], running, "nothing running")}
 {queued_html}
+{human_review_table(human_review)}
 {table(f"Pending decisions ({pending_n})", ["id","request_id","kind","created"], pending, "no pending decisions")}
 {recent_table(recent)}
 {table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}
@@ -308,7 +377,10 @@ class Handler(BaseHTTPRequestHandler):
                                 params.get("pr", [""])[0].strip(),
                                 params.get("kind", [""])[0].strip())
             else:
-                self.send_response(404); self.end_headers(); return
+                review_match = re.fullmatch(r"/human-reviews/(\d+)/(reviewed|dismissed)", self.path)
+                if not review_match:
+                    self.send_response(404); self.end_headers(); return
+                result = update_human_review_state(int(review_match.group(1)), review_match.group(2))
         except (ValueError, RuntimeError) as ex:
             result = f"rejected: {ex}"
         # Audit trail (single line, stderr) — mutating a work queue should not be silent.

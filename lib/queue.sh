@@ -138,9 +138,16 @@ RETURNING 1;
 SQL
 }
 
-# Route an agent-authored body to the human batch. NEVER auto-writes shared memory.
+# Route an agent-authored memory proposal to its human batch. NEVER auto-writes shared memory.
 pending_decision_insert() {
   local request_id="$1" kind="$2" proposal_json="$3" provenance_json="$4"
   _psql -v rid="$request_id" -v kind="$kind" -v prop="$proposal_json" -v prov="$provenance_json" \
     <<<"INSERT INTO pending_decisions(request_id, kind, proposal, provenance) VALUES (:'rid', :'kind', :'prop'::jsonb, :'prov'::jsonb);"
+}
+
+# Blocked PR maintenance waits in a separate queue: completing it cannot approve a memory proposal.
+pending_maintenance_review_insert() {
+  local request_id="$1" proposal_json="$2" provenance_json="$3"
+  _psql -v rid="$request_id" -v prop="$proposal_json" -v prov="$provenance_json" \
+    <<<"INSERT INTO pending_maintenance_reviews(request_id, proposal, provenance) VALUES (:'rid', :'prop'::jsonb, :'prov'::jsonb) ON CONFLICT (request_id) DO NOTHING;"
 }
