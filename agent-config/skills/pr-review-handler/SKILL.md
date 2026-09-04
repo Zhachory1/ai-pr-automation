@@ -85,9 +85,10 @@ Interactive mode: ask the user to confirm classifications before proceeding.
 
 Unattended scheduler mode: if the caller explicitly says the run is approved
 for unattended/automatic/hourly PR maintenance, do **not** stop for human
-classification confirmation. Proceed only on low-risk, unambiguous ACTIONABLE or
-NITS items. QUESTION and DISCUSSION items must be reported as drafts/pending
-human decisions only; do not post them.
+classification confirmation. Apply code changes only for low-risk, unambiguous
+ACTIONABLE or NITS items. If the caller also explicitly enables full reply
+autonomy, post grounded replies to QUESTION and DISCUSSION items and resolve
+their threads; do not invent facts or expand code-change scope to answer them.
 
 ### Step 4: Address Comments by Category
 
@@ -105,8 +106,9 @@ Push and verify (Step 5) before replying or resolving — do not reply to or res
 
 1. Analyze the code context around the referenced line
 2. Draft a response explaining the design decision or rationale
-3. Present the draft to the user for approval before posting
-4. Post as a reply on the PR
+3. Interactive mode: present the draft to the user for approval before posting
+4. Unattended full-reply-autonomy mode: post the grounded response without stopping
+5. Resolve the thread after the response posts successfully
 
 **NITS comments:**
 
@@ -117,9 +119,11 @@ Push and verify (Step 5) before replying to or resolving the nit threads.
 
 **DISCUSSION comments:**
 
-1. Summarize the discussion thread
-2. Present options to the user
-3. Wait for user decision before responding
+1. Summarize the discussion thread and inspect the relevant code/history
+2. Interactive mode: present options and wait for the user before responding
+3. Unattended full-reply-autonomy mode: choose and post the best grounded response without stopping;
+   do not make higher-risk code changes merely to close the discussion
+4. Resolve the thread after the response posts successfully
 
 ### Step 5: Push First, Then Reply and Resolve
 
@@ -160,19 +164,18 @@ state must be one of:
 - **DO** confirm classifications with the user before proceeding in interactive mode
 - **DO** proceed without confirmation only when the caller explicitly grants unattended/automatic PR-maintenance mode
 - **DO** run tests after applying ACTIONABLE changes
-- **DO** get user approval before posting QUESTION responses
+- **DO** get user approval before posting QUESTION responses in interactive mode; explicit unattended full-reply-autonomy mode is approval
 - **DO** batch NITS into a single commit
 - **DO** push the fixing commit and confirm it landed before replying to or resolving its thread
 - **DO** resolve each thread after it is addressed (reply is not enough)
 - **DO** verify addressed threads show `isResolved: true` before reporting
 - **DO** end with no local diff, or with validated fixes committed+pushed+replied+resolved
 - **DO NOT** leave validated local fixes uncommitted or unpushed
-- **DO NOT** auto-respond to DISCUSSION comments without user input
-- **DO NOT** resolve DISCUSSION threads, or QUESTION threads with an unapproved reply
-- **DO NOT** reply to or resolve a thread whose fixing commit is not yet pushed
+- **DO NOT** auto-respond to QUESTION/DISCUSSION unless the caller explicitly enables full reply autonomy
+- **DO NOT** reply to or resolve a thread whose required fixing commit is not yet pushed
 - **DO NOT** dismiss review comments without addressing them
 - **DO NOT** push changes without running tests first
-- **DO NOT** post responses the user hasn't approved
+- **DO NOT** post unapproved responses in interactive mode; unattended full-reply-autonomy mode is explicit approval
 
 ## Output Format
 
