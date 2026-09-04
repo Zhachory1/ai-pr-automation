@@ -336,7 +336,7 @@ Boundaries:
 - Emit typed structured output to: $work_root/result.json
     {"nonce":"$nonce","verdict":"comment|request-changes","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"ready_for_human_review":true|false,"memory":{"decisions":[..]}}
   The nonce MUST equal exactly: $nonce
-  Set `ready_for_human_review` to TRUE only when, after reviewing exactly this commit, you found no
+  Set ready_for_human_review to TRUE only when, after reviewing exactly this commit, you found no
   blocking issues and believe the PR is ready for a human to approve+merge. This does NOT approve the
   PR — it only surfaces it on the operator's human-review stack for a human decision. If you set it
   true, still post your COMMENT review (never APPROVE). When there are blocking findings, set it false.
@@ -402,7 +402,7 @@ Push rules (the branch is yours; still strict):
 
 Emit typed structured output to: $work_root/result.json
     {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"maintenance":{"needs_human_review":true|false},"memory":{"decisions":[..]}}
-  The nonce MUST equal exactly: $nonce. Set `maintenance.needs_human_review` to true ONLY when you
+  The nonce MUST equal exactly: $nonce. Set maintenance.needs_human_review to true ONLY when you
   skipped unresolved feedback because it needs human judgment; otherwise false. 'summary' should list:
   fixes committed+pushed, threads replied/resolved, and anything skipped as pending. Only 'decisions'
   bodies are eligible for durable memory, via human review only.
