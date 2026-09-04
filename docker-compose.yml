@@ -195,6 +195,9 @@ services:
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
       REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      PR_PRODUCER_REPOSITORIES: ${PR_PRODUCER_REPOSITORIES:-}
+      PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
+      PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
     depends_on:
       db-requests:
         condition: service_healthy
