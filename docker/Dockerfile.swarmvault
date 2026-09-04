@@ -15,6 +15,7 @@ FROM node:24-alpine
 WORKDIR /app
 COPY --from=build /src /app
 COPY docker/swarmvault-entrypoint.sh /usr/local/bin/swarmvault-watch
-RUN chmod +x /usr/local/bin/swarmvault-watch
+RUN npm install -g supergateway@3.4.3 \
+ && chmod +x /usr/local/bin/swarmvault-watch
 ENV NODE_ENV=production
 ENTRYPOINT ["/usr/local/bin/swarmvault-watch"]
