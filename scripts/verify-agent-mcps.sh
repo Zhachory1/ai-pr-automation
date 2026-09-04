@@ -4,16 +4,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 probe_agent_mcps() {
-  docker compose exec -T "$1" sh -s <<'SH'
+  docker compose exec -T "$1" bash -s <<'SH'
 set -eu
 probe() {
   name="$1" delay="$2" tool="$3"
   config=/app/agent-config/mcp.json
-  jq -e --arg name "$name" '.mcpServers[$name].command == "npx" and .mcpServers[$name].args[:2] == ["-y", "mcp-remote@0.3.0"]' "$config" >/dev/null
-  url="$(jq -r --arg name "$name" '.mcpServers[$name].args[-1]' "$config")"
+  jq -e --arg name "$name" '.mcpServers[$name].command == "npx" and .mcpServers[$name].args[:2] == ["-y", "mcp-remote@0.3.0"] and (.mcpServers[$name].args | index("--allow-http") != null)' "$config" >/dev/null
+  mapfile -t args < <(jq -r --arg name "$name" '.mcpServers[$name].args[]' "$config")
+  url="$(jq -r --arg name "$name" '.mcpServers[$name].args[] | select(startswith("http"))' "$config")"
   output="$(mktemp)"
   status=0
-  { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"agent-mcp-verify","version":"1"}}}'; sleep "$delay"; printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'; sleep 1; printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'; sleep 1; printf '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"%s","arguments":{}}}\n' "$tool"; sleep 3; } | timeout 70 npx -y mcp-remote@0.3.0 "$url" >"$output" 2>&1 || status=$?
+  { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"agent-mcp-verify","version":"1"}}}'; sleep "$delay"; printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'; sleep 1; printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'; sleep 1; printf '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"%s","arguments":{}}}\n' "$tool"; sleep 3; } | timeout 70 npx "${args[@]}" >"$output" 2>&1 || status=$?
   status="${status:-0}"
   [ "$status" -eq 0 ] || [ "$status" -eq 124 ]
   node - "$output" "$tool" <<'NODE'
