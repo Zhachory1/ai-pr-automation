@@ -15,9 +15,8 @@ resolve_path() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1])
 inside_root() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
 log() { printf '%s pr-safety-chat-producer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
 
-: "${GOOGLE_CHAT_ACCESS_TOKEN:?set GOOGLE_CHAT_ACCESS_TOKEN}"
 : "${GOOGLE_CHAT_SPACE:?set GOOGLE_CHAT_SPACE}"
-: "${PR_SAFETY_CHAT_SENDERS:?set PR_SAFETY_CHAT_SENDERS}"
+: "${PR_SAFETY_CHAT_BOT_SENDER:?set PR_SAFETY_CHAT_BOT_SENDER}"
 : "${PR_SAFETY_SNAPSHOT_ROOT:?set PR_SAFETY_SNAPSHOT_ROOT}"
 : "${PR_SAFETY_POLICY_ROOT:?set PR_SAFETY_POLICY_ROOT}"
 : "${PR_SAFETY_POLICY_PATH:?set PR_SAFETY_POLICY_PATH}"
@@ -25,10 +24,7 @@ log() { printf '%s pr-safety-chat-producer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')
 : "${PR_SAFETY_POLICY_DIGEST:?set PR_SAFETY_POLICY_DIGEST}"
 
 [[ "$GOOGLE_CHAT_SPACE" =~ ^spaces/[A-Za-z0-9_-]+$ ]] || { echo "GOOGLE_CHAT_SPACE must be one immutable spaces/ resource name" >&2; exit 2; }
-IFS=, read -r -a ALLOWED_SENDERS <<< "$PR_SAFETY_CHAT_SENDERS"
-for allowed_sender in "${ALLOWED_SENDERS[@]}"; do
-  [[ -n "$allowed_sender" && "$allowed_sender" != *[[:space:]]* ]] || { echo "PR_SAFETY_CHAT_SENDERS must be comma-separated sender resource names" >&2; exit 2; }
-done
+[[ "$PR_SAFETY_CHAT_BOT_SENDER" =~ ^users/[0-9]+$ ]] || { echo "PR_SAFETY_CHAT_BOT_SENDER must be one bot users/ resource name" >&2; exit 2; }
 [[ "$PR_SAFETY_POLICY_VERSION" != *$'\n'* && "$PR_SAFETY_POLICY_VERSION" != *$'\r'* ]] || { echo "PR_SAFETY_POLICY_VERSION must be one line" >&2; exit 2; }
 [[ "$PR_SAFETY_POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "PR_SAFETY_POLICY_DIGEST must be lowercase SHA-256" >&2; exit 2; }
 
@@ -39,11 +35,6 @@ mkdir -p "$SNAPSHOT_ROOT"
 inside_root "$POLICY_PATH" "$POLICY_ROOT" && [[ -f "$POLICY_PATH" && ! -L "$POLICY_PATH" ]] || { echo "PR_SAFETY_POLICY_PATH must be regular file beneath PR_SAFETY_POLICY_ROOT" >&2; exit 2; }
 [[ "$(digest < "$POLICY_PATH")" == "$PR_SAFETY_POLICY_DIGEST" ]] || { echo "PR_SAFETY_POLICY_DIGEST does not match policy file" >&2; exit 2; }
 
-sender_allowed() {
-  local sender="$1" allowed_sender
-  for allowed_sender in "${ALLOWED_SENDERS[@]}"; do [[ "$sender" == "$allowed_sender" ]] && return 0; done
-  return 1
-}
 valid_snapshot() {
   local path="$1" base="$2" head="$3" diff="$4"
   [[ -d "$path/.git" ]] &&
@@ -91,9 +82,8 @@ process_message() {
   local message="$1" message_id sender text repo pr requested_url metadata base head op snapshot_info snapshot diff payload event_digest queued
   message_id="$(jq -r '.name // empty' <<<"$message")"
   sender="$(jq -r '.sender.name // empty' <<<"$message")"
-  jq -e '.sender.type == "HUMAN"' <<<"$message" >/dev/null || return 0
-  [[ "$message_id" == "$GOOGLE_CHAT_SPACE/messages/"* && -n "$sender" ]] || return 0
-  sender_allowed "$sender" || return 0
+  jq -e '.sender.type == "BOT"' <<<"$message" >/dev/null || return 0
+  [[ "$message_id" == "$GOOGLE_CHAT_SPACE/messages/"* && "$sender" == "$PR_SAFETY_CHAT_BOT_SENDER" ]] || return 0
   text="$(jq -r '.text // empty' <<<"$message")"
   local command_re='^/pr-safety review https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/pull/([1-9][0-9]*)$'
   [[ "$text" != *$'\n'* && "$text" != *$'\r'* && "$text" =~ $command_re ]] || return 0
@@ -126,9 +116,20 @@ if [[ -n "${PR_SAFETY_CHAT_INPUT_FILE:-}" ]]; then
   exit 0
 fi
 
+if [[ -z "${GOOGLE_CHAT_ACCESS_TOKEN:-}" ]]; then
+  need gcloud
+  GOOGLE_CHAT_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)"
+fi
+if [[ -z "${GOOGLE_CLOUD_QUOTA_PROJECT:-}" ]]; then
+  need gcloud
+  GOOGLE_CLOUD_QUOTA_PROJECT="$(gcloud config get-value project 2>/dev/null)"
+fi
+: "${GOOGLE_CHAT_ACCESS_TOKEN:?could not obtain Google Chat access token}"
+: "${GOOGLE_CLOUD_QUOTA_PROJECT:?set GOOGLE_CLOUD_QUOTA_PROJECT or gcloud active project}"
+
 next_page=""
 while true; do
-  args=(--fail --silent --show-error --get -H "Authorization: Bearer $GOOGLE_CHAT_ACCESS_TOKEN" --data-urlencode "pageSize=1000")
+  args=(--fail --silent --show-error --get -H "Authorization: Bearer $GOOGLE_CHAT_ACCESS_TOKEN" -H "x-goog-user-project: $GOOGLE_CLOUD_QUOTA_PROJECT" --data-urlencode "pageSize=1000")
   [[ -n "$next_page" ]] && args+=(--data-urlencode "pageToken=$next_page")
   page="$(curl "${args[@]}" "https://chat.googleapis.com/v1/$GOOGLE_CHAT_SPACE/messages")" || { echo "Google Chat list-messages request failed" >&2; exit 3; }
   process_page "$page"

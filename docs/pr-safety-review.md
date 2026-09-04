@@ -30,13 +30,13 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
 
 ## Chat Producer
 
-`bin/pr-safety-chat-producer` uses only `GET https://chat.googleapis.com/v1/{GOOGLE_CHAT_SPACE}/messages` with `GOOGLE_CHAT_ACCESS_TOKEN`. `GOOGLE_CHAT_SPACE` is one configured immutable `spaces/...` resource; `PR_SAFETY_CHAT_SENDERS` is an exact comma-separated allowlist of Chat sender resource names (for example, `users/123456789`). It accepts only a `HUMAN` sender's exact command:
+`bin/pr-safety-chat-producer` uses only `GET https://chat.googleapis.com/v1/{GOOGLE_CHAT_SPACE}/messages`. Each run obtains a short-lived access token through local `gcloud` Application Default Credentials and sends its configured quota project in `x-goog-user-project`; `GOOGLE_CHAT_ACCESS_TOKEN` is an emergency explicit override. `GOOGLE_CHAT_SPACE` is one configured immutable `spaces/...` resource; `PR_SAFETY_CHAT_BOT_SENDER` is one exact bot sender resource name (for example, `users/123456789`). It accepts only that `BOT` sender's exact command:
 
 ```text
 /pr-safety review https://github.com/OWNER/REPO/pull/NUMBER
 ```
 
-Bot, non-allowlisted, malformed, and free-form messages are ignored. It never posts to Chat or GitHub. For every accepted command it reads PR URL/base/head metadata through `gh pr view`, verifies the configured pinned policy path/version/SHA-256, creates a clean read-only Git snapshot under `PR_SAFETY_SNAPSHOT_ROOT`, computes `git diff base..head` SHA-256, then atomically records provider message ID plus canonical payload digest in `pr_safety_chat_events` and enqueues at most one `pr-safety-review` request. Repeated provider message IDs cannot enqueue again; an advanced PR head has a new queue key and snapshot.
+Other bots, humans, malformed, and free-form messages are ignored. It never posts to Chat or GitHub. For every accepted command it reads PR URL/base/head metadata through `gh pr view`, verifies the configured pinned policy path/version/SHA-256, creates a clean read-only Git snapshot under `PR_SAFETY_SNAPSHOT_ROOT`, computes `git diff base..head` SHA-256, then atomically records provider message ID plus canonical payload digest in `pr_safety_chat_events` and enqueues at most one `pr-safety-review` request. Repeated provider message IDs cannot enqueue again; an advanced PR head has a new queue key and snapshot.
 
 `PR_SAFETY_CHAT_INPUT_FILE` supplies a local list-messages JSON response for tests and makes no network request. It is test-only input, not an authorization bypass: sender and command validation remain unchanged.
 
