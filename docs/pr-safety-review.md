@@ -22,6 +22,8 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
   not authorization.
 - No remediation, rollback, GitHub comment, CI retry, Datadog change, or shared-memory promotion
   belongs in first pilot.
+- Controller renders validated result into immutable handoff doc and queues it for human review.
+  Agent does not write or publish handoff document.
 
 ## Policy Bundle
 
@@ -45,7 +47,7 @@ sufficient intent evidence.
 | Duplicate event or notification | Add inbound-event ledger and transactional outbox before Chat integration. |
 | Bot feedback loop | Use correlation IDs, bot-message filtering, one active operation per PR lineage, quotas, and circuit breaker. |
 | Private code or secret leakage | Approved provider only. Redact at every log, database, model, and Chat boundary. |
-| Unsafe generated fix | No generated fixes in pilot. Later use separate tokenless worker, explicit human operation, narrow path allowlist, and draft PR. |
+| Unsafe generated fix | Agent creates no fix. Handoff doc gives evidence-backed recommendation; human owns any follow-up branch and PR. |
 
 ## Pilot Gates
 
@@ -53,7 +55,8 @@ Pilot starts only when one repository and named reviewers opt in, policy revisio
 provider is approved, and circuit-breaker owner is named.
 
 Pilot succeeds only when it creates no external writes and proves useful findings without higher
-reviewer effort or author churn. Record reviewer time, material-finding acceptance rate,
+reviewer effort or author churn. Controller renders recommendations as immutable handoff docs and
+queues them for human review. Record reviewer time, material-finding acceptance rate,
 false-positive rate, duplicate rate, and stale-result rate.
 
 ## Validation

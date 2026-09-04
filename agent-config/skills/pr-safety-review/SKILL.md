@@ -48,7 +48,8 @@ Assess:
 
 Use `needs_human_decision` when intent or authoritative evidence is missing. Do not infer intent
 from PR description alone. Set `datadog_terraform_candidate` only when evidence supports a
-proposal; it is never authorization to create one.
+proposal; it is never authorization to create one. Controller may render your validated JSON into
+an immutable handoff document and queue it for human review. Do not create or publish that document.
 
 ## Forbidden Actions
 
@@ -124,4 +125,5 @@ Return JSON only:
 - Result is bound to controller-supplied immutable identity.
 - Every finding has evidence, risk, and action.
 - Result makes no external change.
+- Controller-owned handoff document and human-review queue are the only fix-recommendation delivery path.
 - Missing intent, policy, or evidence is visible as a human decision.

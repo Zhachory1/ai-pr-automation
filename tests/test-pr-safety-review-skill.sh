@@ -27,8 +27,10 @@ check "$skill" "pinned E2E Ownership Manifesto" "E2E policy requirement"
 check "$skill" "target-repository test" "coverage-command requirement"
 check "$skill" "data classification plus approved model-provider policy" "provider policy requirement"
 check "$skill" "If a required policy source is missing, return \`needs_human_decision\`." "missing-policy escalation"
+check "$skill" "immutable handoff document and queue it for human review" "handoff delivery boundary"
 check "$doc" "Changed head means \`superseded\`" "immutable-head contract"
 check "$doc" "GitHub remains approval and merge authority" "human approval boundary"
 check "$doc" "No remediation, rollback, GitHub comment" "pilot scope boundary"
+check "$doc" "Agent does not write or publish handoff document." "controller-owned handoff boundary"
 
 (( fail == 0 ))
