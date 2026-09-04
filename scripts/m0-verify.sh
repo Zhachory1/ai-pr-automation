@@ -52,7 +52,7 @@ else
   no "swarmvault image or GNU timeout missing"
 fi
 
-echo "[5/6] coderag UI starts on localhost"
+echo "[5/6] coderag UI + internal MCP bridge"
 ready=""
 if docker image inspect agent-fleet/coderag >/dev/null 2>&1 \
    && docker compose up -d coderag swarmvault-watch >/dev/null 2>&1; then
@@ -62,10 +62,49 @@ if docker image inspect agent-fleet/coderag >/dev/null 2>&1 \
   done
 fi
 if [[ -n "$ready" ]] \
-   && docker compose ps --status running --services swarmvault-watch | grep -qx swarmvault-watch; then
-  ok "coderag UI + swarmvault watcher"
+   && docker compose ps --status running --services swarmvault-watch | grep -qx swarmvault-watch \
+   && docker compose exec -T coderag node - <<'NODE'
+const endpoint = "http://127.0.0.1:9750/mcp";
+const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+async function rpc(payload, session) {
+  const response = await fetch(endpoint, { method: "POST", headers: { ...headers, ...(session ? { "mcp-session-id": session } : {}) }, body: JSON.stringify(payload) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (response.headers.get("content-type")?.includes("application/json")) {
+    const message = await response.json();
+    if (message.error) throw new Error(message.error.message);
+    return { message, session: response.headers.get("mcp-session-id") || session };
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffered += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let newline;
+    while ((newline = buffered.indexOf("\n")) >= 0) {
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      if (!line.startsWith("data: ")) continue;
+      const message = JSON.parse(line.slice(6));
+      if (message.error) throw new Error(message.error.message);
+      if (message.result) return { message, session: response.headers.get("mcp-session-id") || session };
+    }
+    if (done) throw new Error("MCP response ended without a result");
+  }
+}
+(async () => {
+  const init = await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "m0-verify", version: "1" } } });
+  if (!init.session) throw new Error("missing MCP session id");
+  const initialized = await fetch(endpoint, { method: "POST", headers: { ...headers, "mcp-session-id": init.session }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) });
+  if (!initialized.ok) throw new Error(`initialized HTTP ${initialized.status}`);
+  const tools = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }, init.session);
+  if (!Array.isArray(tools.message.result.tools)) throw new Error("tools/list returned no tools");
+})().catch(error => { console.error(error.message); process.exit(1); });
+NODE
+then
+  ok "coderag UI + MCP tools/list + swarmvault watcher"
 else
-  no "coderag UI or swarmvault watcher (check docker compose logs coderag swarmvault-watch)"
+  no "coderag UI, MCP bridge, or swarmvault watcher (check docker compose logs coderag swarmvault-watch)"
 fi
 
 echo "[6/6] durability across down/up"
