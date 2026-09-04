@@ -49,7 +49,7 @@ gh api graphql --paginate -f query='
   }' -f owner=OWNER -f repo=REPO -F pr=PR_NUMBER
 ```
 
-Join each REST comment to its thread by `fullDatabaseId` (the REST comment `id`), then resolve that thread's `id`.
+Join each REST comment to its thread by `fullDatabaseId` (the REST comment `id`), then resolve that thread's `id`. Treat the THREAD as the unit of work: classify each unresolved thread exactly once, using its root review comment and replies as context. Do not classify replies (including your own) as separate work items.
 
 ### Step 2: Classify Each Comment
 
@@ -133,7 +133,7 @@ Push the tested commits and confirm the push succeeded **before** replying to or
 git push
 ```
 
-Only after the push lands, reply to each addressed comment, then resolve its thread. Resolve every thread that was addressed (ACTIONABLE, NITS, and any QUESTION answered with an approved reply), using the thread `id` fetched in Step 1:
+Only after the push lands, reply to each addressed thread, then resolve it. Post at most ONE new reply per unresolved thread per run. Immediately record the thread ID after posting so later steps cannot reply to it again; re-fetch before posting if the run has revisited the thread. Resolve every thread that was addressed (ACTIONABLE, NITS, and any QUESTION answered with an approved reply), using the thread `id` fetched in Step 1:
 
 ```bash
 gh api graphql -f query='
@@ -168,6 +168,7 @@ state must be one of:
 - **DO** batch NITS into a single commit
 - **DO** push the fixing commit and confirm it landed before replying to or resolving its thread
 - **DO** resolve each thread after it is addressed (reply is not enough)
+- **DO** process each unresolved thread once and post at most one new reply to it per run
 - **DO** verify addressed threads show `isResolved: true` before reporting
 - **DO** end with no local diff, or with validated fixes committed+pushed+replied+resolved
 - **DO NOT** leave validated local fixes uncommitted or unpushed
