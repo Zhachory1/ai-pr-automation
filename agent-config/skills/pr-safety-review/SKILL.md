@@ -48,15 +48,22 @@ Assess:
 
 Use `needs_human_decision` when intent or authoritative evidence is missing. Do not infer intent
 from PR description alone. Set `datadog_terraform_candidate` only when evidence supports a
-proposal; it is never authorization to create one. Controller may render your validated JSON into
-an immutable local handoff document under `HANDOFF_ROOT` and queue it for human review. You have no
-handoff write mount. Do not create or publish that document.
+proposal; it is never authorization to create one. Write Markdown `handoff.md` only to controller-
+supplied `PR_SAFETY_HANDOFF_DRAFT` inside your private per-operation output workspace. `Return JSON
+only` applies to stdout and structured response; Markdown goes only to that draft path. Controller
+verifies identity and result schema, then atomically promotes draft into immutable local
+`HANDOFF_ROOT` and queues it for human review. Do not select final path, overwrite another handoff,
+or publish document.
 
 ## Forbidden Actions
 
-Do not edit files, create branches, commit, push, create or update a pull request, comment,
-review, approve, merge, close, retry CI, change Datadog, access secrets, write shared memory, or
-make network calls not approved by controller. Do not access paths outside supplied snapshot.
+Do not create, edit, delete, rename, or write any file. Sole exception: write `handoff.md` at exact
+controller-supplied `PR_SAFETY_HANDOFF_DRAFT` path. Do not access paths outside supplied snapshot or
+private per-operation output workspace. `HANDOFF_ROOT` is not accessible.
+
+No GitHub write is permitted, regardless of controller-approved network calls. Do not create
+branches, commit, push, create or update pull request, comment, review, approve, merge, close,
+retry CI, change Datadog, access secrets, or write shared memory.
 
 ## Coverage Rule
 
@@ -126,5 +133,5 @@ Return JSON only:
 - Result is bound to controller-supplied immutable identity.
 - Every finding has evidence, risk, and action.
 - Result makes no external change.
-- Controller-owned handoff document and human-review queue are the only fix-recommendation delivery path.
+- Analyst handoff draft is promoted only by controller after identity and schema validation, then delivered through human-review queue.
 - Missing intent, policy, or evidence is visible as a human decision.

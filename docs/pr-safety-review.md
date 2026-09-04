@@ -22,20 +22,25 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
   not authorization.
 - No remediation, rollback, GitHub comment, CI retry, Datadog change, or shared-memory promotion
   belongs in first pilot.
-- Controller renders validated result into immutable local Markdown handoff doc and queues it for
-  human review. Agent does not write or publish handoff document.
+- Analyst writes handoff draft only at controller-supplied path in private per-operation output
+  workspace. Controller validates and promotes it into immutable local handoff doc, then queues it
+  for human review.
 
 ## Handoff Storage
 
-Controller writes each handoff atomically under private local `HANDOFF_ROOT`; write to temporary
-file, set private file permissions, then rename into final path. Handoff contains operation ID,
-repository, PR number, immutable source SHA, diff hash, policy/prompt/model versions, findings,
-evidence, and recommendations. Queue `provenance` stores handoff path and content digest.
+Controller gives analyst one writable `PR_SAFETY_HANDOFF_DRAFT` path inside a fresh, private
+per-operation output workspace. Analyst writes `handoff.md` there with recommendation content.
+Analyzer cannot see or write shared `HANDOFF_ROOT`, choose final path, or overwrite other handoffs.
 
-Controller mounts `HANDOFF_ROOT` read/write. Analyst has no handoff write mount. A later automatic
-PR-creation agent receives only controller-selected `handoff.md` as a read-only mount plus a fresh
-worktree. Handoff is input, not authority: controller revalidates queue approval, handoff digest,
-and source SHA before action.
+Controller validates draft against JSON result and immutable operation identity, then copies it to
+temporary file under private local `HANDOFF_ROOT`, sets private file permissions, and atomically
+renames final file. Final handoff contains operation ID, repository, PR number, immutable source
+SHA, diff hash, policy/prompt/model versions, findings, evidence, and recommendations. Queue
+`provenance` stores final handoff path and content digest.
+
+Controller mounts `HANDOFF_ROOT` read/write. A later automatic PR-creation agent receives only
+controller-selected final `handoff.md` as a read-only mount plus a fresh worktree. Handoff is input,
+not authority: controller revalidates queue approval, handoff digest, and source SHA before action.
 
 Reuse existing `pending_maintenance_reviews` queue for v1. Its `reviewed` and `dismissed` states
 mean acknowledgement only. A later automatic-PR stage adds explicit `approved_for_pr` state.
@@ -72,8 +77,8 @@ Pilot starts only when one repository and named reviewers opt in, policy revisio
 provider is approved, and circuit-breaker owner is named.
 
 Pilot succeeds only when it creates no external writes and proves useful findings without higher
-reviewer effort or author churn. Controller renders recommendations as immutable handoff docs and
-queues them for human review. Record reviewer time, material-finding acceptance rate,
+reviewer effort or author churn. Controller validates and promotes analyst handoff drafts as
+immutable local handoff docs, then queues them for human review. Record reviewer time, material-finding acceptance rate,
 false-positive rate, duplicate rate, and stale-result rate.
 
 ## Final Automatic PR Stage
