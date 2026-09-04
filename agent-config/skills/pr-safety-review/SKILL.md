@@ -49,7 +49,8 @@ Assess:
 Use `needs_human_decision` when intent or authoritative evidence is missing. Do not infer intent
 from PR description alone. Set `datadog_terraform_candidate` only when evidence supports a
 proposal; it is never authorization to create one. Controller may render your validated JSON into
-an immutable handoff document and queue it for human review. Do not create or publish that document.
+an immutable local handoff document under `HANDOFF_ROOT` and queue it for human review. You have no
+handoff write mount. Do not create or publish that document.
 
 ## Forbidden Actions
 

@@ -22,8 +22,25 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
   not authorization.
 - No remediation, rollback, GitHub comment, CI retry, Datadog change, or shared-memory promotion
   belongs in first pilot.
-- Controller renders validated result into immutable handoff doc and queues it for human review.
-  Agent does not write or publish handoff document.
+- Controller renders validated result into immutable local Markdown handoff doc and queues it for
+  human review. Agent does not write or publish handoff document.
+
+## Handoff Storage
+
+Controller writes each handoff atomically under private local `HANDOFF_ROOT`; write to temporary
+file, set private file permissions, then rename into final path. Handoff contains operation ID,
+repository, PR number, immutable source SHA, diff hash, policy/prompt/model versions, findings,
+evidence, and recommendations. Queue `provenance` stores handoff path and content digest.
+
+Controller mounts `HANDOFF_ROOT` read/write. Analyst has no handoff write mount. A later automatic
+PR-creation agent receives only controller-selected `handoff.md` as a read-only mount plus a fresh
+worktree. Handoff is input, not authority: controller revalidates queue approval, handoff digest,
+and source SHA before action.
+
+Reuse existing `pending_maintenance_reviews` queue for v1. Its `reviewed` and `dismissed` states
+mean acknowledgement only. A later automatic-PR stage adds explicit `approved_for_pr` state.
+Only authenticated, policy-qualified operator can set it. Record actor, reason, source SHA,
+handoff digest, and timestamp.
 
 ## Policy Bundle
 
@@ -47,7 +64,7 @@ sufficient intent evidence.
 | Duplicate event or notification | Add inbound-event ledger and transactional outbox before Chat integration. |
 | Bot feedback loop | Use correlation IDs, bot-message filtering, one active operation per PR lineage, quotas, and circuit breaker. |
 | Private code or secret leakage | Approved provider only. Redact at every log, database, model, and Chat boundary. |
-| Unsafe generated fix | Agent creates no fix. Handoff doc gives evidence-backed recommendation; human owns any follow-up branch and PR. |
+| Unsafe generated fix | Pilot agent creates no fix. Final stage creates one draft PR only after explicit `approved_for_pr`, immutable handoff validation, fresh worktree, and policy validation. |
 
 ## Pilot Gates
 
@@ -58,6 +75,17 @@ Pilot succeeds only when it creates no external writes and proves useful finding
 reviewer effort or author churn. Controller renders recommendations as immutable handoff docs and
 queues them for human review. Record reviewer time, material-finding acceptance rate,
 false-positive rate, duplicate rate, and stale-result rate.
+
+## Final Automatic PR Stage
+
+After shadow pilot and handoff-quality gates pass, controller may create one draft remediation PR
+for an `approved_for_pr` handoff. Remediation agent receives immutable source snapshot and
+controller-selected read-only local handoff mount. It works only in a new worktree and branch.
+Controller, not agent, owns narrow GitHub App capability to create draft PR.
+
+Automated creation never permits merge, deployment, CI retry, Datadog apply, force-push, or
+default-branch write. Send resulting draft PR to same Chat room for notification; GitHub code-owner
+approval and merge remain human-owned.
 
 ## Validation
 
