@@ -1,6 +1,6 @@
 # PR Safety Review Contract
 
-Status: draft-only controller and analyst runner. No producer or external write path.
+Status: read-only Google Chat producer, draft-only controller, and analyst runner. No external write path.
 
 ## Purpose
 
@@ -27,6 +27,18 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
 - Analyst writes handoff draft only at controller-supplied path in private per-operation output
   workspace. Controller validates and promotes it into immutable local handoff doc, then queues it
   for human review.
+
+## Chat Producer
+
+`bin/pr-safety-chat-producer` uses only `GET https://chat.googleapis.com/v1/{GOOGLE_CHAT_SPACE}/messages` with `GOOGLE_CHAT_ACCESS_TOKEN`. `GOOGLE_CHAT_SPACE` is one configured immutable `spaces/...` resource; `PR_SAFETY_CHAT_SENDERS` is an exact comma-separated allowlist of Chat sender resource names (for example, `users/123456789`). It accepts only a `HUMAN` sender's exact command:
+
+```text
+/pr-safety review https://github.com/OWNER/REPO/pull/NUMBER
+```
+
+Bot, non-allowlisted, malformed, and free-form messages are ignored. It never posts to Chat or GitHub. For every accepted command it reads PR URL/base/head metadata through `gh pr view`, verifies the configured pinned policy path/version/SHA-256, creates a clean read-only Git snapshot under `PR_SAFETY_SNAPSHOT_ROOT`, computes `git diff base..head` SHA-256, then atomically records provider message ID plus canonical payload digest in `pr_safety_chat_events` and enqueues at most one `pr-safety-review` request. Repeated provider message IDs cannot enqueue again; an advanced PR head has a new queue key and snapshot.
+
+`PR_SAFETY_CHAT_INPUT_FILE` supplies a local list-messages JSON response for tests and makes no network request. It is test-only input, not an authorization bypass: sender and command validation remain unchanged.
 
 ## Runtime
 
@@ -84,7 +96,7 @@ sufficient intent evidence.
 | --- | --- |
 | Prompt injection from Chat, PR, code, comments, or tool output | Treat all external text as data. Read-only sandbox with only existing model credential. |
 | Stale result | Store SHA and diff hash in job payload. Mark changed head as `superseded`. |
-| Duplicate event or notification | Add inbound-event ledger and transactional outbox before Chat integration. |
+| Duplicate Chat event | `pr_safety_chat_events` uses provider message ID as primary key and stores canonical payload SHA-256; ledger insert and queue insert are one SQL statement. No Chat notifications exist. |
 | Bot feedback loop | Use correlation IDs, bot-message filtering, one active operation per PR lineage, quotas, and circuit breaker. |
 | Private code or secret leakage | Approved provider only. Redact at every log, database, model, and Chat boundary. |
 | Unsafe generated fix | Pilot agent creates no fix. Final stage creates one draft PR only after explicit `approved_for_pr`, immutable handoff validation, fresh worktree, and policy validation. |
@@ -117,6 +129,7 @@ Run:
 ```bash
 bash tests/test-pr-safety-review-skill.sh
 bash tests/test-pr-safety-review-controller.sh
+bash tests/test-pr-safety-chat-producer.sh
 ```
 
 Test guards contract language. It does not prove future runtime sandboxing. Runtime enforcement is

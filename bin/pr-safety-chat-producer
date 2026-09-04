@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Read-only Google Chat command producer for immutable PR safety reviews.
+set -euo pipefail
+umask 077
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/queue.sh
+. "$HERE/lib/queue.sh"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need curl; need gh; need git; need jq; need psql; need python3
+
+digest() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
+resolve_path() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+inside_root() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
+log() { printf '%s pr-safety-chat-producer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
+
+: "${GOOGLE_CHAT_ACCESS_TOKEN:?set GOOGLE_CHAT_ACCESS_TOKEN}"
+: "${GOOGLE_CHAT_SPACE:?set GOOGLE_CHAT_SPACE}"
+: "${PR_SAFETY_CHAT_SENDERS:?set PR_SAFETY_CHAT_SENDERS}"
+: "${PR_SAFETY_SNAPSHOT_ROOT:?set PR_SAFETY_SNAPSHOT_ROOT}"
+: "${PR_SAFETY_POLICY_ROOT:?set PR_SAFETY_POLICY_ROOT}"
+: "${PR_SAFETY_POLICY_PATH:?set PR_SAFETY_POLICY_PATH}"
+: "${PR_SAFETY_POLICY_VERSION:?set PR_SAFETY_POLICY_VERSION}"
+: "${PR_SAFETY_POLICY_DIGEST:?set PR_SAFETY_POLICY_DIGEST}"
+
+[[ "$GOOGLE_CHAT_SPACE" =~ ^spaces/[A-Za-z0-9_-]+$ ]] || { echo "GOOGLE_CHAT_SPACE must be one immutable spaces/ resource name" >&2; exit 2; }
+IFS=, read -r -a ALLOWED_SENDERS <<< "$PR_SAFETY_CHAT_SENDERS"
+for allowed_sender in "${ALLOWED_SENDERS[@]}"; do
+  [[ -n "$allowed_sender" && "$allowed_sender" != *[[:space:]]* ]] || { echo "PR_SAFETY_CHAT_SENDERS must be comma-separated sender resource names" >&2; exit 2; }
+done
+[[ "$PR_SAFETY_POLICY_VERSION" != *$'\n'* && "$PR_SAFETY_POLICY_VERSION" != *$'\r'* ]] || { echo "PR_SAFETY_POLICY_VERSION must be one line" >&2; exit 2; }
+[[ "$PR_SAFETY_POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "PR_SAFETY_POLICY_DIGEST must be lowercase SHA-256" >&2; exit 2; }
+
+SNAPSHOT_ROOT="$(resolve_path "$PR_SAFETY_SNAPSHOT_ROOT")"
+POLICY_ROOT="$(resolve_path "$PR_SAFETY_POLICY_ROOT")"
+POLICY_PATH="$(resolve_path "$PR_SAFETY_POLICY_PATH")"
+mkdir -p "$SNAPSHOT_ROOT"
+inside_root "$POLICY_PATH" "$POLICY_ROOT" && [[ -f "$POLICY_PATH" && ! -L "$POLICY_PATH" ]] || { echo "PR_SAFETY_POLICY_PATH must be regular file beneath PR_SAFETY_POLICY_ROOT" >&2; exit 2; }
+[[ "$(digest < "$POLICY_PATH")" == "$PR_SAFETY_POLICY_DIGEST" ]] || { echo "PR_SAFETY_POLICY_DIGEST does not match policy file" >&2; exit 2; }
+
+sender_allowed() {
+  local sender="$1" allowed_sender
+  for allowed_sender in "${ALLOWED_SENDERS[@]}"; do [[ "$sender" == "$allowed_sender" ]] && return 0; done
+  return 1
+}
+valid_snapshot() {
+  local path="$1" base="$2" head="$3" diff="$4"
+  [[ -d "$path/.git" ]] &&
+    [[ "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" rev-parse HEAD 2>/dev/null || true)" == "$head" ]] &&
+    GIT_OPTIONAL_LOCKS=0 git -C "$path" cat-file -e "${base}^{commit}" 2>/dev/null &&
+    [[ -z "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" status --porcelain --untracked-files=all)" ]] &&
+    [[ "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" diff --no-ext-diff "$base" "$head" | digest)" == "$diff" ]]
+}
+
+snapshot_for() {
+  local repo="$1" base="$2" head="$3" op="$4" snapshot="$SNAPSHOT_ROOT/$op" tmp diff
+  if [[ -e "$snapshot" ]]; then
+    diff="$(GIT_OPTIONAL_LOCKS=0 git -C "$snapshot" diff --no-ext-diff "$base" "$head" | digest)"
+    valid_snapshot "$snapshot" "$base" "$head" "$diff" || { log "skip $repo: existing snapshot is invalid"; return 1; }
+    printf '%s\t%s\n' "$snapshot" "$diff"
+    return
+  fi
+
+  tmp="$(mktemp -d "$SNAPSHOT_ROOT/.${op}.XXXXXX")"
+  if ! gh repo clone "$repo" "$tmp/repo" -- --no-checkout --depth=1 >/dev/null 2>&1 ||
+    ! git -C "$tmp/repo" fetch --no-tags --depth=1 origin "$base" "$head" >/dev/null 2>&1 ||
+    ! git -C "$tmp/repo" checkout --detach "$head" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    log "skip $repo: could not create read-only snapshot"
+    return 1
+  fi
+  diff="$(git -C "$tmp/repo" diff --no-ext-diff "$base" "$head" | digest)"
+  if ! valid_snapshot "$tmp/repo" "$base" "$head" "$diff"; then
+    rm -rf "$tmp"
+    log "skip $repo: incomplete snapshot"
+    return 1
+  fi
+  if [[ ! -e "$snapshot" ]] && ! mv "$tmp/repo" "$snapshot"; then
+    rm -rf "$tmp"
+    log "skip $repo: snapshot publication race"
+    return 1
+  fi
+  rm -rf "$tmp"
+  valid_snapshot "$snapshot" "$base" "$head" "$diff" || { log "skip $repo: snapshot publication race"; return 1; }
+  chmod -R a-w "$snapshot"
+  printf '%s\t%s\n' "$snapshot" "$diff"
+}
+
+process_message() {
+  local message="$1" message_id sender text repo pr requested_url metadata base head op snapshot_info snapshot diff payload event_digest queued
+  message_id="$(jq -r '.name // empty' <<<"$message")"
+  sender="$(jq -r '.sender.name // empty' <<<"$message")"
+  jq -e '.sender.type == "HUMAN"' <<<"$message" >/dev/null || return 0
+  [[ "$message_id" == "$GOOGLE_CHAT_SPACE/messages/"* && -n "$sender" ]] || return 0
+  sender_allowed "$sender" || return 0
+  text="$(jq -r '.text // empty' <<<"$message")"
+  local command_re='^/pr-safety review https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/pull/([1-9][0-9]*)$'
+  [[ "$text" != *$'\n'* && "$text" != *$'\r'* && "$text" =~ $command_re ]] || return 0
+  repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; pr="${BASH_REMATCH[3]}"; requested_url="https://github.com/$repo/pull/$pr"
+
+  if ! metadata="$(gh pr view "$pr" --repo "$repo" --json url,baseRefOid,headRefOid 2>/dev/null)" ||
+    ! jq -e --arg url "$requested_url" '.url == $url and (.baseRefOid | type == "string") and (.baseRefOid | test("^[0-9a-f]{40}$")) and (.headRefOid | type == "string") and (.headRefOid | test("^[0-9a-f]{40}$"))' <<<"$metadata" >/dev/null; then
+    log "skip $repo#$pr: GitHub metadata unavailable or mismatched"
+    return 0
+  fi
+  base="$(jq -r .baseRefOid <<<"$metadata")"; head="$(jq -r .headRefOid <<<"$metadata")"
+  op="pr-safety-$(printf '%s' "$repo#$pr@$head" | digest)"
+  if ! snapshot_info="$(snapshot_for "$repo" "$base" "$head" "$op")"; then return 0; fi
+  IFS=$'\t' read -r snapshot diff <<<"$snapshot_info"
+  payload="$(jq -cn --arg op "$op" --arg repo "$repo" --arg pr "$pr" --arg head "$head" --arg base "$base" --arg diff "$diff" --arg policy_version "$PR_SAFETY_POLICY_VERSION" --arg policy_digest "$PR_SAFETY_POLICY_DIGEST" --arg snapshot "$snapshot" --arg policy_path "$POLICY_PATH" '{operation_id:$op,repo:$repo,pr:($pr|tonumber),head_sha:$head,base_sha:$base,diff_hash:$diff,policy_version:$policy_version,policy_digest:$policy_digest,snapshot_path:$snapshot,policy_path:$policy_path}')"
+  event_digest="$(jq -cS . <<<"$message" | digest)"
+  queued="$(queue_enqueue_pr_safety_chat_event "$message_id" "$event_digest" "$payload" "$repo#$pr@$head")"
+  if [[ "$queued" == 1 ]]; then log "enqueued $repo#$pr@$head"; else log "recorded or deduped $repo#$pr@$head"; fi
+}
+
+process_page() {
+  local page="$1" message
+  jq -e 'type == "object" and ((.messages // []) | type == "array")' <<<"$page" >/dev/null || { echo "invalid Google Chat response" >&2; exit 3; }
+  while IFS= read -r message; do process_message "$message"; done < <(jq -c '.messages[]?' <<<"$page")
+}
+
+if [[ -n "${PR_SAFETY_CHAT_INPUT_FILE:-}" ]]; then
+  [[ -f "$PR_SAFETY_CHAT_INPUT_FILE" && ! -L "$PR_SAFETY_CHAT_INPUT_FILE" ]] || { echo "PR_SAFETY_CHAT_INPUT_FILE must be regular JSON fixture" >&2; exit 2; }
+  process_page "$(<"$PR_SAFETY_CHAT_INPUT_FILE")"
+  exit 0
+fi
+
+next_page=""
+while true; do
+  args=(--fail --silent --show-error --get -H "Authorization: Bearer $GOOGLE_CHAT_ACCESS_TOKEN" --data-urlencode "pageSize=1000")
+  [[ -n "$next_page" ]] && args+=(--data-urlencode "pageToken=$next_page")
+  page="$(curl "${args[@]}" "https://chat.googleapis.com/v1/$GOOGLE_CHAT_SPACE/messages")" || { echo "Google Chat list-messages request failed" >&2; exit 3; }
+  process_page "$page"
+  next_page="$(jq -r '.nextPageToken // empty' <<<"$page")"
+  [[ -n "$next_page" ]] || break
+done

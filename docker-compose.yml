@@ -36,7 +36,7 @@ services:
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
     volumes:
       - ./docker/initdb:/migrations:ro
-    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql -f /migrations/04-pending-decision-approval.sql -f /migrations/04-pr-safety-review.sql"]
+    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql -f /migrations/04-pending-decision-approval.sql -f /migrations/04-pr-safety-review.sql -f /migrations/05-pr-safety-chat-producer.sql"]
     depends_on:
       db-requests:
         condition: service_healthy

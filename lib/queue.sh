@@ -119,6 +119,38 @@ queue_already_posted() {
 # (transient agent/network error should be retried; permanent poison-PR protection is a future
 # max_attempts concern, not a permanent dead-letter here). Re-review on a NEW head still works
 # because a new head = a new dedupe_key.
+# Atomically records a validated Chat event and enqueues its safety job at most once. Chat text is
+# deliberately not stored: only its canonical JSON digest and immutable provider message name remain.
+queue_enqueue_pr_safety_chat_event() {
+  local event_id="$1" event_digest="$2" payload_json="$3" dedupe_key="$4"
+  local max_attempts="${PR_PRODUCER_MAX_ATTEMPTS:-3}"
+  _psql -v event_id="$event_id" -v event_digest="$event_digest" -v payload="$payload_json" -v dk="$dedupe_key" -v maxatt="$max_attempts" <<'SQL'
+WITH event AS (
+  INSERT INTO pr_safety_chat_events(provider_message_id, payload_digest)
+  VALUES (:'event_id', :'event_digest')
+  ON CONFLICT (provider_message_id) DO NOTHING
+  RETURNING 1
+), request AS (
+  INSERT INTO requests(kind, payload, dedupe_key)
+  SELECT 'pr-safety-review', :'payload'::jsonb, :'dk'
+   WHERE EXISTS (SELECT 1 FROM event)
+     AND NOT EXISTS (
+       SELECT 1 FROM requests
+        WHERE kind = 'pr-safety-review' AND dedupe_key = :'dk'
+          AND status IN ('queued','running','done')
+     )
+     AND (
+       :'maxatt' = '0'
+       OR (SELECT count(*) FROM requests
+             WHERE kind = 'pr-safety-review' AND dedupe_key = :'dk' AND status = 'failed') < :'maxatt'::int
+     )
+  ON CONFLICT DO NOTHING
+  RETURNING 1
+)
+SELECT CASE WHEN EXISTS (SELECT 1 FROM request) THEN '1' ELSE '' END;
+SQL
+}
+
 queue_enqueue() {
   local kind="$1" payload_json="$2" dedupe_key="$3"
   # Cap failed retries: a head that has already FAILED >= max_attempts times is a poison PR
