@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Read-only status web view for the agent fleet (M3).
+"""Status web view for the agent fleet (M3 read + M4 write).
 
-Serves one auto-refreshing HTML page over the request Postgres. STRICTLY read-only:
-issues only SELECTs, no UPDATE/INSERT/DELETE anywhere. All dynamic values are HTML-escaped
-(request data — PR titles, dedupe_key, fail_response — is attacker-influenced).
+Serves one auto-refreshing HTML page over the request Postgres. Reads are SELECT-only. Writes are a
+SMALL whitelisted set (cancel a queued row; force-inject a PR) via parameterized psql — never
+f-string SQL. All dynamic values are HTML-escaped (request data is attacker-influenced).
 
-DB access via `psql` subprocess (already a dependency; no pip/driver/build). Config from env:
-REQUESTS_DB_HOST/PORT/USER/NAME + PGPASSWORD. Bind localhost only via compose port mapping.
+Binds 127.0.0.1 in-code (not just compose). No auth by design (localhost single-user); writes are
+CSRF-guarded (POST + custom header + Origin + Host + per-render token). Config from env:
+REQUESTS_DB_HOST/PORT/USER/NAME + PGPASSWORD; PR_PRODUCER_ORGS/REPOSITORIES/ALLOW_ALL_REPOS reuse the
+producer's repo allowlist so inject cannot target an out-of-scope repo.
 """
 import html
+import json
 import os
+import re
+import secrets
 import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 DB = {
     "host": os.environ.get("REQUESTS_DB_HOST", "db-requests"),
@@ -23,6 +29,30 @@ DB = {
 }
 PORT = int(os.environ.get("STATUS_PORT", "8080"))
 REFRESH_SECONDS = int(os.environ.get("STATUS_REFRESH_SECONDS", "5"))
+# Reuse the producer's repo-scope semantics so inject cannot target out-of-scope repos.
+ALLOWED_REPOS = set(filter(None, os.environ.get("PR_PRODUCER_REPOSITORIES", "").split(",")))
+ALLOWED_ORGS = set(filter(None, os.environ.get("PR_PRODUCER_ORGS", "").split(",")))
+ALLOW_ALL_REPOS = os.environ.get("PR_PRODUCER_ALLOW_ALL_REPOS", "false") == "true"
+KINDS = {"pr-review", "pr-maintain"}
+CSRF_TOKEN = secrets.token_urlsafe(32)          # per-process; page embeds it, POST must echo it
+ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
+ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
+
+
+def repo_allowed(repo: str) -> bool:
+    if ALLOW_ALL_REPOS:
+        return True
+    org = repo.split("/", 1)[0]
+    return repo in ALLOWED_REPOS or org in ALLOWED_ORGS
+
+
+def _psql(args: list[str], sql: str) -> subprocess.CompletedProcess:
+    # SQL goes on STDIN, not -c: psql only interpolates :'var' in stdin/-f mode, NOT in -c strings.
+    return subprocess.run(
+        ["psql", "-h", DB["host"], "-p", DB["port"], "-U", DB["user"], "-d", DB["name"],
+         "-qAt", "-v", "ON_ERROR_STOP=1", *args],
+        input=sql, capture_output=True, text=True, timeout=15,
+    )
 
 
 def query(sql: str) -> list[list[str]]:
@@ -31,19 +61,48 @@ def query(sql: str) -> list[list[str]]:
     Wraps the query in json_agg so multi-line/odd-byte cell values (e.g. a fail_response with
     embedded newlines) can't break row/column parsing — we parse one JSON doc, not split lines."""
     wrapped = f"SELECT coalesce(json_agg(t.*), '[]') FROM ({sql}) t"
-    proc = subprocess.run(
-        ["psql", "-h", DB["host"], "-p", DB["port"], "-U", DB["user"], "-d", DB["name"],
-         "-qAt", "-v", "ON_ERROR_STOP=1", "-c", wrapped],
-        capture_output=True, text=True, timeout=15,
-    )
+    proc = _psql([], wrapped)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "psql failed")
-    import json
     rows = []
     for obj in json.loads(proc.stdout or "[]"):
         # json_agg(t.*) yields objects keyed by column/alias, insertion-ordered to match SELECT.
         rows.append(["" if v is None else str(v) for v in obj.values()])
     return rows
+
+
+# --- M4 writes: parameterized (psql -v), whitelisted, scoped. Never f-string interpolation. ---
+def cancel_queued(req_id: int) -> str:
+    """Delete a QUEUED row (zero side effects taken). Guarded by status='queued' so a row that
+    started running between render and click is untouched. Returns a human result string."""
+    proc = _psql(["-v", f"id={req_id}"],
+                 "DELETE FROM requests WHERE id=:'id'::bigint AND status='queued' RETURNING id")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "delete failed")
+    if proc.stdout.strip():
+        return f"cancelled queued #{req_id}"
+    return f"#{req_id} not cancelled (already running or gone)"
+
+
+def inject(repo: str, pr: str, kind: str) -> str:
+    """Force-enqueue repo#pr even if a done/failed row exists. Scoped + validated. Distinct
+    dedupe_key (@manual-<epoch>) so the partial unique index never blocks it; worker resolves the
+    real head at run time."""
+    if kind not in KINDS:
+        raise ValueError("bad kind")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo) or not repo_allowed(repo):
+        raise ValueError("repo not in allowlist")
+    if not re.fullmatch(r"[1-9][0-9]*", pr):
+        raise ValueError("pr must be a positive integer")
+    payload = json.dumps({"repo": repo, "pr": pr,
+                          "url": f"https://github.com/{repo}/pull/{pr}", "title": "manual inject"})
+    dk = f"{repo}#{pr}@manual-{int(time.time())}"
+    proc = _psql(["-v", f"kind={kind}", "-v", f"payload={payload}", "-v", f"dk={dk}"],
+                 "INSERT INTO requests(kind,payload,dedupe_key) "
+                 "VALUES (:'kind', :'payload'::jsonb, :'dk')")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "insert failed")
+    return f"injected {kind} {repo}#{pr}"
 
 
 def e(v) -> str:
@@ -62,15 +121,16 @@ def table(title: str, headers: list[str], rows: list[list[str]], empty: str) -> 
             f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></section>")
 
 
-def render() -> str:
+def render(flash: str = "") -> str:
     try:
         running = query(
             "SELECT id, kind, dedupe_key, "
             "to_char(now()-started_at,'HH24:MI:SS') AS elapsed "
             "FROM requests WHERE status='running' ORDER BY started_at")
+        # Detailed queued list (id shown) so each row gets a cancel button.
         queued = query(
-            "SELECT kind, count(*) FROM requests WHERE status='queued' "
-            "GROUP BY kind ORDER BY kind")
+            "SELECT id, kind, dedupe_key, to_char(created_at,'MM-DD HH24:MI') AS queued_at "
+            "FROM requests WHERE status='queued' ORDER BY id")
         recent = query(
             "SELECT id, kind, status, dedupe_key, coalesce(fail_response,''), "
             "to_char(finished_at,'MM-DD HH24:MI') "
@@ -82,40 +142,103 @@ def render() -> str:
         today = query(
             "SELECT kind, status, count(*) FROM requests "
             "WHERE created_at::date = now()::date GROUP BY kind, status ORDER BY kind, status")
-        # Poison PRs: heads that failed >= the retry cap and are no longer being re-enqueued.
         capped = query(
             "SELECT kind, dedupe_key, count(*) AS fails, "
             "to_char(max(finished_at),'MM-DD HH24:MI') AS last_fail "
             "FROM requests WHERE status='failed' GROUP BY kind, dedupe_key "
             "HAVING count(*) >= 3 ORDER BY max(finished_at) DESC NULLS LAST LIMIT 20")
         db_err = None
-    except Exception as ex:  # DB down / unreachable: show it rather than 500
+    except Exception as ex:
         running = queued = recent = pending = today = capped = []
         db_err = str(ex)
 
     banner = (f"<p class=err>DB unreachable: {e(db_err)}</p>" if db_err else "")
+    flash_html = f"<p class=flash>{e(flash)}</p>" if flash else ""
     pending_n = len(pending)
+
+    # Queued section: each row gets a cancel button (POST /cancel, token+method-guarded).
+    if queued:
+        qrows = "".join(
+            "<tr>" + "".join(f"<td>{e(c)}</td>" for c in r[:4])
+            + f"<td>{cancel_button(r[0])}</td></tr>" for r in queued)
+        queued_html = (f"<section><h2>Queued ({len(queued)})</h2><table><thead><tr>"
+                       "<th>id</th><th>kind</th><th>dedupe_key</th><th>queued</th><th></th>"
+                       f"</tr></thead><tbody>{qrows}</tbody></table></section>")
+    else:
+        queued_html = "<section><h2>Queued</h2><p class=empty>queue empty</p></section>"
+
     return f"""<!doctype html><html><head><meta charset=utf-8>
 <meta http-equiv=refresh content={REFRESH_SECONDS}>
 <title>agent-fleet status</title>
 <style>
- body{{font:14px/1.5 -apple-system,system-ui,sans-serif;margin:2rem;color:#111;background:#fafafa}}
- h1{{font-size:1.3rem}} h2{{font-size:1rem;margin:1.5rem 0 .4rem}}
- table{{border-collapse:collapse;width:100%}} th,td{{text-align:left;padding:.3rem .6rem;border-bottom:1px solid #ddd;font-variant-numeric:tabular-nums}}
- th{{color:#555;font-weight:600;font-size:.85rem}}
- .empty{{color:#999}} .err{{color:#b00;font-weight:600}}
- .badge{{display:inline-block;padding:.05rem .4rem;border-radius:3px;font-size:.85rem}}
- td{{max-width:60ch;overflow-wrap:anywhere}}
+ :root{{--bg:#0f1117;--card:#181b24;--fg:#e6e8ee;--mut:#8b90a0;--line:#262a36;--acc:#e6197f}}
+ *{{box-sizing:border-box}}
+ body{{font:14px/1.55 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;padding:2rem;
+   color:var(--fg);background:var(--bg)}}
+ h1{{font-size:1.25rem;margin:0 0 .25rem;display:flex;align-items:center;gap:.5rem}}
+ h2{{font-size:.95rem;margin:0 0 .6rem;color:var(--fg)}}
+ .sub{{color:var(--mut);font-size:.8rem;font-weight:400}}
+ section{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem 1.1rem;margin:1rem 0}}
+ table{{border-collapse:collapse;width:100%}}
+ th,td{{text-align:left;padding:.35rem .6rem;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;vertical-align:top}}
+ th{{color:var(--mut);font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}}
+ tr:last-child td{{border-bottom:none}}
+ td{{max-width:60ch;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem}}
+ .empty{{color:var(--mut)}} .err{{color:#ff6b6b;font-weight:600}}
+ .flash{{color:#111;background:#7ee787;border-radius:6px;padding:.4rem .7rem;font-weight:600}}
+ .chip{{display:inline-block;padding:.05rem .5rem;border-radius:999px;font-size:.75rem;font-weight:600;font-family:system-ui}}
+ .s-queued{{background:#2b2f3a;color:#c8ccd8}} .s-running{{background:#12324f;color:#5ab0ff}}
+ .s-done{{background:#123a22;color:#7ee787}} .s-failed{{background:#3a1620;color:#ff8095}}
+ button{{font:inherit;font-size:.8rem;background:#3a1620;color:#ff8095;border:1px solid #5a2230;
+   border-radius:6px;padding:.15rem .6rem;cursor:pointer}}
+ button:hover{{background:#5a2230}}
+ form.inline{{display:inline}}
+ .toolbar{{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}}
+ .toolbar input,.toolbar select{{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:.3rem .5rem}}
+ .toolbar button{{background:#12324f;color:#5ab0ff;border-color:#1d4a72}}
+ .toolbar button:hover{{background:#1d4a72}}
 </style></head><body>
-<h1>agent-fleet status <span class=empty>(refreshes {REFRESH_SECONDS}s, read-only)</span></h1>
-{banner}
+<h1><span style="color:var(--acc)">◉</span> agent-fleet <span class=sub>refreshes {REFRESH_SECONDS}s</span></h1>
+{banner}{flash_html}
+<section><h2>Force-inject a PR <span class=sub>re-run even if already done</span></h2>
+<form class=toolbar method=post action=/inject onsubmit="return confirm('Inject this PR into the queue?')">
+<input type=hidden name=token value="{e(CSRF_TOKEN)}">
+<select name=kind><option value=pr-review>pr-review</option><option value=pr-maintain>pr-maintain</option></select>
+<input name=repo placeholder="ORG/repo" size=24 required>
+<input name=pr placeholder="PR #" size=6 required pattern="[1-9][0-9]*">
+<button type=submit>inject</button>
+</form></section>
 {table("Running now", ["id","kind","dedupe_key","elapsed"], running, "nothing running")}
-{table("Queued", ["kind","count"], queued, "queue empty")}
+{queued_html}
 {table(f"Pending decisions ({pending_n})", ["id","request_id","kind","created"], pending, "no pending decisions")}
-{table("Recent (last 20)", ["id","kind","status","dedupe_key","fail_response","finished"], recent, "no completed runs")}
+{recent_table(recent)}
 {table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}
 {table("Today by kind", ["kind","status","count"], today, "nothing today")}
 </body></html>"""
+
+
+def chip(status: str) -> str:
+    s = status if status in ("queued", "running", "done", "failed") else "queued"
+    return f'<span class="chip s-{s}">{e(status)}</span>'
+
+
+def cancel_button(req_id) -> str:
+    return (f'<form class=inline method=post action=/cancel '
+            f'onsubmit="return confirm(\'Cancel queued #{e(req_id)}?\')">'
+            f'<input type=hidden name=token value="{e(CSRF_TOKEN)}">'
+            f'<input type=hidden name=id value="{e(req_id)}">'
+            f'<button type=submit>cancel</button></form>')
+
+
+def recent_table(rows) -> str:
+    if not rows:
+        return "<section><h2>Recent (last 20)</h2><p class=empty>no completed runs</p></section>"
+    body = "".join(
+        "<tr>" + f"<td>{e(r[0])}</td><td>{e(r[1])}</td><td>{chip(r[2])}</td>"
+        + f"<td>{e(r[3])}</td><td>{e(r[4])}</td><td>{e(r[5])}</td></tr>" for r in rows)
+    return ("<section><h2>Recent (last 20)</h2><table><thead><tr>"
+            "<th>id</th><th>kind</th><th>status</th><th>dedupe_key</th><th>fail_response</th><th>finished</th>"
+            f"</tr></thead><tbody>{body}</tbody></table></section>")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -148,9 +271,58 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(page)
 
+    # --- writes (M4). CSRF-guarded: Host + Origin allowlist + per-process token. No auth by design
+    # (localhost single-user). GET never mutates; only these two POST actions do. ---
+    def _csrf_ok(self, params) -> bool:
+        host = self.headers.get("Host", "")
+        if host not in ALLOWED_HOSTS:
+            return False
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in ALLOWED_ORIGINS:
+            return False
+        return secrets.compare_digest(params.get("token", [""])[0], CSRF_TOKEN)
+
+    def _redirect(self, flash: str):
+        # Re-render fresh (bypass cache) with a flash message, invalidate the GET cache.
+        with Handler._lock:
+            Handler._cache = None
+        page = render(flash=flash).encode()
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.send_header("content-length", str(len(page)))
+        self.end_headers(); self.wfile.write(page)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+        params = parse_qs(body)
+        if not self._csrf_ok(params):
+            self.send_response(403); self.end_headers()
+            self.wfile.write(b"forbidden (csrf)"); return
+        try:
+            if self.path == "/cancel":
+                rid = int(params.get("id", [""])[0])
+                result = cancel_queued(rid)
+            elif self.path == "/inject":
+                result = inject(params.get("repo", [""])[0].strip(),
+                                params.get("pr", [""])[0].strip(),
+                                params.get("kind", [""])[0].strip())
+            else:
+                self.send_response(404); self.end_headers(); return
+        except (ValueError, RuntimeError) as ex:
+            result = f"rejected: {ex}"
+        # Audit trail (single line, stderr) — mutating a work queue should not be silent.
+        print(f"WRITE {self.path} {result}", flush=True)
+        self._redirect(result)
+
     def log_message(self, *a):  # quiet
         pass
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    # Bind: inside the container we must bind 0.0.0.0 so the compose port-map can reach us; HOST
+    # exposure is restricted to localhost by the compose mapping (127.0.0.1:PORT:PORT). The Host
+    # header allowlist below (ALLOWED_HOSTS) is the in-code defense that stops DNS-rebinding /
+    # off-host POSTs regardless of bind. Override bind via STATUS_BIND for a direct (non-container)
+    # run where you want 127.0.0.1.
+    ThreadingHTTPServer((os.environ.get("STATUS_BIND", "0.0.0.0"), PORT), Handler).serve_forever()
