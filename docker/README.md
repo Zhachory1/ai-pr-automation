@@ -9,6 +9,7 @@ One `docker-compose.yml` (repo root) + this dir. Stands up the services the seri
 cp .env.example .env      # then edit: CODE_ROOT (host-absolute), passwords, provider
 scripts/compose.sh up -d --build  # validates vault path, then builds and starts all services
 scripts/m0-verify.sh      # runs the six exit checks
+scripts/verify-agent-mcps.sh # verifies worker MCP client -> bridge -> tool calls
 ```
 
 Open `http://localhost:8080` for agent status. Blocked `pr-maintain` findings appear in its
