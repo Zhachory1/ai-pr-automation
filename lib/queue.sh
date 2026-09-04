@@ -93,6 +93,12 @@ queue_mark_failed() {
     <<<"UPDATE requests SET status='failed', finished_at=now(), fail_response = :'reason' WHERE id = :'id';"
 }
 
+queue_mark_superseded() {
+  local id="$1" reason="$2"
+  _psql -v id="$id" -v reason="$reason" \
+    <<<"UPDATE requests SET status='superseded', finished_at=now(), fail_response = :'reason' WHERE id = :'id';"
+}
+
 # DB-side record that a review was posted (self-describing row; verifiable without a GitHub call).
 # NOTE: this is NOT the idempotency gate — that is github_already_reviewed (crash-proof marker on
 # GitHub itself). posted_ref can be NULL after a crash-between-post-and-mark_done; do not rely on it
@@ -155,4 +161,11 @@ pending_maintenance_review_insert() {
   local request_id="$1" proposal_json="$2" provenance_json="$3"
   _psql -v rid="$request_id" -v prop="$proposal_json" -v prov="$provenance_json" \
     <<<"INSERT INTO pending_maintenance_reviews(request_id, proposal, provenance) VALUES (:'rid', :'prop'::jsonb, :'prov'::jsonb) ON CONFLICT (request_id) DO NOTHING;"
+}
+
+pending_maintenance_review_operation_exists() {
+  local operation_id="$1"
+  _psql -v op="$operation_id" \
+    <<<"SELECT EXISTS (SELECT 1 FROM pending_maintenance_reviews WHERE provenance->>'operation_id' = :'op');" \
+    | grep -qx t
 }

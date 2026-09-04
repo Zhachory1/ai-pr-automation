@@ -36,7 +36,7 @@ services:
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
     volumes:
       - ./docker/initdb:/migrations:ro
-    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql -f /migrations/04-pending-decision-approval.sql"]
+    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql -f /migrations/04-pending-decision-approval.sql -f /migrations/04-pr-safety-review.sql"]
     depends_on:
       db-requests:
         condition: service_healthy
@@ -205,6 +205,52 @@ services:
       hindsight:
         condition: service_healthy
       schema-migrate:
+        condition: service_completed_successfully
+
+  # Build-only image used by pr-safety-review-runner's per-operation `docker run`.
+  # It receives only OPENAI_API_KEY, read-only snapshot/policy mounts, and one writable handoff file.
+  pr-safety-analyst-image:
+    image: agent-fleet/pr-safety-analyst:${PR_SAFETY_ANALYST_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.pr-safety-analyst
+    restart: "no"
+    entrypoint: ["true"]
+
+  # Draft-only controller. It can access local Postgres and Docker to start the isolated analyst,
+  # but it has no GitHub/Chat/CI/Datadog integration and makes no external write.
+  pr-safety-review-controller:
+    profiles: ["pr-safety"]
+    image: agent-fleet/pr-safety-controller:${PR_SAFETY_CONTROLLER_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.pr-safety-controller
+    restart: unless-stopped
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PR_SAFETY_ANALYST_RUNNER: /app/bin/pr-safety-review-runner
+      PR_SAFETY_ANALYST_IMAGE: agent-fleet/pr-safety-analyst:${PR_SAFETY_ANALYST_VERSION:-latest}
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_PORT: "5432"
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/var/empty}
+      PR_SAFETY_POLICY_ROOT: ${PR_SAFETY_POLICY_ROOT:-/var/empty}
+      PR_SAFETY_WORK_ROOT: ${PR_SAFETY_WORK_ROOT:-/var/empty}
+      HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PR_SAFETY_SNAPSHOT_ROOT:-/var/empty}:${PR_SAFETY_SNAPSHOT_ROOT:-/var/empty}:ro
+      - ${PR_SAFETY_POLICY_ROOT:-/var/empty}:${PR_SAFETY_POLICY_ROOT:-/var/empty}:ro
+      - ${PR_SAFETY_WORK_ROOT:-/var/empty}:${PR_SAFETY_WORK_ROOT:-/var/empty}:rw
+      - ${HANDOFF_ROOT:-/var/empty}:${HANDOFF_ROOT:-/var/empty}:rw
+    depends_on:
+      db-requests:
+        condition: service_healthy
+      schema-migrate:
+        condition: service_completed_successfully
+      pr-safety-analyst-image:
         condition: service_completed_successfully
 
   # --- status: local web view (M3) ---
