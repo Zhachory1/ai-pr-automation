@@ -20,7 +20,11 @@ jq -cn --arg nonce "$AGENT_RUN_NONCE" \
      verdict: "comment",
      findings: [{file:"src/x.py", line:10, severity:"minor", text:"nit: rename var"}],
      summary: "fake-runner e2e: no real review posted",
-     memory: { decisions: ["consider adopting X convention repo-wide"] }
+     memory: { decisions: [{
+       scope: "repository",
+       rule: "Use descriptive names for renamed variables.",
+       rationale: "Consistent names improve review readability across this repository."
+     }] }
    }' > "$AGENT_RESULT_FILE"
 
 echo "fake-runner: wrote $AGENT_RESULT_FILE (verdict=comment, 1 decision) for ${PR_REPO:-?}#${PR_NUMBER:-?}"
