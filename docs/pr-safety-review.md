@@ -40,6 +40,18 @@ Other bots, humans, malformed, and free-form messages are ignored. It never post
 
 `PR_SAFETY_CHAT_INPUT_FILE` supplies a local list-messages JSON response for tests and makes no network request. It is test-only input, not an authorization bypass: sender and command validation remain unchanged.
 
+## Automatic Chat Producer
+
+Use `scripts/pr-safety-chat-producer-launch.sh` under launchd. It sources private `.env`, obtains a
+fresh Google ADC token, takes one host lock, and runs the read-only producer once. Install a copy of
+`launchd/com.example.agent-fleet-pr-safety-chat-producer.plist.template` with absolute paths and
+user-private log paths. The template runs at load and every 60 seconds.
+
+Do not load the job until `GOOGLE_CHAT_SPACE`, `PR_SAFETY_CHAT_BOT_SENDER`, policy pin, and Google ADC
+are configured. `.env` must be current-user-owned and mode `0600`; launchd creates logs with `0700` umask.
+The template and launcher set a Homebrew-aware `PATH` for `gcloud`, `gh`, and `python3`. Startup failures
+are visible in its stderr log; the producer never posts to Chat or GitHub.
+
 ## Runtime
 
 `pr-safety-review-controller` claims only `pr-safety-review` rows from existing `requests`.
