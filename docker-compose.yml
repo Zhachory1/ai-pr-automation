@@ -288,8 +288,17 @@ services:
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
       PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/var/empty}
       PR_SAFETY_POLICY_ROOT: ${PR_SAFETY_POLICY_ROOT:-/var/empty}
+      PR_SAFETY_POLICY_PATH: ${PR_SAFETY_POLICY_PATH:-}
+      PR_SAFETY_POLICY_VERSION: ${PR_SAFETY_POLICY_VERSION:-}
+      PR_SAFETY_POLICY_DIGEST: ${PR_SAFETY_POLICY_DIGEST:-}
       PR_SAFETY_WORK_ROOT: ${PR_SAFETY_WORK_ROOT:-/var/empty}
       HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}
+    healthcheck:
+      test: ["CMD-SHELL", "psql -h $${REQUESTS_DB_HOST} -p $${REQUESTS_DB_PORT} -U $${REQUESTS_DB_USER} -d $${REQUESTS_DB_NAME} -qAt -c 'SELECT 1' | grep -qx 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${PR_SAFETY_SNAPSHOT_ROOT:-/var/empty}:${PR_SAFETY_SNAPSHOT_ROOT:-/var/empty}:ro
