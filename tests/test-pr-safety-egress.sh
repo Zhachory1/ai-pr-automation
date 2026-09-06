@@ -25,4 +25,6 @@ done
 docker run --rm --network "$NETWORK" -e HTTPS_PROXY=http://pr-safety-egress:3128 -e NODE_USE_ENV_PROXY=1 node:24-bookworm-slim node -e 'fetch("https://example.com", {signal: AbortSignal.timeout(10000)}).then(() => process.exit(1)).catch(() => process.exit(0))'
 grep -Fq -- '--network "$network"' bin/pr-safety-review-runner
 grep -Fq -- '-e HTTPS_PROXY="$proxy" -e HTTP_PROXY="$proxy" -e NODE_USE_ENV_PROXY=1' bin/pr-safety-review-runner
+grep -Fq -- '-e GH_TOKEN -e BUILDKITE_API_TOKEN -e DD_PAT' bin/pr-safety-review-runner
+grep -Fq -- '-e NO_PROXY=coderag,swarmvault-mcp,hindsight -e no_proxy=coderag,swarmvault-mcp,hindsight' bin/pr-safety-review-runner
 echo "PASS: PR safety read-services egress"

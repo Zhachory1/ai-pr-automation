@@ -93,6 +93,9 @@ services:
     depends_on:
       hindsight-db:
         condition: service_healthy
+    networks:
+      - default
+      - pr-safety-analyst
     healthcheck:
       # /health returns 200; root (/) is 404. curl is present in the image (verified).
       test: ["CMD-SHELL", "curl -fsS http://localhost:8888/health >/dev/null || exit 1"]
@@ -123,6 +126,9 @@ services:
       - "127.0.0.1:9749:9749"
     expose:
       - "9750"
+    networks:
+      - default
+      - pr-safety-analyst
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:9750/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 10s
@@ -177,6 +183,9 @@ services:
     command: ["serve-mcp"]
     expose:
       - "9760"
+    networks:
+      - default
+      - pr-safety-analyst
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:9760/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 10s
@@ -294,7 +303,8 @@ services:
       start_period: 10s
 
   # Draft-only controller. It can access local Postgres and Docker to start the isolated analyst,
-  # but it has no GitHub/Chat/CI/Datadog integration and makes no external write.
+  # It makes no external write itself; it forwards read-only investigation credentials to the
+  # isolated analyst runner and has no GitHub/Chat/CI/Datadog write authority.
   pr-safety-review-controller:
     profiles: ["pr-safety"]
     image: agent-fleet/pr-safety-controller:${PR_SAFETY_CONTROLLER_VERSION:-latest}
@@ -304,6 +314,9 @@ services:
     restart: unless-stopped
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      BUILDKITE_API_TOKEN: ${BUILDKITE_API_TOKEN:-}
+      DD_PAT: ${DD_PAT:-}
       PR_SAFETY_ANALYST_RUNNER: /app/bin/pr-safety-review-runner
       PR_SAFETY_ANALYST_IMAGE: agent-fleet/pr-safety-analyst:${PR_SAFETY_ANALYST_VERSION:-latest}
       PR_SAFETY_ANALYST_NETWORK: agent-fleet-pr-safety-analyst
