@@ -268,6 +268,31 @@ services:
     restart: "no"
     entrypoint: ["true"]
 
+  # Only this proxy has an external network path for analyst model inference.
+  pr-safety-egress:
+    profiles: ["pr-safety"]
+    image: agent-fleet/pr-safety-egress:${PR_SAFETY_EGRESS_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pr-safety-egress
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /run:rw,noexec,nosuid,nodev,mode=1777
+      - /var/log/squid:rw,noexec,nosuid,nodev,mode=1777
+      - /var/spool/squid:rw,noexec,nosuid,nodev,mode=1777
+    networks:
+      - default
+      - pr-safety-analyst
+    healthcheck:
+      test: ["CMD-SHELL", "squid -k parse"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
   # Draft-only controller. It can access local Postgres and Docker to start the isolated analyst,
   # but it has no GitHub/Chat/CI/Datadog integration and makes no external write.
   pr-safety-review-controller:
@@ -281,6 +306,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       PR_SAFETY_ANALYST_RUNNER: /app/bin/pr-safety-review-runner
       PR_SAFETY_ANALYST_IMAGE: agent-fleet/pr-safety-analyst:${PR_SAFETY_ANALYST_VERSION:-latest}
+      PR_SAFETY_ANALYST_NETWORK: agent-fleet-pr-safety-analyst
+      PR_SAFETY_ANALYST_PROXY: http://pr-safety-egress:3128
       REQUESTS_DB_HOST: db-requests
       REQUESTS_DB_PORT: "5432"
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
@@ -312,6 +339,8 @@ services:
         condition: service_completed_successfully
       pr-safety-analyst-image:
         condition: service_completed_successfully
+      pr-safety-egress:
+        condition: service_healthy
 
   # --- status: local web view (M3) ---
   # Renders running/queued/recent plus the human-review queue. Queue controls only update local
@@ -341,6 +370,11 @@ services:
         condition: service_healthy
       schema-migrate:
         condition: service_completed_successfully
+
+networks:
+  pr-safety-analyst:
+    internal: true
+    name: agent-fleet-pr-safety-analyst
 
 volumes:
   requests_pgdata:

@@ -1,0 +1,8 @@
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends squid \
+ && mkdir -p /var/log/squid /var/spool/squid \
+ && chown -R proxy:proxy /var/log/squid /var/spool/squid \
+ && rm -rf /var/lib/apt/lists/*
+COPY docker/pr-safety-egress.conf /etc/squid/squid.conf
+USER proxy
+ENTRYPOINT ["squid", "-N", "-f", "/etc/squid/squid.conf"]

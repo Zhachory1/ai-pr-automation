@@ -1,5 +1,5 @@
 # Isolated draft-only analyst. No git, gh, psql, curl, MCP configuration, or credentials are baked in.
-FROM node:20-bookworm-slim
+FROM node:24-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @zhachory1/mewrite-code

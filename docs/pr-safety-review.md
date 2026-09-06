@@ -16,6 +16,8 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
 - Analyst gets a disposable read-only checkout and its existing model-provider credential only;
   no GitHub, Chat, DB, CI, Datadog, cloud, MCP, shared-memory-write, host-code, Docker-socket, or
   metadata-service credential.
+- Analyst network is internal-only. `pr-safety-egress` is its only route out and permits HTTPS CONNECT
+  to `api.openai.com:443` only. The analyst cannot bypass this proxy.
 - Controller requires and binds `operation_id`, `repo`, `pr`, `head_sha`, `base_sha`, `diff_hash`,
   `policy_version`, `snapshot_path`, and `policy_path`; paths resolve beneath configured roots.
 - Changed head means `superseded`, not a review of newer code.
@@ -68,6 +70,14 @@ storage, and limits process, CPU, and memory use. Controller marks a valid `clea
 a handoff. For every other terminal result, it validates result and handoff identity, findings, and
 evidence, atomically promotes handoff, then uses existing `pending_maintenance_reviews` with final
 path and SHA-256 digest in provenance.
+
+## Provider Egress
+
+`pr-safety-egress` joins the default network and internal `agent-fleet-pr-safety-analyst` network.
+The analyst joins only the internal network and receives `HTTPS_PROXY`, `HTTP_PROXY`, and
+`NODE_USE_ENV_PROXY=1`. Squid permits only `CONNECT api.openai.com:443`; direct, metadata, Chat,
+GitHub, cloud, and arbitrary destination traffic has no route or is denied. Model-provider inference
+is the only external call in this pilot.
 
 ## Handoff Storage
 
