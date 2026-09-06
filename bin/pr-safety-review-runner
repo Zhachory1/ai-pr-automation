@@ -20,5 +20,7 @@ docker run --rm --stop-timeout 10 --network "$network" --read-only --user 65532:
   --mount "type=bind,src=$PR_SAFETY_HANDOFF_DRAFT,dst=/output/handoff.md" \
   --mount "type=bind,src=$prompt,dst=/input/prompt.md,readonly" \
   --workdir /snapshot -e OPENAI_API_KEY -e PR_SAFETY_HANDOFF_DRAFT=/output/handoff.md \
+  -e GH_TOKEN -e BUILDKITE_API_TOKEN -e DD_PAT \
   -e HTTPS_PROXY="$proxy" -e HTTP_PROXY="$proxy" -e NODE_USE_ENV_PROXY=1 \
+  -e NO_PROXY=coderag,swarmvault-mcp,hindsight -e no_proxy=coderag,swarmvault-mcp,hindsight \
   "$image" "$(<"$prompt")" > "$PR_SAFETY_RESULT_FILE"

@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "buildkite": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@0.3.0", "https://mcp.buildkite.com/mcp"]
+    },
+    "coderag": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@0.3.0", "http://coderag:9750/mcp", "--allow-http"]
+    },
+    "swarmvault": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@0.3.0", "http://swarmvault-mcp:9760/mcp", "--allow-http"]
+    },
+    "hindsight": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote@0.3.0", "http://hindsight:8888/mcp/pr-safety/", "--allow-http"]
+    }
+  }
+}

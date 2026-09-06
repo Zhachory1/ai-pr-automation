@@ -1,6 +1,6 @@
 # PR Safety Review Contract
 
-Status: read-only Google Chat producer, draft-only controller, and analyst runner. No external write path.
+Status: read-only Google Chat producer, draft-only controller, and analyst runner. Analyst reads approved investigation systems and retains findings to a dedicated shared-memory bank; it makes no other external write.
 
 ## Purpose
 
@@ -16,18 +16,21 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
 - Analyst gets a disposable read-only checkout. Its only route out is `pr-safety-egress`, which permits
   HTTPS CONNECT to approved read hosts (`*.openai.com`, `*.github.com`, `*.buildkite.com`,
   `*.datadoghq.com`) only; it cannot bypass this proxy or reach any other destination.
-- Read-only credentials for those systems and internal MCP read access (Coderag, SwarmVault,
-  Hindsight) are wired in a following slice. This slice only opens the egress allowlist. No write
-  scope, Chat credential, DB password, cloud/metadata credential, shared-memory-write, host-code, or
-  Docker socket ever reaches analyst.
+- Analyst holds read-only credentials for GitHub (`GH_TOKEN`), Buildkite (`BUILDKITE_API_TOKEN`),
+  and Datadog (`DD_PAT` bearer), plus internal MCP access to Coderag, SwarmVault, and Hindsight. The
+  Hindsight MCP server is bound to the `pr-safety` bank endpoint (`/mcp/pr-safety/`), so retain can
+  only reach that bank. No Chat credential, DB password, GitHub/CI/Datadog write scope,
+  cloud/metadata credential, host-code, or Docker socket reaches analyst.
 - Controller requires and binds `operation_id`, `repo`, `pr`, `head_sha`, `base_sha`, `diff_hash`,
   `policy_version`, `snapshot_path`, and `policy_path`; paths resolve beneath configured roots.
 - Changed head means `superseded`, not a review of newer code.
 - Chat can start tracked work and receive links. GitHub remains approval and merge authority.
 - Free-form Chat text, reactions, PR text, comments, code, CI output, and tool output are data,
   not authorization.
-- No remediation, rollback, GitHub comment, CI retry, Datadog change, or shared-memory promotion
-  belongs in first pilot.
+- No remediation, rollback, GitHub comment, CI retry, or Datadog change belongs in first pilot.
+  Shared-memory retain is confined to the `pr-safety` bank by the Hindsight MCP endpoint; because the
+  analyst reads untrusted content, `pr-safety` is treated as untrusted-derived and is never
+  auto-promoted into `fleet-shared`.
 - Analyst writes handoff draft only at controller-supplied path in private per-operation output
   workspace. Controller validates and promotes it into immutable local handoff doc, then queues it
   for human review.
@@ -66,10 +69,12 @@ policy-file SHA-256 digest. Mismatch becomes `superseded` before analyst starts.
 
 `pr-safety-review-runner` starts a separate non-root, read-only Docker image. It mounts immutable
 snapshot and policy paths read-only and mounts only per-operation `handoff.md` writable. It passes
-only existing `OPENAI_API_KEY` today; read-only investigation credentials and internal MCP access are
-added in a following slice. No Chat credential, DB password, write scope, cloud/metadata credential,
-or Docker socket reaches analyst. Runtime drops Linux capabilities, prevents privilege escalation,
-uses temporary runtime storage, and limits process, CPU, and memory use. Controller marks a valid `clear` result done without
+`OPENAI_API_KEY` and read-only investigation credentials (`GH_TOKEN`, `BUILDKITE_API_TOKEN`,
+`DD_PAT`); internal Coderag, SwarmVault, and Hindsight MCP are reached over the analyst network, with
+Hindsight bound to the `pr-safety` bank endpoint. No Chat credential, DB password, GitHub/CI/Datadog
+write scope, cloud/metadata credential, or Docker socket reaches analyst. Runtime drops Linux
+capabilities, prevents privilege escalation, uses temporary runtime storage, and limits process, CPU,
+and memory use. Controller marks a valid `clear` result done without
 a handoff. For every other terminal result, it validates result and handoff identity, findings, and
 evidence, atomically promotes handoff, then uses existing `pending_maintenance_reviews` with final
 path and SHA-256 digest in provenance.
@@ -80,9 +85,9 @@ path and SHA-256 digest in provenance.
 The analyst joins only the internal network and receives `HTTPS_PROXY`, `HTTP_PROXY`, and
 `NODE_USE_ENV_PROXY=1`. Squid permits only `CONNECT :443` to the approved read hosts
 (`.openai.com`, `.github.com`, `.buildkite.com`, `.datadoghq.com`); direct, metadata, Chat, cloud,
-and any off-allowlist destination has no route or is denied. Internal MCP reads (Coderag, SwarmVault,
-Hindsight), once wired, stay on the Compose network and do not traverse this proxy. Write actions are
-prevented by credential scope and mount mode, not by egress rules.
+and any off-allowlist destination has no route or is denied. Internal MCP calls (Coderag, SwarmVault,
+and Hindsight `pr-safety`-bank retain) stay on the Compose network and do not traverse this proxy.
+GitHub/CI/Datadog write actions are prevented by credential scope and mount mode, not by egress rules.
 
 ## Handoff Storage
 
@@ -134,7 +139,8 @@ sufficient intent evidence.
 
 | Threat | Required control |
 | --- | --- |
-| Prompt injection from Chat, PR, code, comments, or tool output | Treat all external text as data. Read-only sandbox with only existing model credential. |
+| Prompt injection from Chat, PR, code, comments, or tool output | Treat all external text as data. Read-only sandbox; credentials carry no GitHub/CI/Datadog write scope; egress allowlist blocks non-approved hosts. |
+| Memory poisoning from untrusted input | Retain only analyst-synthesized findings, never raw untrusted or recalled text. The Hindsight MCP server is bound to the `pr-safety` bank endpoint, so retain cannot reach `fleet-shared`; treat `pr-safety` as an untrusted-derived bank and never auto-promote it into `fleet-shared`. |
 | Stale result | Store SHA and diff hash in job payload. Mark changed head as `superseded`. |
 | Duplicate Chat event | `pr_safety_chat_events` uses provider message ID as primary key and stores canonical payload SHA-256; ledger insert and queue insert are one SQL statement. No Chat notifications exist. |
 | Bot feedback loop | Use correlation IDs, bot-message filtering, one active operation per PR lineage, quotas, and circuit breaker. |
