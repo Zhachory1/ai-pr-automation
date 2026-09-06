@@ -19,8 +19,10 @@ for _ in $(seq 1 20); do docker exec "$PROXY" squid -k parse >/dev/null 2>&1 && 
 docker exec "$PROXY" squid -k parse >/dev/null
 [[ "$(docker exec "$PROXY" id -u)" != 0 ]]
 if docker run --rm --network "$NETWORK" node:24-bookworm-slim node -e 'fetch("https://api.github.com", {signal: AbortSignal.timeout(5000)}).then(() => process.exit(1)).catch(() => process.exit(0))'; then :; else exit 1; fi
-docker run --rm --network "$NETWORK" -e HTTPS_PROXY=http://pr-safety-egress:3128 -e NODE_USE_ENV_PROXY=1 node:24-bookworm-slim node -e 'fetch("https://api.openai.com/v1/models", {signal: AbortSignal.timeout(10000)}).then(r => process.exit(r.status === 401 ? 0 : 1)).catch(() => process.exit(1))'
-docker run --rm --network "$NETWORK" -e HTTPS_PROXY=http://pr-safety-egress:3128 -e NODE_USE_ENV_PROXY=1 node:24-bookworm-slim node -e 'fetch("https://api.github.com", {signal: AbortSignal.timeout(10000)}).then(() => process.exit(1)).catch(() => process.exit(0))'
+for host in api.openai.com/v1/models api.github.com api.buildkite.com api.datadoghq.com/api/v1/validate; do
+  docker run --rm --network "$NETWORK" -e HTTPS_PROXY=http://pr-safety-egress:3128 -e NODE_USE_ENV_PROXY=1 node:24-bookworm-slim node -e "fetch('https://$host', {signal: AbortSignal.timeout(10000)}).then(() => process.exit(0)).catch(() => process.exit(1))"
+done
+docker run --rm --network "$NETWORK" -e HTTPS_PROXY=http://pr-safety-egress:3128 -e NODE_USE_ENV_PROXY=1 node:24-bookworm-slim node -e 'fetch("https://example.com", {signal: AbortSignal.timeout(10000)}).then(() => process.exit(1)).catch(() => process.exit(0))'
 grep -Fq -- '--network "$network"' bin/pr-safety-review-runner
 grep -Fq -- '-e HTTPS_PROXY="$proxy" -e HTTP_PROXY="$proxy" -e NODE_USE_ENV_PROXY=1' bin/pr-safety-review-runner
-echo "PASS: PR safety provider-only egress"
+echo "PASS: PR safety read-services egress"

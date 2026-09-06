@@ -13,11 +13,13 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
 ## Hard Boundaries
 
 - Do not reuse `pr-review` or `pr-maintain` worker authority.
-- Analyst gets a disposable read-only checkout and its existing model-provider credential only;
-  no GitHub, Chat, DB, CI, Datadog, cloud, MCP, shared-memory-write, host-code, Docker-socket, or
-  metadata-service credential.
-- Analyst network is internal-only. `pr-safety-egress` is its only route out and permits HTTPS CONNECT
-  to `api.openai.com:443` only. The analyst cannot bypass this proxy.
+- Analyst gets a disposable read-only checkout. Its only route out is `pr-safety-egress`, which permits
+  HTTPS CONNECT to approved read hosts (`*.openai.com`, `*.github.com`, `*.buildkite.com`,
+  `*.datadoghq.com`) only; it cannot bypass this proxy or reach any other destination.
+- Read-only credentials for those systems and internal MCP read access (Coderag, SwarmVault,
+  Hindsight) are wired in a following slice. This slice only opens the egress allowlist. No write
+  scope, Chat credential, DB password, cloud/metadata credential, shared-memory-write, host-code, or
+  Docker socket ever reaches analyst.
 - Controller requires and binds `operation_id`, `repo`, `pr`, `head_sha`, `base_sha`, `diff_hash`,
   `policy_version`, `snapshot_path`, and `policy_path`; paths resolve beneath configured roots.
 - Changed head means `superseded`, not a review of newer code.
@@ -64,20 +66,23 @@ policy-file SHA-256 digest. Mismatch becomes `superseded` before analyst starts.
 
 `pr-safety-review-runner` starts a separate non-root, read-only Docker image. It mounts immutable
 snapshot and policy paths read-only and mounts only per-operation `handoff.md` writable. It passes
-only existing `OPENAI_API_KEY`; no GitHub, Chat, DB, CI, Datadog, cloud, or MCP credential reaches
-analyst. Runtime drops Linux capabilities, prevents privilege escalation, uses temporary runtime
-storage, and limits process, CPU, and memory use. Controller marks a valid `clear` result done without
+only existing `OPENAI_API_KEY` today; read-only investigation credentials and internal MCP access are
+added in a following slice. No Chat credential, DB password, write scope, cloud/metadata credential,
+or Docker socket reaches analyst. Runtime drops Linux capabilities, prevents privilege escalation,
+uses temporary runtime storage, and limits process, CPU, and memory use. Controller marks a valid `clear` result done without
 a handoff. For every other terminal result, it validates result and handoff identity, findings, and
 evidence, atomically promotes handoff, then uses existing `pending_maintenance_reviews` with final
 path and SHA-256 digest in provenance.
 
-## Provider Egress
+## Read-Services Egress
 
 `pr-safety-egress` joins the default network and internal `agent-fleet-pr-safety-analyst` network.
 The analyst joins only the internal network and receives `HTTPS_PROXY`, `HTTP_PROXY`, and
-`NODE_USE_ENV_PROXY=1`. Squid permits only `CONNECT api.openai.com:443`; direct, metadata, Chat,
-GitHub, cloud, and arbitrary destination traffic has no route or is denied. Model-provider inference
-is the only external call in this pilot.
+`NODE_USE_ENV_PROXY=1`. Squid permits only `CONNECT :443` to the approved read hosts
+(`.openai.com`, `.github.com`, `.buildkite.com`, `.datadoghq.com`); direct, metadata, Chat, cloud,
+and any off-allowlist destination has no route or is denied. Internal MCP reads (Coderag, SwarmVault,
+Hindsight), once wired, stay on the Compose network and do not traverse this proxy. Write actions are
+prevented by credential scope and mount mode, not by egress rules.
 
 ## Handoff Storage
 
