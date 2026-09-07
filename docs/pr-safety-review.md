@@ -68,8 +68,10 @@ beneath configured roots, verifies clean snapshot `HEAD`, `git diff base_sha..he
 policy-file SHA-256 digest. Mismatch becomes `superseded` before analyst starts.
 
 `pr-safety-review-runner` starts a separate non-root, read-only Docker image. It mounts immutable
-snapshot and policy paths read-only and mounts only per-operation `handoff.md` writable. It passes
-`OPENAI_API_KEY` and read-only investigation credentials (`GH_TOKEN`, `BUILDKITE_API_TOKEN`,
+snapshot and policy paths read-only and mounts only per-operation `handoff.md` writable. It pins the
+model with `--model` (`PR_SAFETY_ANALYST_MODEL`, default `gpt-5.6-terra`) so it cannot drift to the
+provider default; the pattern must stay on the approved OpenAI provider, matching the egress
+allowlist. It passes `OPENAI_API_KEY` and read-only investigation credentials (`GH_TOKEN`, `BUILDKITE_API_TOKEN`,
 `DD_PAT`); internal Coderag, SwarmVault, and Hindsight MCP are reached over the analyst network, with
 Hindsight bound to the `pr-safety` bank endpoint. No Chat credential, DB password, GitHub/CI/Datadog
 write scope, cloud/metadata credential, or Docker socket reaches analyst. Runtime drops Linux

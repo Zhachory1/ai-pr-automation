@@ -88,5 +88,7 @@ grep -Fx 'no_proxy=coderag,swarmvault-mcp,hindsight' "$TMP/docker-args" >/dev/nu
 grep -Fx 'GH_TOKEN' "$TMP/docker-args" >/dev/null
 grep -Fx 'BUILDKITE_API_TOKEN' "$TMP/docker-args" >/dev/null
 grep -Fx 'DD_PAT' "$TMP/docker-args" >/dev/null
+# model is pinned (no silent drift to provider default)
+grep -Fx -- '--model' "$TMP/docker-args" >/dev/null; grep -Fx 'gpt-5.6-terra' "$TMP/docker-args" >/dev/null
 [[ "$(cat "$result")" == '{}' ]]
 echo "PASS: authorized Chat command reaches immutable handoff and human queue"
