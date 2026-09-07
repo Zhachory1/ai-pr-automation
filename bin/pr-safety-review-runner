@@ -10,6 +10,9 @@ prompt="${1:?prompt file}"
 : "${PR_SAFETY_RESULT_FILE:?}"
 
 image="${PR_SAFETY_ANALYST_IMAGE:-agent-fleet/pr-safety-analyst:latest}"
+# Pin the model so it cannot drift to the provider default. Approved provider is OpenAI only
+# (matches the egress allowlist and policy); a non-openai pattern would be blocked by the proxy.
+model="${PR_SAFETY_ANALYST_MODEL:-gpt-5.6-terra}"
 network="${PR_SAFETY_ANALYST_NETWORK:?set PR_SAFETY_ANALYST_NETWORK}"
 proxy="${PR_SAFETY_ANALYST_PROXY:?set PR_SAFETY_ANALYST_PROXY}"
 [[ "$network" == agent-fleet-pr-safety-analyst && "$proxy" == http://pr-safety-egress:3128 ]] || { echo "invalid PR safety egress configuration" >&2; exit 2; }
@@ -23,4 +26,4 @@ docker run --rm --stop-timeout 10 --network "$network" --read-only --user 65532:
   -e GH_TOKEN -e BUILDKITE_API_TOKEN -e DD_PAT \
   -e HTTPS_PROXY="$proxy" -e HTTP_PROXY="$proxy" -e NODE_USE_ENV_PROXY=1 \
   -e NO_PROXY=coderag,swarmvault-mcp,hindsight -e no_proxy=coderag,swarmvault-mcp,hindsight \
-  "$image" "$(<"$prompt")" > "$PR_SAFETY_RESULT_FILE"
+  "$image" --model "$model" "$(<"$prompt")" > "$PR_SAFETY_RESULT_FILE"
