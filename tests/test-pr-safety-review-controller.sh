@@ -16,6 +16,7 @@ for f in docker/initdb/{01-schema,02-agent-server,03-human-review-queue,04-pr-sa
 export REQUESTS_DB_USER=postgres REQUESTS_DB_NAME=fleet REQUESTS_DB_HOST=localhost REQUESTS_DB_PORT="$PORT" PGPASSWORD=t OPENAI_API_KEY=test-key
 export PR_SAFETY_SNAPSHOT_ROOT="$TMP/snapshots" PR_SAFETY_POLICY_ROOT="$TMP/policies" HANDOFF_ROOT="$TMP/handoffs" PR_SAFETY_WORK_ROOT="$TMP/work"
 export PR_SAFETY_ANALYST_RUNNER="$PWD/tests/fake-pr-safety-analyst.sh" PR_SAFETY_CONTROLLER_ONCE=true
+export PR_SAFETY_ANALYST_NETWORK=agent-fleet-pr-safety-analyst PR_SAFETY_ANALYST_PROXY=http://pr-safety-egress:3128
 mkdir -p "$PR_SAFETY_SNAPSHOT_ROOT/op" "$PR_SAFETY_POLICY_ROOT" "$HANDOFF_ROOT" "$PR_SAFETY_WORK_ROOT"
 git -C "$PR_SAFETY_SNAPSHOT_ROOT/op" init -q; git -C "$PR_SAFETY_SNAPSHOT_ROOT/op" config user.email test@example.com; git -C "$PR_SAFETY_SNAPSHOT_ROOT/op" config user.name test
 printf 'base\n' > "$PR_SAFETY_SNAPSHOT_ROOT/op/x"; git -C "$PR_SAFETY_SNAPSHOT_ROOT/op" add x; git -C "$PR_SAFETY_SNAPSHOT_ROOT/op" commit -qm base
@@ -84,5 +85,13 @@ export TEST_OPERATION_ID=op-invalid-handoff TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-invalid-handoff "$HEAD" "$DIFF")" op-invalid-handoff >/dev/null
 bin/pr-safety-review-controller
 check "invalid handoff fails without promotion" "q \"SELECT status FROM requests WHERE dedupe_key='op-invalid-handoff';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/op-invalid-handoff.md\" ]]"
+
+# Real-LLM shape: readable handoff that neither embeds the identity JSON nor byte-copies finding
+# claims. Controller must stamp identity and promote it. Placed last to avoid perturbing the
+# count-sensitive checks above.
+export TEST_OPERATION_ID=op-paraphrase TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
+queue_enqueue pr-safety-review "$(payload op-paraphrase "$HEAD" "$DIFF")" op-paraphrase >/dev/null
+bin/pr-safety-review-controller
+check "paraphrased handoff is stamped with identity and promoted" "q \"SELECT status FROM requests WHERE dedupe_key='op-paraphrase';\" | grep -qx done && [[ -f \"$HANDOFF_ROOT/op-paraphrase.md\" ]] && grep -q 'operation_id: op-paraphrase' \"$HANDOFF_ROOT/op-paraphrase.md\" && grep -q 'reworded the findings' \"$HANDOFF_ROOT/op-paraphrase.md\""
 
 (( fail == 0 ))

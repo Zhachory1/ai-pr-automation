@@ -29,6 +29,7 @@ export REQUESTS_DB_USER=postgres REQUESTS_DB_NAME=fleet REQUESTS_DB_HOST=localho
 export GOOGLE_CHAT_ACCESS_TOKEN=fixture-token GOOGLE_CHAT_SPACE=spaces/AAAA PR_SAFETY_CHAT_BOT_SENDER=users/123456789
 export PR_SAFETY_SNAPSHOT_ROOT="$TMP/snapshots" PR_SAFETY_POLICY_ROOT="$POLICY_ROOT" PR_SAFETY_POLICY_PATH="$POLICY_ROOT/policy.md" PR_SAFETY_POLICY_VERSION=v1 PR_SAFETY_POLICY_DIGEST="$POLICY_DIGEST"
 export PR_SAFETY_WORK_ROOT="$TMP/work" HANDOFF_ROOT="$TMP/handoffs" PR_SAFETY_ANALYST_RUNNER="$PWD/tests/fake-pr-safety-analyst.sh" PR_SAFETY_CONTROLLER_ONCE=true
+export PR_SAFETY_ANALYST_NETWORK=agent-fleet-pr-safety-analyst PR_SAFETY_ANALYST_PROXY=http://pr-safety-egress:3128
 export PR_SAFETY_TEST_REPO="$SOURCE" PR_SAFETY_TEST_REPO_NAME=owner/repo PR_SAFETY_TEST_BASE="$BASE" PR_SAFETY_TEST_HEAD="$HEAD"
 mkdir -p "$TMP/bin" "$PR_SAFETY_WORK_ROOT" "$HANDOFF_ROOT"
 ln -s "$PWD/tests/fake-pr-safety-chat-gh.sh" "$TMP/bin/gh"
@@ -75,6 +76,7 @@ grep -Fx -- '--user' "$TMP/docker-args" >/dev/null; grep -Fx '65532:65532' "$TMP
 grep -Fx -- '--cap-drop' "$TMP/docker-args" >/dev/null; grep -Fx 'ALL' "$TMP/docker-args" >/dev/null
 # tmpfs hardening + resource caps
 grep -Fx -- '--tmpfs' "$TMP/docker-args" >/dev/null; grep -Fx '/tmp:rw,noexec,nosuid,nodev,mode=1777' "$TMP/docker-args" >/dev/null
+grep -Fx '/app/agent-config/sessions:rw,nosuid,nodev,mode=1777' "$TMP/docker-args" >/dev/null
 grep -Fx -- '--pids-limit' "$TMP/docker-args" >/dev/null; grep -Fx '256' "$TMP/docker-args" >/dev/null
 grep -Fx -- '--memory' "$TMP/docker-args" >/dev/null; grep -Fx '2g' "$TMP/docker-args" >/dev/null
 grep -Fx -- '--cpus' "$TMP/docker-args" >/dev/null
@@ -89,6 +91,6 @@ grep -Fx 'GH_TOKEN' "$TMP/docker-args" >/dev/null
 grep -Fx 'BUILDKITE_API_TOKEN' "$TMP/docker-args" >/dev/null
 grep -Fx 'DD_PAT' "$TMP/docker-args" >/dev/null
 # model is pinned (no silent drift to provider default)
-grep -Fx -- '--model' "$TMP/docker-args" >/dev/null; grep -Fx 'gpt-5.6-terra' "$TMP/docker-args" >/dev/null
+grep -Fx -- '--model' "$TMP/docker-args" >/dev/null; grep -Fx 'openai/gpt-5.6-terra' "$TMP/docker-args" >/dev/null
 [[ "$(cat "$result")" == '{}' ]]
 echo "PASS: authorized Chat command reaches immutable handoff and human queue"
