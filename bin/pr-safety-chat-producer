@@ -84,9 +84,12 @@ process_message() {
   sender="$(jq -r '.sender.name // empty' <<<"$message")"
   jq -e '.sender.type == "BOT"' <<<"$message" >/dev/null || return 0
   [[ "$message_id" == "$GOOGLE_CHAT_SPACE/messages/"* && "$sender" == "$PR_SAFETY_CHAT_BOT_SENDER" ]] || return 0
-  text="$(jq -r '.text // empty' <<<"$message")"
-  local command_re='^/pr-safety review https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/pull/([1-9][0-9]*)$'
-  [[ "$text" != *$'\n'* && "$text" != *$'\r'* && "$text" =~ $command_re ]] || return 0
+  # The trusted bot announces new PRs as `<label> opened *<https://github.com/owner/repo/pull/N|...>*`.
+  # The PR URL is only in formattedText (markup); anchor to the opening bold link so a PR title or
+  # body cannot smuggle a different target. repo/pr come from capture groups, never shell-evaluated.
+  text="$(jq -r '.formattedText // empty' <<<"$message")"
+  local announce_re='^[A-Za-z0-9_-]+ opened \*<https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)/pull/([1-9][0-9]*)\|'
+  [[ "$text" =~ $announce_re ]] || return 0
   repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; pr="${BASH_REMATCH[3]}"; requested_url="https://github.com/$repo/pull/$pr"
 
   if ! metadata="$(gh pr view "$pr" --repo "$repo" --json url,baseRefOid,headRefOid 2>/dev/null)" ||
