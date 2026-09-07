@@ -6,8 +6,9 @@ set -euo pipefail
 
 identity="$(grep -m1 '^{' "${1:?prompt file}")"
 op="$(jq -r .operation_id <<<"$identity")"
-status=clear
+status="${TEST_PR_SAFETY_RESULT_STATUS:-clear}"
 case "$op" in op-success|op-invalid-handoff) status=changes_requested ;; esac
+grep -qx changes_requested "$PR_SAFETY_POLICY_PATH" && status=changes_requested || true
 [[ "$op" == op-invalid-handoff ]] || printf '# PR safety handoff\nStatus: %s\n%s\n' "$status" "$identity" > "$PR_SAFETY_HANDOFF_DRAFT"
 if [[ "$op" == op-invalid-result ]]; then
   printf '{}\n' > "$PR_SAFETY_RESULT_FILE"

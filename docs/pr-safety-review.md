@@ -177,6 +177,7 @@ bash tests/test-pr-safety-review-skill.sh
 bash tests/test-pr-safety-review-controller.sh
 bash tests/test-pr-safety-runtime.sh
 bash tests/test-pr-safety-chat-producer.sh
+bash tests/test-pr-safety-flow.sh
 ```
 
 Test guards contract language. It does not prove future runtime sandboxing. Runtime enforcement is
