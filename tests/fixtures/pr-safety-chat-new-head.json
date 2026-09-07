@@ -3,7 +3,8 @@
     {
       "name": "spaces/AAAA/messages/new-head-2",
       "sender": { "name": "users/123456789", "type": "BOT" },
-      "text": "/pr-safety review https://github.com/owner/repo/pull/7"
+      "text": "roktfleet opened *owner/repo#7*\ndocs: example title",
+      "formattedText": "roktfleet opened *<https://github.com/owner/repo/pull/7|owner/repo#7>*\ndocs: example title"
     }
   ]
 }
