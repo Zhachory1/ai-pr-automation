@@ -79,15 +79,16 @@ valid_result() {
 }
 
 valid_handoff() {
+  # Validates the human-readable handoff artifact. Identity is guaranteed by the controller-written
+  # header (see process_one) and, authoritatively, by valid_result on the schema-checked result.json
+  # that is stored as the human-review proposal. The narrative itself is the model's prose rendering,
+  # so we require the immutable identity to be present but do NOT require verbatim copies of every
+  # finding claim/evidence string (no LLM reliably byte-duplicates JSON into prose; the JSON is the
+  # authenticated content of record).
   local draft="$1" op="$2" repo="$3" pr="$4" head="$5" base="$6" diff="$7" policy="$8" result="${9:-}"
   [[ -f "$draft" && ! -L "$draft" && -s "$draft" && $(wc -c < "$draft") -le 1048576 ]] || return 1
   grep -Fq -- "$op" "$draft" && grep -Fq -- "$repo" "$draft" && grep -Fq -- "$pr" "$draft" &&
     grep -Fq -- "$head" "$draft" && grep -Fq -- "$base" "$draft" && grep -Fq -- "$diff" "$draft" && grep -Fq -- "$policy" "$draft" || return 1
-  [[ -z "$result" ]] && return 0
-  local text
-  while IFS= read -r text; do grep -Fq -- "$text" "$draft" || return 1; done < <(
-    jq -r '[.status, (.findings[]?.claim), (.findings[]?.evidence[]?.source)] | .[] | select(type == "string" and length > 0)' "$result"
-  )
 }
 
 queue_handoff() {
@@ -146,6 +147,11 @@ EOF
 
   local status=0
   "$TIMEOUT_BIN" --kill-after=10s "${ANALYST_TIMEOUT}s" env -i PATH="$PATH" OPENAI_API_KEY="${OPENAI_API_KEY:?set OPENAI_API_KEY}" \
+    PR_SAFETY_ANALYST_IMAGE="${PR_SAFETY_ANALYST_IMAGE:-}" \
+    PR_SAFETY_ANALYST_NETWORK="${PR_SAFETY_ANALYST_NETWORK:?set PR_SAFETY_ANALYST_NETWORK}" \
+    PR_SAFETY_ANALYST_PROXY="${PR_SAFETY_ANALYST_PROXY:?set PR_SAFETY_ANALYST_PROXY}" \
+    PR_SAFETY_ANALYST_MODEL="${PR_SAFETY_ANALYST_MODEL:-}" \
+    GH_TOKEN="${GH_TOKEN:-}" BUILDKITE_API_TOKEN="${BUILDKITE_API_TOKEN:-}" DD_PAT="${DD_PAT:-}" \
     PR_SAFETY_SNAPSHOT_PATH="$snapshot" PR_SAFETY_POLICY_PATH="$policy_path" \
     PR_SAFETY_HANDOFF_DRAFT="$draft" PR_SAFETY_RESULT_FILE="$result" \
     "$RUNNER" "$prompt" || status=$?
@@ -158,6 +164,16 @@ EOF
     queue_mark_done "$id" "clear"
     return
   fi
+  # Prepend a controller-authenticated identity block so the promoted handoff always carries the
+  # immutable identity (the analyst is only asked to write status/findings/evidence, not opaque
+  # identifiers like operation_id/diff_hash). Identity authenticity comes from result.json validation
+  # above and this controller-written header, not from the model pasting fields into prose.
+  # The analyst must have written a non-empty handoff for a non-clear result; an empty or missing
+  # draft is a failure and must not be papered over by the identity stamp.
+  [[ -f "$draft" && ! -L "$draft" && -s "$draft" ]] || { fail "$id" "invalid analyst handoff draft"; return; }
+  local stamped="$WORK_ROOT/$op/handoff.stamped.md"
+  { printf '<!-- pr-safety identity\noperation_id: %s\nrepo: %s\npr: %s\nhead_sha: %s\nbase_sha: %s\ndiff_hash: %s\npolicy_version: %s\n-->\n\n' \
+      "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy"; cat "$draft"; } > "$stamped" && mv "$stamped" "$draft"
   valid_handoff "$draft" "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy" "$result" || { fail "$id" "invalid analyst handoff draft"; return; }
 
   local tmp

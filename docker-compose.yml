@@ -321,6 +321,7 @@ services:
       PR_SAFETY_ANALYST_IMAGE: agent-fleet/pr-safety-analyst:${PR_SAFETY_ANALYST_VERSION:-latest}
       PR_SAFETY_ANALYST_NETWORK: agent-fleet-pr-safety-analyst
       PR_SAFETY_ANALYST_PROXY: http://pr-safety-egress:3128
+      PR_SAFETY_ANALYST_MODEL: ${PR_SAFETY_ANALYST_MODEL:-openai/gpt-5.6-terra}
       REQUESTS_DB_HOST: db-requests
       REQUESTS_DB_PORT: "5432"
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
