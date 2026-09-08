@@ -342,12 +342,12 @@ Boundaries:
   blocking issues and believe the PR is ready for a human to approve+merge. This does NOT approve the
   PR — it only surfaces it on the operator's human-review stack for a human decision. If you set it
   true, still post your COMMENT review (never APPROVE). When there are blocking findings, set it false.
-  `memory.decisions` is eligible for durable memory only via human review. It MUST be either `[]` or
+  \`memory.decisions\` is eligible for durable memory only via human review. It MUST be either \`[]\` or
   a non-empty array where every item is exactly structured as
-  `{"scope":"repository","rule":"non-empty stable reusable rule","rationale":"non-empty reason"}`;
-  `scope` must be exactly `repository` or `fleet`. Emit a non-empty array ONLY for stable reusable rules.
+  \`{"scope":"repository","rule":"non-empty stable reusable rule","rationale":"non-empty reason"}\`;
+  \`scope\` must be exactly \`repository\` or \`fleet\`. Emit a non-empty array ONLY for stable reusable rules.
   Ordinary PR findings, review URLs/SHA, run status, and temporary validation limits MUST leave
-  `memory.decisions` empty. Do not expect any other free-text to be stored.
+  \`memory.decisions\` empty. Do not expect any other free-text to be stored.
 - Finish within the external timeout.
 PROMPT
 }
@@ -430,12 +430,12 @@ Emit typed structured output to: $work_root/result.json
   cautious, or because a fix felt easy — if you could apply and validate it, apply it and leave this
   false; otherwise false. 'summary' should list:
   fixes committed+pushed, threads replied/resolved, and anything skipped as pending.
-  `memory.decisions` is eligible for durable memory only via human review. It MUST be either `[]` or
+  \`memory.decisions\` is eligible for durable memory only via human review. It MUST be either \`[]\` or
   a non-empty array where every item is exactly structured as
-  `{"scope":"repository","rule":"non-empty stable reusable rule","rationale":"non-empty reason"}`;
-  `scope` must be exactly `repository` or `fleet`. Emit a non-empty array ONLY for stable reusable rules.
+  \`{"scope":"repository","rule":"non-empty stable reusable rule","rationale":"non-empty reason"}\`;
+  \`scope\` must be exactly \`repository\` or \`fleet\`. Emit a non-empty array ONLY for stable reusable rules.
   Ordinary PR findings, review URLs/SHA, run status, and temporary validation limits MUST leave
-  `memory.decisions` empty.
+  \`memory.decisions\` empty.
 - Finish within the external timeout.
 PROMPT
 }
