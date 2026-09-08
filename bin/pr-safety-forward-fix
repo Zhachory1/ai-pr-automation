@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Standalone forward-fix harness.
+#
+# Takes a task from one of three sources, normalizes it to a common brief, runs the swe-implementer
+# persona (via mewritecode exec) against a DISPOSABLE fresh clone of the target repo at its default
+# branch, and — only if a commit was produced — pushes the work branch and opens a DRAFT PR.
+#
+#   pr-safety-forward-fix --handoff <file>                 repo/base come from the handoff identity
+#   pr-safety-forward-fix --issue  <owner/repo#N>          task = the GitHub issue title+body
+#   pr-safety-forward-fix --prompt "<text>" --repo <owner/repo>
+#
+# It never touches the author's PR branch or any existing working checkout; it clones fresh into a
+# temp dir. It authors as the push-capable token identity. --no-pr stops at a committed local branch.
+set -euo pipefail
+
+AGENT_DEF="${SWE_IMPLEMENTER_AGENT:-$HOME/.mewrite/agents/swe-implementer.md}"
+MODEL="${PR_SAFETY_FORWARD_FIX_MODEL:-openai/gpt-5.6-terra}"
+MEWRITE="${MEWRITECODE_BIN:-mewritecode}"
+GH_HOST=github.com
+open_pr=1
+mode="" src="" repo="" prompt_text=""
+
+die() { echo "forward-fix: $*" >&2; exit 2; }
+log() { printf '%s forward-fix %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
+
+while (($#)); do
+  case "$1" in
+    --handoff) mode=handoff; src="${2:?}"; shift 2 ;;
+    --issue)   mode=issue;   src="${2:?}"; shift 2 ;;
+    --prompt)  mode=prompt;  prompt_text="${2:?}"; shift 2 ;;
+    --repo)    repo="${2:?}"; shift 2 ;;
+    --no-pr)   open_pr=0; shift ;;
+    --model)   MODEL="${2:?}"; shift 2 ;;
+    *) die "unknown arg: $1" ;;
+  esac
+done
+
+command -v "$MEWRITE" >/dev/null || die "missing mewritecode"
+command -v gh  >/dev/null || die "missing gh"
+command -v git >/dev/null || die "missing git"
+: "${GH_TOKEN:?set GH_TOKEN (push + SAML authorized for the target org)}"
+[[ -f "$AGENT_DEF" ]] || die "missing agent definition: $AGENT_DEF"
+[[ "$mode" ]] || die "one of --handoff / --issue / --prompt is required"
+
+# --- normalize input to: repo, base_ref (optional), task_text -------------------------------------
+base_ref="" task_text="" source_ref=""
+case "$mode" in
+  handoff)
+    [[ -f "$src" && ! -L "$src" ]] || die "handoff not a regular file: $src"
+    # identity block: <!-- pr-safety identity ... repo: X ... base_sha: Y ... -->
+    repo="$(sed -n 's/^repo:[[:space:]]*//p' "$src" | head -1)"
+    base_ref="$(sed -n 's/^base_sha:[[:space:]]*//p' "$src" | head -1)"
+    local_pr="$(sed -n 's/^pr:[[:space:]]*//p' "$src" | head -1)"
+    [[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || die "handoff has no valid repo identity"
+    source_ref="handoff $(basename "$src") ($repo#${local_pr:-?})"
+    # only the concrete-breakage section is forward-fixable; a section that is blank or just "None."
+    # (the analyst's empty-section marker) is nothing to fix.
+    task_text="$(awk '/^## Concrete breakage/{f=1;next} /^## /{f=0} f' "$src")"
+    meaningful="$(printf '%s' "$task_text" | grep -v '^[[:space:]]*$' | grep -viE '^[[:space:]]*none\.?[[:space:]]*$' || true)"
+    [[ -n "$meaningful" ]] || die "handoff has no actionable '## Concrete breakage' content to fix"
+    ;;
+  issue)
+    [[ "$src" =~ ^([^/]+/[^#]+)#([1-9][0-9]*)$ ]] || die "issue must be owner/repo#N"
+    repo="${BASH_REMATCH[1]}"; num="${BASH_REMATCH[2]}"
+    view="$(gh issue view "$num" --repo "$repo" --json title,body,url 2>&1)" || die "gh issue view failed: $view"
+    source_ref="$(jq -r '.url' <<<"$view")"
+    task_text="$(jq -r '"Title: "+.title+"\n\n"+(.body // "")' <<<"$view")"
+    ;;
+  prompt)
+    [[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || die "--prompt requires --repo owner/repo"
+    source_ref="prompt"
+    task_text="$prompt_text"
+    ;;
+esac
+
+# --- disposable fresh clone at the repo default branch (never an existing checkout) ---------------
+work="$(mktemp -d "${TMPDIR:-/tmp}/forward-fix.XXXXXX")"
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
+log "cloning $repo (fresh, default branch) into $work"
+gh repo clone "$repo" "$work/repo" -- --depth=50 >/dev/null 2>&1 || die "clone failed for $repo"
+cd "$work/repo"
+default_branch="$(git symbolic-ref --short HEAD)"
+base_sha="$(git rev-parse HEAD)"
+slug="$(printf '%s' "$source_ref" | tr -c 'A-Za-z0-9' '-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//' | cut -c1-40)"
+branch="forward-fix/${slug:-task}-$(date +%s)"
+git switch -c "$branch" >/dev/null 2>&1 || die "could not create branch"
+log "branch $branch off $default_branch@${base_sha:0:10}"
+
+# --- build the prompt: swe-implementer persona + normalized brief ---------------------------------
+persona="$(awk 'BEGIN{fm=0} /^---$/{fm++;next} fm>=2{print}' "$AGENT_DEF")"
+promptfile="$work/prompt.md"
+{
+  printf '%s\n\n' "$persona"
+  printf -- '---\n\n# Forward-fix task\n\n'
+  printf 'You are working in a fresh clone of `%s` at `%s` (%s), on new branch `%s`.\n' "$repo" "$default_branch" "${base_sha:0:10}" "$branch"
+  printf 'Human approval to implement: GRANTED (this harness was invoked explicitly by the operator).\n'
+  printf 'Repository path: the current working directory. Base is correct and clean.\n'
+  printf 'Source: %s\n\n' "$source_ref"
+  printf 'Implement the smallest correct change for the task below, add/adjust tests the repo requires,\n'
+  printf 'run the repo'\''s own validation, then STOP with a commit on this branch. Do not push or open a PR.\n\n'
+  printf '## Task\n\n%s\n' "$task_text"
+} > "$promptfile"
+
+log "running swe-implementer ($MODEL)"
+"$MEWRITE" exec --model "$MODEL" --cwd "$work/repo" "$(<"$promptfile")" 2>&1 | tee "$work/agent.log" || true
+
+# --- only proceed if the agent actually committed something --------------------------------------
+if [[ "$(git rev-parse HEAD)" == "$base_sha" ]]; then
+  log "no commit produced — nothing to open a PR for. agent log at $work/agent.log"
+  log "(leaving clone in place for inspection: $work)"; trap - EXIT
+  exit 1
+fi
+git -c core.pager=cat diff --stat "$base_sha"..HEAD | sed 's/^/forward-fix diff: /' >&2
+
+if (( ! open_pr )); then
+  log "committed on $branch (--no-pr): inspect at $work/repo"; trap - EXIT
+  exit 0
+fi
+
+# --- push + open DRAFT PR (authored as the push-capable token identity) ---------------------------
+log "pushing $branch and opening DRAFT PR"
+git push -u origin "$branch" >/dev/null 2>&1 || die "push failed (token needs push + SAML on $repo)"
+title="forward-fix: ${source_ref}"
+body="$(printf 'Automated forward-fix draft from the PR-safety pipeline.\n\nSource: %s\nBase: %s@%s\n\nAgent: swe-implementer (%s). This is a DRAFT for human review; it was produced against a fresh clone of the default branch and does not touch any author PR branch.\n\n---\n\n%s\n' "$source_ref" "$default_branch" "${base_sha:0:10}" "$MODEL" "$(printf '%s' "$task_text" | head -c 4000)")"
+url="$(gh pr create --repo "$repo" --base "$default_branch" --head "$branch" --draft --title "$title" --body "$body" 2>&1)" || die "gh pr create failed: $url"
+log "draft PR: $url"
+trap - EXIT   # keep the clone for the pushed branch's provenance
