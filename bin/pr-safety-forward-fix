@@ -93,12 +93,17 @@ promptfile="$work/prompt.md"
 {
   printf '%s\n\n' "$persona"
   printf -- '---\n\n# Forward-fix task\n\n'
-  printf 'You are working in a fresh clone of `%s` at `%s` (%s), on new branch `%s`.\n' "$repo" "$default_branch" "${base_sha:0:10}" "$branch"
-  printf 'Human approval to implement: GRANTED (this harness was invoked explicitly by the operator).\n'
-  printf 'Repository path: the current working directory. Base is correct and clean.\n'
-  printf 'Source: %s\n\n' "$source_ref"
-  printf 'Implement the smallest correct change for the task below, add/adjust tests the repo requires,\n'
-  printf 'run the repo'\''s own validation, then STOP with a commit on this branch. Do not push or open a PR.\n\n'
+  printf -- 'The harness has ALREADY satisfied your context requirements; do not block on them:\n'
+  printf -- '- Approval to implement: GRANTED (operator invoked this harness explicitly).\n'
+  printf -- '- Repository: `%s`. Repository path: the current working directory (a fresh clone).\n' "$repo"
+  printf -- '- Branch: `%s`, already created off `%s` at `%s`; base is correct and the tree is clean.\n' "$branch" "$default_branch" "${base_sha:0:10}"
+  printf -- '- Identity is handled by the harness; you do NOT need a pr-safety identity block to proceed.\n'
+  printf -- '- Source of this task: %s\n\n' "$source_ref"
+  printf 'This is a forward-fix against the CURRENT default branch, not a re-review of the original PR.\n'
+  printf 'Re-verify each item still holds in the current tree, then implement the smallest correct change,\n'
+  printf 'add/adjust the tests the repo requires, run the repo'\''s own validation, and STOP with a commit on\n'
+  printf 'this branch. If an item no longer applies (already fixed on the default branch), skip it and say so.\n'
+  printf 'Do not push or open a PR. Do not touch any other repository.\n\n'
   printf '## Task\n\n%s\n' "$task_text"
 } > "$promptfile"
 
