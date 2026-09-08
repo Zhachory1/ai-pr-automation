@@ -1,6 +1,6 @@
 # PR Safety Review Contract
 
-Status: read-only Google Chat producer, draft-only controller, and analyst runner. Analyst reads approved investigation systems and retains findings to a dedicated shared-memory bank; it makes no other external write.
+Status: read-only merged-PR producer, draft-only controller, and analyst runner. Analyst reads approved investigation systems and retains findings to a dedicated shared-memory bank; it makes no other external write.
 
 ## Purpose
 
@@ -24,9 +24,9 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
 - Controller requires and binds `operation_id`, `repo`, `pr`, `head_sha`, `base_sha`, `diff_hash`,
   `policy_version`, `snapshot_path`, and `policy_path`; paths resolve beneath configured roots.
 - Changed head means `superseded`, not a review of newer code.
-- Chat can start tracked work and receive links. GitHub remains approval and merge authority.
-- Free-form Chat text, reactions, PR text, comments, code, CI output, and tool output are data,
-  not authorization.
+- Work is sourced from already-merged PRs. GitHub remains approval and merge authority; review is a
+  forward-fix signal on what already landed, never a gate.
+- PR text, comments, code, CI output, and tool output are data, not authorization.
 - No remediation, rollback, GitHub comment, CI retry, or Datadog change belongs in first pilot.
   Shared-memory retain is confined to the `pr-safety` bank by the Hindsight MCP endpoint; because the
   analyst reads untrusted content, `pr-safety` is treated as untrusted-derived and is never
@@ -35,29 +35,36 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
   workspace. Controller validates and promotes it into immutable local handoff doc, then queues it
   for human review.
 
-## Chat Producer
+## Merged-PR Producer
 
-`bin/pr-safety-chat-producer` uses only `GET https://chat.googleapis.com/v1/{GOOGLE_CHAT_SPACE}/messages`. Each run obtains a short-lived access token through local `gcloud` Application Default Credentials and sends its configured quota project in `x-goog-user-project`; `GOOGLE_CHAT_ACCESS_TOKEN` is an emergency explicit override. `GOOGLE_CHAT_SPACE` is one configured immutable `spaces/...` resource; `PR_SAFETY_CHAT_BOT_SENDER` is one exact bot sender resource name (for example, `users/123456789`). It accepts only that `BOT` sender's PR-opened announcement, whose PR URL is read from the message `formattedText` markup anchored to the opening bold link:
+`bin/pr-safety-merged-pr-producer` reviews MERGED PRs. Each run searches merged PRs authored by the
+configured GitHub logins (`PR_SAFETY_MERGED_PR_AUTHORS`, comma-separated) across the org via
+`gh search prs --author <login> --merged`, then resolves each to its merge commit and base ref via
+`gh pr view`. The fleet `GH_TOKEN` must be SAML-authorized for the org; on a SAML-expiry `403` the
+producer exits non-zero with a loud operator alert (never a silent empty result).
 
-```text
-<label> opened *<https://github.com/OWNER/REPO/pull/NUMBER|OWNER/REPO#NUMBER>* ...
-```
+The **merge commit SHA is the immutable head** and the event identity. For each merged PR the producer
+verifies the configured pinned policy path/version/SHA-256, creates a clean read-only Git snapshot of
+the merge commit under `PR_SAFETY_SNAPSHOT_ROOT`, computes `git diff base..merge` SHA-256, then
+atomically records the merge SHA plus canonical payload digest in `pr_safety_merged_pr_events` and
+enqueues at most one `pr-safety-review` request. A repeated merge SHA cannot enqueue again; a new
+merge commit is a new event, key, and snapshot.
 
-The opening-link anchor means a PR title or body cannot smuggle a different target URL. Other bots, humans, malformed, free-form, and non-`opened` messages are ignored. It never posts to Chat or GitHub. For every accepted announcement it reads PR URL/base/head metadata through `gh pr view`, verifies the configured pinned policy path/version/SHA-256, creates a clean read-only Git snapshot under `PR_SAFETY_SNAPSHOT_ROOT`, computes `git diff base..head` SHA-256, then atomically records provider message ID plus canonical payload digest in `pr_safety_chat_events` and enqueues at most one `pr-safety-review` request. Repeated provider message IDs cannot enqueue again; an advanced PR head has a new queue key and snapshot.
+`PR_SAFETY_MERGED_PR_INPUT_FILE` supplies a local JSON-lines fixture of normalized
+`{repo, number, mergeSha, baseSha}` records for tests and makes no network request. It is test-only
+input, not an authorization bypass: policy and snapshot validation remain unchanged.
 
-`PR_SAFETY_CHAT_INPUT_FILE` supplies a local list-messages JSON response for tests and makes no network request. It is test-only input, not an authorization bypass: sender and announcement validation remain unchanged.
+## Automatic Merged-PR Producer
 
-## Automatic Chat Producer
-
-Use `scripts/pr-safety-chat-producer-launch.sh` under launchd. It sources private `.env`, obtains a
-fresh Google ADC token, takes one host lock, and runs the read-only producer once. Install a copy of
-`launchd/com.example.agent-fleet-pr-safety-chat-producer.plist.template` with absolute paths and
+Use `scripts/pr-safety-merged-pr-producer-launch.sh` under launchd. It sources private `.env`, takes
+one host lock, and runs the read-only producer once. Install a copy of
+`launchd/com.example.agent-fleet-pr-safety-merged-pr-producer.plist.template` with absolute paths and
 user-private log paths. The template runs at load and every 60 seconds.
 
-Do not load the job until `GOOGLE_CHAT_SPACE`, `PR_SAFETY_CHAT_BOT_SENDER`, policy pin, and Google ADC
+Do not load the job until `PR_SAFETY_MERGED_PR_AUTHORS`, a SAML-authorized `GH_TOKEN`, and the policy pin
 are configured. `.env` must be current-user-owned and mode `0600`; launchd creates logs with `0700` umask.
 The template and launcher set a Homebrew-aware `PATH` for `gcloud`, `gh`, and `python3`. Startup failures
-are visible in its stderr log; the producer never posts to Chat or GitHub.
+are visible in its stderr log; the producer never posts to GitHub.
 
 ## Runtime
 
@@ -141,12 +148,12 @@ sufficient intent evidence.
 
 | Threat | Required control |
 | --- | --- |
-| Prompt injection from Chat, PR, code, comments, or tool output | Treat all external text as data. Read-only sandbox; credentials carry no GitHub/CI/Datadog write scope; egress allowlist blocks non-approved hosts. |
+| Prompt injection from PR, code, comments, or tool output | Treat all external text as data. Read-only sandbox; credentials carry no GitHub/CI/Datadog write scope; egress allowlist blocks non-approved hosts. |
 | Memory poisoning from untrusted input | Retain only analyst-synthesized findings, never raw untrusted or recalled text. The Hindsight MCP server is bound to the `pr-safety` bank endpoint, so retain cannot reach `fleet-shared`; treat `pr-safety` as an untrusted-derived bank and never auto-promote it into `fleet-shared`. |
 | Stale result | Store SHA and diff hash in job payload. Mark changed head as `superseded`. |
-| Duplicate Chat event | `pr_safety_chat_events` uses provider message ID as primary key and stores canonical payload SHA-256; ledger insert and queue insert are one SQL statement. No Chat notifications exist. |
+| Duplicate merged-PR event | `pr_safety_merged_pr_events` uses the merge commit SHA as primary key and stores canonical payload SHA-256; ledger insert and queue insert are one SQL statement. |
 | Bot feedback loop | Use correlation IDs, bot-message filtering, one active operation per PR lineage, quotas, and circuit breaker. |
-| Private code or secret leakage | Approved provider only. Redact at every log, database, model, and Chat boundary. |
+| Private code or secret leakage | Approved provider only. Redact at every log, database, and model boundary. |
 | Unsafe generated fix | Pilot agent creates no fix. Final stage creates one draft PR only after explicit `approved_for_pr`, immutable handoff validation, fresh worktree, and policy validation. |
 
 ## Pilot Gates

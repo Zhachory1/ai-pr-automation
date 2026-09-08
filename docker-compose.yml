@@ -36,7 +36,7 @@ services:
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
     volumes:
       - ./docker/initdb:/migrations:ro
-    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql -f /migrations/04-pending-decision-approval.sql -f /migrations/04-pr-safety-review.sql -f /migrations/05-pr-safety-chat-producer.sql"]
+    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql -f /migrations/04-pending-decision-approval.sql -f /migrations/04-pr-safety-review.sql -f /migrations/05-pr-safety-merged-pr-producer.sql"]
     depends_on:
       db-requests:
         condition: service_healthy
@@ -321,7 +321,7 @@ services:
       PR_SAFETY_ANALYST_IMAGE: agent-fleet/pr-safety-analyst:${PR_SAFETY_ANALYST_VERSION:-latest}
       PR_SAFETY_ANALYST_NETWORK: agent-fleet-pr-safety-analyst
       PR_SAFETY_ANALYST_PROXY: http://pr-safety-egress:3128
-      PR_SAFETY_ANALYST_MODEL: ${PR_SAFETY_ANALYST_MODEL:-openai/gpt-5.6-terra}
+      PR_SAFETY_ANALYST_MODEL: ${PR_SAFETY_ANALYST_MODEL:-openai/gpt-5.6-luna}
       REQUESTS_DB_HOST: db-requests
       REQUESTS_DB_PORT: "5432"
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}

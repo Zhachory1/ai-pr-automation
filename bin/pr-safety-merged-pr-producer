@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Read-only producer for immutable PR-safety reviews of MERGED pull requests.
+# Sources merged PRs authored by the configured GitHub logins (the fleet agent and the main human),
+# snapshots each merge commit read-only, and enqueues one pr-safety-review job per merged PR.
+set -euo pipefail
+umask 077
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/queue.sh
+. "$HERE/lib/queue.sh"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need gh; need git; need jq; need psql; need python3
+
+digest() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
+resolve_path() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+inside_root() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
+log() { printf '%s pr-safety-merged-pr-producer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
+
+# Authors whose merged PRs are reviewed. Comma-separated GitHub logins.
+: "${PR_SAFETY_MERGED_PR_AUTHORS:?set PR_SAFETY_MERGED_PR_AUTHORS (comma-separated GitHub logins)}"
+: "${PR_SAFETY_SNAPSHOT_ROOT:?set PR_SAFETY_SNAPSHOT_ROOT}"
+: "${PR_SAFETY_POLICY_ROOT:?set PR_SAFETY_POLICY_ROOT}"
+: "${PR_SAFETY_POLICY_PATH:?set PR_SAFETY_POLICY_PATH}"
+: "${PR_SAFETY_POLICY_VERSION:?set PR_SAFETY_POLICY_VERSION}"
+: "${PR_SAFETY_POLICY_DIGEST:?set PR_SAFETY_POLICY_DIGEST}"
+
+[[ "$PR_SAFETY_POLICY_VERSION" != *$'\n'* && "$PR_SAFETY_POLICY_VERSION" != *$'\r'* ]] || { echo "PR_SAFETY_POLICY_VERSION must be one line" >&2; exit 2; }
+[[ "$PR_SAFETY_POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "PR_SAFETY_POLICY_DIGEST must be lowercase SHA-256" >&2; exit 2; }
+
+# Number of most-recent merged PRs to scan per author each run. The event ledger dedupes, so this is
+# just the look-back window, not a per-run enqueue count.
+SEARCH_LIMIT="${PR_SAFETY_MERGED_PR_SEARCH_LIMIT:-50}"
+
+SNAPSHOT_ROOT="$(resolve_path "$PR_SAFETY_SNAPSHOT_ROOT")"
+POLICY_ROOT="$(resolve_path "$PR_SAFETY_POLICY_ROOT")"
+POLICY_PATH="$(resolve_path "$PR_SAFETY_POLICY_PATH")"
+mkdir -p "$SNAPSHOT_ROOT"
+inside_root "$POLICY_PATH" "$POLICY_ROOT" && [[ -f "$POLICY_PATH" && ! -L "$POLICY_PATH" ]] || { echo "PR_SAFETY_POLICY_PATH must be regular file beneath PR_SAFETY_POLICY_ROOT" >&2; exit 2; }
+[[ "$(digest < "$POLICY_PATH")" == "$PR_SAFETY_POLICY_DIGEST" ]] || { echo "PR_SAFETY_POLICY_DIGEST does not match policy file" >&2; exit 2; }
+
+# Distinct, loud alert for expired ROKT SAML authorization (see issue #43). SAML re-auth is a
+# human-only browser step; never treat a SAML 403 as an empty result set.
+saml_guard() {
+  case "$1" in
+    *"organization SAML enforcement"*|*"SAML SSO"*)
+      log "FATAL: GitHub token SAML authorization expired for the org. Re-authorize the token, then rerun." >&2
+      log "  $1" >&2
+      exit 4
+      ;;
+  esac
+}
+
+valid_snapshot() {
+  local path="$1" base="$2" head="$3" diff="$4"
+  [[ -d "$path/.git" ]] &&
+    [[ "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" rev-parse HEAD 2>/dev/null || true)" == "$head" ]] &&
+    GIT_OPTIONAL_LOCKS=0 git -C "$path" cat-file -e "${base}^{commit}" 2>/dev/null &&
+    [[ -z "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" status --porcelain --untracked-files=all)" ]] &&
+    [[ "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" diff --no-ext-diff "$base" "$head" | digest)" == "$diff" ]]
+}
+
+# Snapshot the merge commit read-only. base = PR base ref oid, head = merge commit oid.
+snapshot_for() {
+  local repo="$1" base="$2" head="$3" op="$4" snapshot="$SNAPSHOT_ROOT/$op" tmp diff
+  if [[ -e "$snapshot" ]]; then
+    diff="$(GIT_OPTIONAL_LOCKS=0 git -C "$snapshot" diff --no-ext-diff "$base" "$head" | digest)"
+    valid_snapshot "$snapshot" "$base" "$head" "$diff" || { log "skip $repo: existing snapshot is invalid"; return 1; }
+    printf '%s\t%s\n' "$snapshot" "$diff"
+    return
+  fi
+  tmp="$(mktemp -d "$SNAPSHOT_ROOT/.${op}.XXXXXX")"
+  if ! gh repo clone "$repo" "$tmp/repo" -- --no-checkout --depth=1 >/dev/null 2>&1 ||
+    ! git -C "$tmp/repo" fetch --no-tags --depth=1 origin "$base" "$head" >/dev/null 2>&1 ||
+    ! git -C "$tmp/repo" checkout --detach "$head" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    log "skip $repo: could not create read-only snapshot"
+    return 1
+  fi
+  diff="$(git -C "$tmp/repo" diff --no-ext-diff "$base" "$head" | digest)"
+  if ! valid_snapshot "$tmp/repo" "$base" "$head" "$diff"; then
+    rm -rf "$tmp"
+    log "skip $repo: incomplete snapshot"
+    return 1
+  fi
+  if [[ ! -e "$snapshot" ]] && ! mv "$tmp/repo" "$snapshot"; then
+    rm -rf "$tmp"
+    log "skip $repo: snapshot publication race"
+    return 1
+  fi
+  rm -rf "$tmp"
+  valid_snapshot "$snapshot" "$base" "$head" "$diff" || { log "skip $repo: snapshot publication race"; return 1; }
+  chmod -R a-w "$snapshot"
+  printf '%s\t%s\n' "$snapshot" "$diff"
+}
+
+# Review one merged PR record: {repo, number, mergeSha, baseSha}. The merge commit is the immutable
+# head; base is the PR base ref oid. diff_hash is computed from the snapshot, not trusted from input.
+process_pr() {
+  local record="$1" repo pr merge base op snapshot_info snapshot diff payload event_digest queued
+  repo="$(jq -r '.repo' <<<"$record")"; pr="$(jq -r '.number' <<<"$record")"
+  merge="$(jq -r '.mergeSha' <<<"$record")"; base="$(jq -r '.baseSha' <<<"$record")"
+  [[ "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { log "skip: bad repo '$repo'"; return 0; }
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || { log "skip $repo: bad pr '$pr'"; return 0; }
+  [[ "$merge" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || { log "skip $repo#$pr: missing merge/base sha"; return 0; }
+
+  op="pr-safety-$(printf '%s' "$repo#$pr@$merge" | digest)"
+  if ! snapshot_info="$(snapshot_for "$repo" "$base" "$merge" "$op")"; then return 0; fi
+  IFS=$'\t' read -r snapshot diff <<<"$snapshot_info"
+  payload="$(jq -cn --arg op "$op" --arg repo "$repo" --arg pr "$pr" --arg head "$merge" --arg base "$base" --arg diff "$diff" --arg policy_version "$PR_SAFETY_POLICY_VERSION" --arg policy_digest "$PR_SAFETY_POLICY_DIGEST" --arg snapshot "$snapshot" --arg policy_path "$POLICY_PATH" '{operation_id:$op,repo:$repo,pr:($pr|tonumber),head_sha:$head,base_sha:$base,diff_hash:$diff,policy_version:$policy_version,policy_digest:$policy_digest,snapshot_path:$snapshot,policy_path:$policy_path}')"
+  event_digest="$(jq -cS . <<<"$record" | digest)"
+  queued="$(queue_enqueue_pr_safety_merged_pr_event "$merge" "$event_digest" "$payload" "$repo#$pr@$merge")"
+  if [[ "$queued" == 1 ]]; then log "enqueued $repo#$pr@$merge"; else log "recorded or deduped $repo#$pr@$merge"; fi
+}
+
+# Resolve one author's merged PRs to normalized {repo, number, mergeSha, baseSha} records, written
+# one-per-line to $1. Runs in the MAIN shell (not a pipe subshell) so a SAML fatal can exit the
+# process. The gh search only yields repo+number; a per-PR view resolves the merge/base SHAs.
+records_for_author() {
+  local author="$1" outfile="$2" search view repo pr
+  if ! search="$(gh search prs --author "$author" --merged --limit "$SEARCH_LIMIT" --json number,repository 2>&1)"; then
+    saml_guard "$search"; log "author $author: search failed: $search"; return 0
+  fi
+  saml_guard "$search"
+  while IFS=$'\t' read -r repo pr; do
+    [[ -n "$repo" && -n "$pr" ]] || continue
+    if ! view="$(gh pr view "$pr" --repo "$repo" --json number,baseRefOid,mergeCommit,state,mergedAt 2>&1)"; then
+      saml_guard "$view"; log "skip $repo#$pr: pr view failed"; continue
+    fi
+    jq -e '.state == "MERGED" and (.mergeCommit.oid | type == "string") and (.baseRefOid | test("^[0-9a-f]{40}$"))' <<<"$view" >/dev/null || { log "skip $repo#$pr: not merged or missing sha"; continue; }
+    jq -cn --arg repo "$repo" --argjson number "$pr" --arg merge "$(jq -r '.mergeCommit.oid' <<<"$view")" --arg base "$(jq -r '.baseRefOid' <<<"$view")" '{repo:$repo,number:$number,mergeSha:$merge,baseSha:$base}' >> "$outfile"
+  done < <(jq -r '.[] | [.repository.nameWithOwner, (.number|tostring)] | @tsv' <<<"$search")
+}
+
+# Test hook: a local JSON file of normalized records, one per line, makes no network request.
+if [[ -n "${PR_SAFETY_MERGED_PR_INPUT_FILE:-}" ]]; then
+  [[ -f "$PR_SAFETY_MERGED_PR_INPUT_FILE" && ! -L "$PR_SAFETY_MERGED_PR_INPUT_FILE" ]] || { echo "PR_SAFETY_MERGED_PR_INPUT_FILE must be regular JSON-lines fixture" >&2; exit 2; }
+  while IFS= read -r rec; do [[ -n "$rec" ]] && process_pr "$rec"; done < "$PR_SAFETY_MERGED_PR_INPUT_FILE"
+  exit 0
+fi
+
+records="$(mktemp)"; trap 'rm -f "$records"' EXIT
+IFS=',' read -r -a authors <<<"$PR_SAFETY_MERGED_PR_AUTHORS"
+for author in "${authors[@]}"; do
+  author="$(printf '%s' "$author" | tr -d '[:space:]')"
+  [[ -n "$author" ]] || continue
+  records_for_author "$author" "$records"
+done
+while IFS= read -r rec; do [[ -n "$rec" ]] && process_pr "$rec"; done < "$records"

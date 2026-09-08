@@ -119,16 +119,16 @@ queue_already_posted() {
 # (transient agent/network error should be retried; permanent poison-PR protection is a future
 # max_attempts concern, not a permanent dead-letter here). Re-review on a NEW head still works
 # because a new head = a new dedupe_key.
-# Atomically records a validated Chat event and enqueues its safety job at most once. Chat text is
-# deliberately not stored: only its canonical JSON digest and immutable provider message name remain.
-queue_enqueue_pr_safety_chat_event() {
-  local event_id="$1" event_digest="$2" payload_json="$3" dedupe_key="$4"
+# Atomically records a validated merged-PR event and enqueues its safety job at most once. The event
+# identity is the merge commit SHA; only its canonical payload digest is stored, not PR text.
+queue_enqueue_pr_safety_merged_pr_event() {
+  local merge_sha="$1" event_digest="$2" payload_json="$3" dedupe_key="$4"
   local max_attempts="${PR_PRODUCER_MAX_ATTEMPTS:-3}"
-  _psql -v event_id="$event_id" -v event_digest="$event_digest" -v payload="$payload_json" -v dk="$dedupe_key" -v maxatt="$max_attempts" <<'SQL'
+  _psql -v merge_sha="$merge_sha" -v event_digest="$event_digest" -v payload="$payload_json" -v dk="$dedupe_key" -v maxatt="$max_attempts" <<'SQL'
 WITH event AS (
-  INSERT INTO pr_safety_chat_events(provider_message_id, payload_digest)
-  VALUES (:'event_id', :'event_digest')
-  ON CONFLICT (provider_message_id) DO NOTHING
+  INSERT INTO pr_safety_merged_pr_events(merge_sha, payload_digest)
+  VALUES (:'merge_sha', :'event_digest')
+  ON CONFLICT (merge_sha) DO NOTHING
   RETURNING 1
 ), request AS (
   INSERT INTO requests(kind, payload, dedupe_key)

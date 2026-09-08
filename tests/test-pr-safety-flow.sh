@@ -14,7 +14,7 @@ cleanup() { docker rm -f "$CID" >/dev/null 2>&1 || true; chmod -R u+w "$TMP" 2>/
 trap cleanup EXIT
 docker run --rm -d --name "$CID" -e POSTGRES_PASSWORD=t -e POSTGRES_DB=fleet -p "$PORT:5432" postgres:16 >/dev/null
 for _ in $(seq 1 30); do docker exec "$CID" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
-for f in docker/initdb/{01-schema,02-agent-server,03-human-review-queue,04-pr-safety-review,05-pr-safety-chat-producer}.sql; do docker cp "$f" "$CID:/tmp/${f##*/}"; docker exec "$CID" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 -f "/tmp/${f##*/}" >/dev/null; done
+for f in docker/initdb/{01-schema,02-agent-server,03-human-review-queue,04-pr-safety-review,05-pr-safety-merged-pr-producer}.sql; do docker cp "$f" "$CID:/tmp/${f##*/}"; docker exec "$CID" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 -f "/tmp/${f##*/}" >/dev/null; done
 
 SOURCE="$TMP/source"; mkdir -p "$SOURCE"
 git -C "$SOURCE" init -q; git -C "$SOURCE" config user.email test@example.com; git -C "$SOURCE" config user.name test
@@ -26,19 +26,29 @@ POLICY_ROOT="$TMP/policies"; mkdir -p "$POLICY_ROOT"; printf 'changes_requested\
 POLICY_DIGEST="$(shasum -a 256 "$POLICY_ROOT/policy.md" | awk '{print $1}')"
 
 export REQUESTS_DB_USER=postgres REQUESTS_DB_NAME=fleet REQUESTS_DB_HOST=localhost REQUESTS_DB_PORT="$PORT" PGPASSWORD=t OPENAI_API_KEY=test-key
-export GOOGLE_CHAT_ACCESS_TOKEN=fixture-token GOOGLE_CHAT_SPACE=spaces/AAAA PR_SAFETY_CHAT_BOT_SENDER=users/123456789
+export PR_SAFETY_MERGED_PR_AUTHORS=roktfleet
 export PR_SAFETY_SNAPSHOT_ROOT="$TMP/snapshots" PR_SAFETY_POLICY_ROOT="$POLICY_ROOT" PR_SAFETY_POLICY_PATH="$POLICY_ROOT/policy.md" PR_SAFETY_POLICY_VERSION=v1 PR_SAFETY_POLICY_DIGEST="$POLICY_DIGEST"
 export PR_SAFETY_WORK_ROOT="$TMP/work" HANDOFF_ROOT="$TMP/handoffs" PR_SAFETY_ANALYST_RUNNER="$PWD/tests/fake-pr-safety-analyst.sh" PR_SAFETY_CONTROLLER_ONCE=true
 export PR_SAFETY_ANALYST_NETWORK=agent-fleet-pr-safety-analyst PR_SAFETY_ANALYST_PROXY=http://pr-safety-egress:3128
-export PR_SAFETY_TEST_REPO="$SOURCE" PR_SAFETY_TEST_REPO_NAME=owner/repo PR_SAFETY_TEST_BASE="$BASE" PR_SAFETY_TEST_HEAD="$HEAD"
+export PR_SAFETY_TEST_REPO="$SOURCE"
 mkdir -p "$TMP/bin" "$PR_SAFETY_WORK_ROOT" "$HANDOFF_ROOT"
-ln -s "$PWD/tests/fake-pr-safety-chat-gh.sh" "$TMP/bin/gh"
-ln -s "$PWD/tests/fake-pr-safety-chat-curl.sh" "$TMP/bin/curl"
+# fake gh: only needs to satisfy the producer's snapshot clone from the local SOURCE repo.
+cat > "$TMP/bin/gh" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+case "\$1 \$2" in
+  "repo clone") git clone --no-checkout "$SOURCE" "\$4" >/dev/null 2>&1 ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH"
-chmod +x bin/pr-safety-chat-producer bin/pr-safety-review-controller tests/fake-pr-safety-{analyst,chat-gh,chat-curl}.sh
+chmod +x bin/pr-safety-merged-pr-producer bin/pr-safety-review-controller tests/fake-pr-safety-analyst.sh
 q() { docker exec "$CID" psql -U postgres -d fleet -tAc "$1"; }
 
-PR_SAFETY_CHAT_INPUT_FILE=tests/fixtures/pr-safety-chat-authorized.json bin/pr-safety-chat-producer
+# one merged-PR record pointing at the local SOURCE repo's base/head as merge/base
+printf '{"repo":"owner/repo","number":7,"mergeSha":"%s","baseSha":"%s"}\n' "$HEAD" "$BASE" > "$TMP/merged.jsonl"
+PR_SAFETY_MERGED_PR_INPUT_FILE="$TMP/merged.jsonl" bin/pr-safety-merged-pr-producer
 request_id="$(q "SELECT id FROM requests WHERE kind='pr-safety-review';")"
 op="$(q "SELECT payload->>'operation_id' FROM requests WHERE id=$request_id;")"
 snapshot="$(q "SELECT payload->>'snapshot_path' FROM requests WHERE id=$request_id;")"
@@ -91,6 +101,6 @@ grep -Fx 'GH_TOKEN' "$TMP/docker-args" >/dev/null
 grep -Fx 'BUILDKITE_API_TOKEN' "$TMP/docker-args" >/dev/null
 grep -Fx 'DD_PAT' "$TMP/docker-args" >/dev/null
 # model is pinned (no silent drift to provider default)
-grep -Fx -- '--model' "$TMP/docker-args" >/dev/null; grep -Fx 'openai/gpt-5.6-terra' "$TMP/docker-args" >/dev/null
+grep -Fx -- '--model' "$TMP/docker-args" >/dev/null; grep -Fx 'openai/gpt-5.6-luna' "$TMP/docker-args" >/dev/null
 [[ "$(cat "$result")" == '{}' ]]
-echo "PASS: authorized Chat command reaches immutable handoff and human queue"
+echo "PASS: merged PR reaches immutable handoff and human queue"
