@@ -121,10 +121,15 @@ queue_already_posted() {
 # because a new head = a new dedupe_key.
 # Atomically records a validated merged-PR event and enqueues its safety job at most once. The event
 # identity is the merge commit SHA; only its canonical payload digest is stored, not PR text.
+# dedupe_key is "<repo>#<pr>@<merge_sha>"; lineage is "<repo>#<pr>" (the part before '@', which neither
+# repo nor PR number can contain). When a new head enqueues, any still-QUEUED review for the same PR
+# at an older head is superseded (stale head: no point reviewing code a newer merge already replaced).
+# A RUNNING review is left alone (mid-analysis; killing it would waste the in-flight work), and DONE
+# reviews are history. Matched via split_part on '@' to avoid LIKE-wildcard hazards in repo names.
 queue_enqueue_pr_safety_merged_pr_event() {
-  local merge_sha="$1" event_digest="$2" payload_json="$3" dedupe_key="$4"
+  local merge_sha="$1" event_digest="$2" payload_json="$3" dedupe_key="$4" lineage="$5"
   local max_attempts="${PR_PRODUCER_MAX_ATTEMPTS:-3}"
-  _psql -v merge_sha="$merge_sha" -v event_digest="$event_digest" -v payload="$payload_json" -v dk="$dedupe_key" -v maxatt="$max_attempts" <<'SQL'
+  _psql -v merge_sha="$merge_sha" -v event_digest="$event_digest" -v payload="$payload_json" -v dk="$dedupe_key" -v lineage="$lineage" -v maxatt="$max_attempts" <<'SQL'
 WITH event AS (
   INSERT INTO pr_safety_merged_pr_events(merge_sha, payload_digest)
   VALUES (:'merge_sha', :'event_digest')
@@ -145,6 +150,16 @@ WITH event AS (
              WHERE kind = 'pr-safety-review' AND dedupe_key = :'dk' AND status = 'failed') < :'maxatt'::int
      )
   ON CONFLICT DO NOTHING
+  RETURNING 1
+), superseded AS (
+  UPDATE requests
+     SET status = 'superseded', finished_at = now(),
+         fail_response = 'superseded by newer head ' || :'dk'
+   WHERE EXISTS (SELECT 1 FROM request)
+     AND kind = 'pr-safety-review'
+     AND status = 'queued'
+     AND dedupe_key <> :'dk'
+     AND split_part(dedupe_key, '@', 1) = :'lineage'
   RETURNING 1
 )
 SELECT CASE WHEN EXISTS (SELECT 1 FROM request) THEN '1' ELSE '' END;

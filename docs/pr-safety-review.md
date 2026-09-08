@@ -48,7 +48,9 @@ verifies the configured pinned policy path/version/SHA-256, creates a clean read
 the merge commit under `PR_SAFETY_SNAPSHOT_ROOT`, computes `git diff base..merge` SHA-256, then
 atomically records the merge SHA plus canonical payload digest in `pr_safety_merged_pr_events` and
 enqueues at most one `pr-safety-review` request. A repeated merge SHA cannot enqueue again; a new
-merge commit is a new event, key, and snapshot.
+merge commit is a new event, key, and snapshot. When a new head for the same `repo#pr` enqueues, any
+still-`queued` review of that PR at an older head is marked `superseded` (no point reviewing code a
+newer merge already replaced); a `running` review is left to finish and `done` reviews are history.
 
 `PR_SAFETY_MERGED_PR_INPUT_FILE` supplies a local JSON-lines fixture of normalized
 `{repo, number, mergeSha, baseSha}` records for tests and makes no network request. It is test-only

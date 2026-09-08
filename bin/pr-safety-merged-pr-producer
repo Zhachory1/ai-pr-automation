@@ -115,7 +115,7 @@ process_pr() {
   IFS=$'\t' read -r snapshot diff <<<"$snapshot_info"
   payload="$(jq -cn --arg op "$op" --arg repo "$repo" --arg pr "$pr" --arg head "$merge" --arg base "$base" --arg diff "$diff" --arg policy_version "$PR_SAFETY_POLICY_VERSION" --arg policy_digest "$PR_SAFETY_POLICY_DIGEST" --arg snapshot "$snapshot" --arg policy_path "$POLICY_PATH" '{operation_id:$op,repo:$repo,pr:($pr|tonumber),head_sha:$head,base_sha:$base,diff_hash:$diff,policy_version:$policy_version,policy_digest:$policy_digest,snapshot_path:$snapshot,policy_path:$policy_path}')"
   event_digest="$(jq -cS . <<<"$record" | digest)"
-  queued="$(queue_enqueue_pr_safety_merged_pr_event "$merge" "$event_digest" "$payload" "$repo#$pr@$merge")"
+  queued="$(queue_enqueue_pr_safety_merged_pr_event "$merge" "$event_digest" "$payload" "$repo#$pr@$merge" "$repo#$pr")"
   if [[ "$queued" == 1 ]]; then log "enqueued $repo#$pr@$merge"; else log "recorded or deduped $repo#$pr@$merge"; fi
 }
 
