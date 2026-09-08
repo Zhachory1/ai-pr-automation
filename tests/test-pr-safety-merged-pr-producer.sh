@@ -68,6 +68,7 @@ printf '[{"number":7,"repository":{"nameWithOwner":"owner/repo"}}]\n' > "$TMP/se
 printf '{"number":7,"state":"MERGED","mergeCommit":{"oid":"%s"},"baseRefOid":"%s","mergedAt":"2026-01-02T00:00:00Z"}\n' "$MERGE2" "$BASE" > "$TMP/view.json"
 bin/pr-safety-merged-pr-producer
 check "new merge commit creates fresh job" "q \"SELECT count(*) FROM requests WHERE kind='pr-safety-review';\" | grep -qx 2 && q \"SELECT count(*) FROM pr_safety_merged_pr_events;\" | grep -qx 2"
+check "new head supersedes the older queued head for the same PR" "q \"SELECT status FROM requests WHERE kind='pr-safety-review' AND dedupe_key='owner/repo#7@$MERGE';\" | grep -qx superseded && q \"SELECT status FROM requests WHERE kind='pr-safety-review' AND dedupe_key='owner/repo#7@$MERGE2';\" | grep -qx queued"
 
 # non-merged PR (state OPEN) is ignored
 printf '[{"number":8,"repository":{"nameWithOwner":"owner/repo"}}]\n' > "$TMP/search.json"
@@ -77,6 +78,8 @@ check "non-merged PR is ignored" "q \"SELECT count(*) FROM requests WHERE kind='
 
 # GC: with two snapshots both referenced by QUEUED reviews, KEEP=1 must still keep both (in-flight).
 printf '[]\n' > "$TMP/search.json"  # no new work this run
+# force both reviews back to queued to isolate GC's in-flight guard from the supersede behavior
+q "UPDATE requests SET status='queued', finished_at=NULL WHERE kind='pr-safety-review';" >/dev/null
 PR_SAFETY_SNAPSHOT_KEEP=1 bin/pr-safety-merged-pr-producer
 check "GC never deletes a snapshot with a queued review" "ls -d \"\$PR_SAFETY_SNAPSHOT_ROOT\"/pr-safety-* 2>/dev/null | wc -l | tr -d ' ' | grep -qx 2"
 
