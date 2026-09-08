@@ -51,11 +51,12 @@ printf '{"repo":"owner/repo","number":7,"mergeSha":"%s","baseSha":"%s"}\n' "$HEA
 PR_SAFETY_MERGED_PR_INPUT_FILE="$TMP/merged.jsonl" bin/pr-safety-merged-pr-producer
 request_id="$(q "SELECT id FROM requests WHERE kind='pr-safety-review';")"
 op="$(q "SELECT payload->>'operation_id' FROM requests WHERE id=$request_id;")"
+slug="$(q "SELECT replace(payload->>'repo','/','__')||'__pr'||(payload->>'pr')||'__'||(payload->>'operation_id') FROM requests WHERE id=$request_id;")"
 snapshot="$(q "SELECT payload->>'snapshot_path' FROM requests WHERE id=$request_id;")"
 [[ -n "$op" && -z "$(git -C "$snapshot" status --porcelain --untracked-files=all)" && ! -w "$snapshot/x" ]]
 [[ "$(q "SELECT (payload->>'base_sha')||'/'||(payload->>'head_sha')||'/'||(payload->>'diff_hash') FROM requests WHERE id=$request_id;")" == "$BASE/$HEAD/$DIFF" ]]
 bin/pr-safety-review-controller
-handoff="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$HANDOFF_ROOT/$op.md")"
+handoff="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$HANDOFF_ROOT/$slug.md")"
 [[ "$(q "SELECT status FROM requests WHERE id=$request_id;")" == done ]]
 [[ -f "$handoff" && "$(stat -f '%Lp' "$handoff")" == 600 ]]
 [[ "$(q "SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=$request_id AND provenance->>'operation_id'='$op';")" == 1 ]]

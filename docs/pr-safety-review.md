@@ -109,7 +109,9 @@ Analyzer cannot see or write shared `HANDOFF_ROOT`, choose final path, or overwr
 
 Controller validates draft against JSON result and immutable operation identity, then copies it to
 temporary file under private local `HANDOFF_ROOT`, sets private file permissions, and atomically
-publishes final file without overwrite. Final handoff contains operation ID, repository, PR number, immutable source
+publishes final file without overwrite. The final filename is prefixed for humans as
+`<owner>__<name>__pr<N>__<operation_id>.md` (repository slash escaped to `__`); the operation ID
+suffix keeps it unique and dedup-safe. Final handoff contains operation ID, repository, PR number, immutable source
 SHA, diff hash, policy/prompt/model versions, findings, evidence, and recommendations. Queue
 `provenance` stores final handoff path and content digest.
 
