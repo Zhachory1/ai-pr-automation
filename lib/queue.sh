@@ -187,21 +187,39 @@ queue_enqueue() {
   # burn tokens unattended. Default 3; 0 disables the cap. Dedup of queued/running/done is
   # unchanged — an unchanged head is still never re-reviewed.
   local max_attempts="${PR_PRODUCER_MAX_ATTEMPTS:-3}"
+  # When a new head enqueues, supersede any still-QUEUED row for the SAME kind+PR lineage at an
+  # older head (stale head: no point reviewing code a newer commit already replaced). A RUNNING
+  # row is left alone (mid-analysis). Lineage is the part before '@' (repo#pr); neither a repo nor
+  # a PR number can contain '@', so split_part is safe. This mirrors the merged-PR producer and
+  # stops maintain/review PRs whose branch head advances each cycle from stacking duplicate rows.
   _psql -v kind="$kind" -v payload="$payload_json" -v dk="$dedupe_key" -v maxatt="$max_attempts" <<'SQL'
-INSERT INTO requests(kind, payload, dedupe_key)
-SELECT :'kind', :'payload'::jsonb, :'dk'
-WHERE NOT EXISTS (
-  SELECT 1 FROM requests
-   WHERE kind = :'kind' AND dedupe_key = :'dk'
-     AND status IN ('queued','running','done')
+WITH request AS (
+  INSERT INTO requests(kind, payload, dedupe_key)
+  SELECT :'kind', :'payload'::jsonb, :'dk'
+  WHERE NOT EXISTS (
+    SELECT 1 FROM requests
+     WHERE kind = :'kind' AND dedupe_key = :'dk'
+       AND status IN ('queued','running','done')
+  )
+  AND (
+    :'maxatt' = '0'
+    OR (SELECT count(*) FROM requests
+          WHERE kind = :'kind' AND dedupe_key = :'dk' AND status = 'failed') < :'maxatt'::int
+  )
+  ON CONFLICT DO NOTHING
+  RETURNING 1
+), superseded AS (
+  UPDATE requests
+     SET status = 'superseded', finished_at = now(),
+         fail_response = 'superseded by newer head ' || :'dk'
+   WHERE EXISTS (SELECT 1 FROM request)
+     AND kind = :'kind'
+     AND status = 'queued'
+     AND dedupe_key <> :'dk'
+     AND split_part(dedupe_key, '@', 1) = split_part(:'dk', '@', 1)
+  RETURNING 1
 )
-AND (
-  :'maxatt' = '0'
-  OR (SELECT count(*) FROM requests
-        WHERE kind = :'kind' AND dedupe_key = :'dk' AND status = 'failed') < :'maxatt'::int
-)
-ON CONFLICT DO NOTHING
-RETURNING 1;
+SELECT CASE WHEN EXISTS (SELECT 1 FROM request) THEN '1' ELSE '' END;
 SQL
 }
 

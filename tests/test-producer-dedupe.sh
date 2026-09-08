@@ -46,6 +46,18 @@ echo "[3] NEW head -> new key -> fresh queued row (re-review on new commit)"
 queue_enqueue pr-review '{"repo":"o/r","pr":"1"}' "o/r#1@def" >/dev/null
 check "new-head row queued" "q \"SELECT status FROM requests WHERE dedupe_key='o/r#1@def';\" | grep -qx queued"
 
+echo "[3b] NEW head supersedes an older QUEUED row of same lineage (no duplicate stacking)"
+queue_enqueue pr-review '{"repo":"o/r","pr":"5"}' "o/r#5@old" >/dev/null
+queue_enqueue pr-review '{"repo":"o/r","pr":"5"}' "o/r#5@new" >/dev/null
+check "old head o/r#5@old now superseded" "q \"SELECT status FROM requests WHERE dedupe_key='o/r#5@old';\" | grep -qx superseded"
+check "only the new head is still queued for o/r#5" "[[ \"\$(q \"SELECT count(*) FROM requests WHERE kind='pr-review' AND split_part(dedupe_key,'@',1)='o/r#5' AND status='queued';\")\" == 1 ]]"
+
+echo "[3c] a RUNNING older head is NOT superseded by a new head (mid-analysis)"
+q "INSERT INTO requests(kind,payload,dedupe_key,status) VALUES ('pr-review','{}','o/r#7@run','running');" >/dev/null
+queue_enqueue pr-review '{"repo":"o/r","pr":"7"}' "o/r#7@new" >/dev/null
+check "running head stays running" "q \"SELECT status FROM requests WHERE dedupe_key='o/r#7@run';\" | grep -qx running"
+check "new head queued alongside it" "q \"SELECT status FROM requests WHERE dedupe_key='o/r#7@new';\" | grep -qx queued"
+
 echo "[4] different kind, same repo/pr coexists (maintain vs review)"
 queue_enqueue pr-maintain '{"repo":"o/r","pr":"1"}' "o/r#1@def" >/dev/null
 check "review + maintain rows both present for same key" "[[ \"\$(q \"SELECT count(*) FROM requests WHERE dedupe_key='o/r#1@def';\")\" == 2 ]]"
