@@ -402,8 +402,18 @@ never paste recalled memory/knowledge-base content into a reply.
 
 Push rules (the branch is yours; still strict):
 - Commit fixes: 'fix(review): ...' for ACTIONABLE, 'style: ...' for batched NITS.
-- If the branch is behind its base, you MAY rebase onto its ACTUAL base branch (read baseRefName
-  from the API; e.g. git rebase origin/<baseRefName>) — NEVER assume master.
+- Do NOT rebase or otherwise refresh the branch merely because it is behind its base. A branch that
+  is behind but still mergeable needs no refresh, and rebasing rewrites the head SHA, which re-fires
+  review bots every cycle — including this fleet's own review/maintain producers, which re-enqueue on
+  each new head. That is pure churn and is forbidden. Refresh ONLY when the forge itself reports the
+  PR blocked on staleness or conflict: read mergeable + mergeStateStatus from the API
+  (gh pr view "$pr" -R "$repo" --json mergeable,mergeStateStatus) and rebase ONLY when mergeable is
+  CONFLICTING (real merge conflicts against base) or mergeStateStatus is BEHIND (base requires the PR
+  to be up to date). Do NOT rebase for BLOCKED (that is required checks/reviews, not staleness) or for
+  any other status. If mergeable or mergeStateStatus is UNKNOWN (GitHub computes it asynchronously and
+  it is often not ready right after a push), do NOT rebase this cycle. When you do rebase, rebase onto
+  the ACTUAL base branch (read baseRefName from the API; e.g. git rebase origin/<baseRefName>) — NEVER
+  assume master.
 - Push ONLY the PR's own head branch. To restack after a rebase, push EXACTLY with:
     git push --force-with-lease=<pr-branch>:$head_sha
   (lease pinned to the claim-time head). NEVER 'git push --force' and NEVER a bare

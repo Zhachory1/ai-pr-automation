@@ -186,7 +186,9 @@ Maintenance mode prompts enforce:
 
 The public base intentionally does not rebase or force-push branches. Branch refresh is a destructive, repository-specific policy and belongs in an explicitly authorized maintenance runner, not the generic scheduler.
 
-If you add branch refresh to your own maintenance runner, be aware that it couples the two modes through the PR head SHA. Review mode dedupes on `<!-- ai-pr-automation head=<full-head-sha> -->`, so anything that rewrites a branch head between review runs invalidates that marker and the next run posts again. A wrapper that rebases whenever a branch is merely behind its base will therefore generate one duplicate review per cycle on any repository whose base branch moves faster than the review cadence.
+If you add branch refresh to your own maintenance runner, be aware that it couples the two modes through the PR head SHA. Review mode dedupes on `<!-- ai-pr-automation head=<full-head-sha> -->`, so anything that rewrites a branch head between review runs invalidates that marker and the next run posts again. A wrapper that rebases whenever a branch is merely behind its base will therefore generate one duplicate review per cycle on any repository whose base branch moves faster than the review cadence — and, because the producers re-enqueue on each new head, one duplicate `pr-maintain` job too, which is what stacks multiple queued rows for the same PR.
+
+The bundled maintain prompt already applies the first mitigation below: it rebases only when the forge reports a real conflict or staleness (`mergeable == CONFLICTING` or `mergeStateStatus == BEHIND`), never on a local "behind base" count and never for `BLOCKED` (which is failing checks/reviews, not staleness). The queue enqueue path additionally supersedes any older still-queued row of the same PR lineage when a new head lands, so a head that does churn cannot pile up duplicate queued jobs.
 
 Two mitigations, both recommended:
 
