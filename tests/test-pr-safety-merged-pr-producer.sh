@@ -75,6 +75,19 @@ printf '{"number":8,"state":"OPEN","mergeCommit":null,"baseRefOid":"%s","mergedA
 bin/pr-safety-merged-pr-producer
 check "non-merged PR is ignored" "q \"SELECT count(*) FROM requests WHERE kind='pr-safety-review';\" | grep -qx 2 && q \"SELECT count(*) FROM pr_safety_merged_pr_events;\" | grep -qx 2"
 
+# GC: with two snapshots both referenced by QUEUED reviews, KEEP=1 must still keep both (in-flight).
+printf '[]\n' > "$TMP/search.json"  # no new work this run
+PR_SAFETY_SNAPSHOT_KEEP=1 bin/pr-safety-merged-pr-producer
+check "GC never deletes a snapshot with a queued review" "ls -d \"\$PR_SAFETY_SNAPSHOT_ROOT\"/pr-safety-* 2>/dev/null | wc -l | tr -d ' ' | grep -qx 2"
+
+# GC: mark the OLDER snapshot's review done; now KEEP=1 removes it (terminal + beyond keep), keeps newest.
+OLDOP="pr-safety-$(printf '%s' 'owner/repo#7@'"$MERGE" | { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } | awk '{print $1}')"
+q "UPDATE requests SET status='done' WHERE kind='pr-safety-review' AND payload->>'operation_id'='$OLDOP';" >/dev/null
+# ensure the newest (MERGE2) snapshot is newer by mtime than the older one
+touch "$PR_SAFETY_SNAPSHOT_ROOT/pr-safety-$(printf '%s' 'owner/repo#7@'"$MERGE2" | { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } | awk '{print $1}')"
+PR_SAFETY_SNAPSHOT_KEEP=1 bin/pr-safety-merged-pr-producer
+check "GC removes terminal snapshot beyond keep, retains newest" "[[ ! -d \"\$PR_SAFETY_SNAPSHOT_ROOT/$OLDOP\" ]] && ls -d \"\$PR_SAFETY_SNAPSHOT_ROOT\"/pr-safety-* 2>/dev/null | wc -l | tr -d ' ' | grep -qx 1"
+
 # SAML-403 in search output is a loud fatal, not a silent empty result
 cat > "$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
