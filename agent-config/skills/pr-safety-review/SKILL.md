@@ -77,8 +77,13 @@ Assess:
 - changed executable-line test gaps, documentation gaps, and observability or runbook gaps;
 - incident risk with concrete failure mode, blast radius, evidence, and confidence.
 
-Use `needs_human_decision` when intent or authoritative evidence is missing. Do not infer intent
-from PR description alone. Set `datadog_terraform_candidate` only when evidence supports a
+Use `clear` ONLY when the review found nothing to report: zero `findings`, zero `coverage.gaps`,
+zero `documentation.required_updates`, zero `observability.recommended_metrics` and
+`recommended_slos_or_runbooks`, `incident.candidate` false with zero `incident.evidence`, and zero
+`human_decisions_needed`. If any of those is non-empty — even a single coverage gap or documentation
+update — the status is `changes_requested` (or `needs_human_decision`/`incident_candidate` when those
+fit better), never `clear`. Use `needs_human_decision` when intent or authoritative evidence is
+missing. Do not infer intent from PR description alone. Set `datadog_terraform_candidate` only when evidence supports a
 proposal; it is never authorization to create one. Write Markdown `handoff.md` only to controller-
 supplied `PR_SAFETY_HANDOFF_DRAFT` inside your private per-operation output workspace. `Return JSON
 only` applies to stdout and structured response; Markdown goes only to that draft path. Handoff

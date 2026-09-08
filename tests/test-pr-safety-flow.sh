@@ -89,7 +89,7 @@ grep -Fx -- '--cap-drop' "$TMP/docker-args" >/dev/null; grep -Fx 'ALL' "$TMP/doc
 grep -Fx -- '--tmpfs' "$TMP/docker-args" >/dev/null; grep -Fx '/tmp:rw,noexec,nosuid,nodev,mode=1777' "$TMP/docker-args" >/dev/null
 grep -Fx '/app/agent-config/sessions:rw,nosuid,nodev,mode=1777' "$TMP/docker-args" >/dev/null
 grep -Fx -- '--pids-limit' "$TMP/docker-args" >/dev/null; grep -Fx '256' "$TMP/docker-args" >/dev/null
-grep -Fx -- '--memory' "$TMP/docker-args" >/dev/null; grep -Fx '2g' "$TMP/docker-args" >/dev/null
+grep -Fx -- '--memory' "$TMP/docker-args" >/dev/null; grep -Fx '4g' "$TMP/docker-args" >/dev/null
 grep -Fx -- '--cpus' "$TMP/docker-args" >/dev/null
 # egress contract: internal-only network via approved proxy (both cases)
 grep -Fx 'agent-fleet-pr-safety-analyst' "$TMP/docker-args" >/dev/null
