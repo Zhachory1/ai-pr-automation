@@ -13,7 +13,11 @@ For each PR, assess:
 
 1. **Correctness** — the logic works and does what it intends across callers, consumers, contracts,
    schemas, configuration, feature flags, and failure paths.
-2. **Necessity** — the intent was actually needed. Do not infer intent from the PR description alone;
+2. **Fidelity to description** — given the PR description, does the code actually do what the
+   description says? Flag where behavior diverges from, exceeds, or falls short of the stated intent.
+3. **Simplicity vs description** — given the PR description, is the code overkill for the stated
+   intent? Flag where it could be materially simpler or carries scope beyond what the description asks.
+4. **Necessity** — the intent was actually needed. Do not infer intent from the PR description alone;
    require evidence (ticket, DD, ownership metadata). Flag work that solves a non-problem.
 3. **Assumption validity** — information the change acted on is correct for the overall system, not
    just the local file. Check that upstream/downstream assumptions still hold.
