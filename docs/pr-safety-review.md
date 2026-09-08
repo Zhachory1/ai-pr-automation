@@ -183,6 +183,26 @@ Automated creation never permits merge, deployment, CI retry, Datadog apply, for
 default-branch write. Send resulting draft PR to same Chat room for notification; GitHub code-owner
 approval and merge remain human-owned.
 
+## Forward-Fix Harness
+
+`bin/pr-safety-forward-fix` turns an approved task into a **draft** corrective PR. It is a standalone,
+host-run harness (not wired into the producer/controller loop); trigger it by hand, or later from a
+UI/agent-server call. It accepts three input sources, normalizes each to a common brief, then runs
+the `swe-implementer` persona (`~/.mewrite/agents/swe-implementer.md`, model `gpt-5.6-terra`) against
+a **disposable fresh clone** of the target repo at its default branch:
+
+```bash
+pr-safety-forward-fix --handoff <handoff.md>              # repo/base + '## Concrete breakage' section
+pr-safety-forward-fix --issue  ROKT/cpi#123               # GitHub issue title+body
+pr-safety-forward-fix --prompt "<text>" --repo ROKT/cpi   # free-form; --repo required
+```
+
+Boundaries: it never touches the author's PR branch or any existing working checkout (always a fresh
+temp clone); only the handoff's `## Concrete breakage` section is actioned (human-decision findings
+are not auto-fixed); it stops with a commit and opens a **draft** PR for human review. `--no-pr`
+stops at a committed local branch. It authors as the push+SAML-capable token identity (`GH_TOKEN`).
+Jira input is intentionally not wired (no Jira access).
+
 ## Validation
 
 Run:
@@ -193,6 +213,7 @@ bash tests/test-pr-safety-review-controller.sh
 bash tests/test-pr-safety-runtime.sh
 bash tests/test-pr-safety-chat-producer.sh
 bash tests/test-pr-safety-flow.sh
+bash tests/test-pr-safety-forward-fix.sh
 ```
 
 Test guards contract language. It does not prove future runtime sandboxing. Runtime enforcement is
