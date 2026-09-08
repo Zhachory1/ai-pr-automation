@@ -151,6 +151,20 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM request) THEN '1' ELSE '' END;
 SQL
 }
 
+# Prints '1' if a review for this operation_id is still queued or running (in-flight), else empty.
+# Used by snapshot GC to avoid deleting a snapshot an active analysis still needs.
+queue_pr_safety_operation_active() {
+  local op="$1"
+  _psql -v op="$op" <<'SQL'
+SELECT CASE WHEN EXISTS (
+  SELECT 1 FROM requests
+   WHERE kind = 'pr-safety-review'
+     AND status IN ('queued','running')
+     AND payload->>'operation_id' = :'op'
+) THEN '1' ELSE '' END;
+SQL
+}
+
 queue_enqueue() {
   local kind="$1" payload_json="$2" dedupe_key="$3"
   # Cap failed retries: a head that has already FAILED >= max_attempts times is a poison PR

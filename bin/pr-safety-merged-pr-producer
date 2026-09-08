@@ -29,8 +29,14 @@ log() { printf '%s pr-safety-merged-pr-producer %s\n' "$(date '+%Y-%m-%dT%H:%M:%
 [[ "$PR_SAFETY_POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "PR_SAFETY_POLICY_DIGEST must be lowercase SHA-256" >&2; exit 2; }
 
 # Number of most-recent merged PRs to scan per author each run. The event ledger dedupes, so this is
-# just the look-back window, not a per-run enqueue count.
-SEARCH_LIMIT="${PR_SAFETY_MERGED_PR_SEARCH_LIMIT:-50}"
+# just the look-back window, not a per-run enqueue count. Kept small to avoid a first-run stampede
+# of concurrent full-repo clones (which can saturate host I/O / Docker).
+SEARCH_LIMIT="${PR_SAFETY_MERGED_PR_SEARCH_LIMIT:-10}"
+
+# Snapshot retention: keep at most this many newest snapshot dirs on disk. Older ones are removed
+# after each run, EXCEPT any still referenced by a queued/running review (deleting those would break
+# an in-flight analysis). 0 disables GC.
+SNAPSHOT_KEEP="${PR_SAFETY_SNAPSHOT_KEEP:-25}"
 
 SNAPSHOT_ROOT="$(resolve_path "$PR_SAFETY_SNAPSHOT_ROOT")"
 POLICY_ROOT="$(resolve_path "$PR_SAFETY_POLICY_ROOT")"
@@ -139,6 +145,28 @@ if [[ -n "${PR_SAFETY_MERGED_PR_INPUT_FILE:-}" ]]; then
   exit 0
 fi
 
+# Remove old snapshots beyond SNAPSHOT_KEEP newest (by mtime), but never one still referenced by a
+# queued/running review. Snapshot dir name is the operation_id; a review is in-flight when a request
+# with that operation_id is queued/running. Snapshots are chmod a-w, so rm needs a chmod first.
+gc_snapshots() {
+  [[ "$SNAPSHOT_KEEP" -gt 0 ]] || return 0
+  local dirs active op
+  # newest-first list of published snapshot dirs (skip in-flight .tmp dirs)
+  dirs=$(ls -dt "$SNAPSHOT_ROOT"/pr-safety-* 2>/dev/null || true)
+  [[ -n "$dirs" ]] || return 0
+  local i=0
+  while IFS= read -r snap; do
+    [[ -n "$snap" ]] || continue
+    i=$((i+1))
+    (( i <= SNAPSHOT_KEEP )) && continue
+    op="$(basename "$snap")"
+    active="$(queue_pr_safety_operation_active "$op" || true)"
+    if [[ "$active" == 1 ]]; then log "gc keep (in-flight): $op"; continue; fi
+    chmod -R u+w "$snap" 2>/dev/null || true
+    rm -rf "$snap" && log "gc removed snapshot $op"
+  done <<<"$dirs"
+}
+
 records="$(mktemp)"; trap 'rm -f "$records"' EXIT
 IFS=',' read -r -a authors <<<"$PR_SAFETY_MERGED_PR_AUTHORS"
 for author in "${authors[@]}"; do
@@ -147,3 +175,4 @@ for author in "${authors[@]}"; do
   records_for_author "$author" "$records"
 done
 while IFS= read -r rec; do [[ -n "$rec" ]] && process_pr "$rec"; done < "$records"
+gc_snapshots
