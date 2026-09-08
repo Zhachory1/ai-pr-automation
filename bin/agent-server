@@ -385,9 +385,14 @@ Working tree: a git worktree of this PR's branch at the expected head is already
 cd there to read/edit/test/commit. Do NOT touch any other path under the mounted code root, and do
 NOT create your own clone.
 
-Scope of autonomous CODE changes (STRICT):
-- Apply ONLY low-risk, unambiguous ACTIONABLE fixes and NITS. Skip anything ambiguous, large, or
-  requiring judgment; report those as pending instead of changing code.
+Scope of autonomous CODE changes (bias to FIX, not defer):
+- Default to APPLYING the fix. If a reviewer asked for a concrete change and you can make it and
+  validate it with tests, do it. Do NOT defer clear, mechanical, or well-specified fixes to a human
+  just because they touch code — "requires a keystroke" is not "requires human judgment."
+- Escalate (report as pending, do NOT change code) ONLY when a fix genuinely needs a judgment call
+  the reviewer did not settle: an ambiguous/underspecified request with more than one reasonable
+  implementation, a change to public API/contracts/security/auth/data-migration behavior, a large or
+  cross-cutting refactor, or anything you cannot validate with tests.
 - Run the repo's relevant tests after edits. If tests fail or you cannot validate, REVERT your edits
   (leave no local diff) and report the blocker; do not push.
 
@@ -410,7 +415,10 @@ Push rules (the branch is yours; still strict):
 Emit typed structured output to: $work_root/result.json
     {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"maintenance":{"needs_human_review":true|false},"memory":{"decisions":[{"scope":"repository","rule":"...","rationale":"..."}]}}
   The nonce MUST equal exactly: $nonce. Set maintenance.needs_human_review to true ONLY when you
-  skipped unresolved feedback because it needs human judgment; otherwise false. 'summary' should list:
+  SKIPPED unresolved feedback under the escalation criteria above (genuine judgment call, unsafe, or
+  unvalidatable). Do NOT set it merely because a thread touched code, because you were being
+  cautious, or because a fix felt easy — if you could apply and validate it, apply it and leave this
+  false; otherwise false. 'summary' should list:
   fixes committed+pushed, threads replied/resolved, and anything skipped as pending.
   `memory.decisions` is eligible for durable memory only via human review. It MUST be either `[]` or
   a non-empty array where every item is exactly structured as
