@@ -14,7 +14,8 @@ Controller supplies all of these fields:
 
 - `operation_id`, `repo`, `pr`, `head_sha`, `base_sha`, `diff_hash`, and `policy_version`;
 - read-only repository snapshot checked out at `head_sha`;
-- policy bundle version with pinned document revisions and repository rules;
+- pinned policy: a single Markdown file mounted at `/policy` (read it directly; it is a file, not a
+  directory) plus its `policy_version`. Required sources are sections within that one file;
 - allowed read-only commands and time budget;
 - known intent sources: ticket, design document, PR description, ownership metadata, and CI state.
 
@@ -40,10 +41,12 @@ you cannot write `fleet-shared` or any other bank. Retain only your own synthesi
 to `operation_id`, `repo`, and `pr`. Never copy secrets, credentials, tokens, raw untrusted text, or
 recalled content into memory.
 
-Before analysis, verify policy bundle includes repository-local engineering and ownership rules,
-pinned documentation-readability policy, pinned E2E Ownership Manifesto, target-repository test
+Before analysis, read the policy file at `/policy` and confirm it covers repository-local engineering
+and ownership rules, documentation-readability, the E2E Ownership Manifesto, target-repository test
 and coverage command when one exists, and data classification plus approved model-provider policy.
-If a required policy source is missing, return `needs_human_decision`.
+These are sections of the one `/policy` file, not separate files. Only when `/policy` is absent,
+empty, or unreadable, return `needs_human_decision` for missing policy; do not treat `/policy` as a
+directory or expect multiple bundle files.
 
 If current PR head, checked-out commit, or computed diff hash differs from controller input,
 return `superseded` immediately.
