@@ -34,20 +34,20 @@ payload() { jq -cn --arg op "$1" --arg head "$2" --arg diff "$3" --arg base "$BA
 export TEST_OPERATION_ID=op-success TEST_REPO=o/r TEST_PR=7 TEST_HEAD="$HEAD" TEST_BASE="$BASE" TEST_DIFF="$DIFF" TEST_POLICY=v1
 queue_enqueue pr-safety-review "$(payload op-success "$HEAD" "$DIFF")" op-success >/dev/null
 bin/pr-safety-review-controller
-check "success promoted private handoff" '[[ -f "$HANDOFF_ROOT/op-success.md" ]] && [[ "$(stat -f "%Lp" "$HANDOFF_ROOT/op-success.md")" == 600 ]]'
+check "success promoted private handoff" '[[ -f "$HANDOFF_ROOT/o__r__pr7__op-success.md" ]] && [[ "$(stat -f "%Lp" "$HANDOFF_ROOT/o__r__pr7__op-success.md")" == 600 ]]'
 check "success queued once with digest provenance" "q \"SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=(SELECT id FROM requests WHERE dedupe_key='op-success');\" | grep -qx 1 && q \"SELECT provenance->>'handoff_digest' FROM pending_maintenance_reviews;\" | grep -Eq '^[0-9a-f]{64}$'"
 export TEST_OPERATION_ID=op-clear TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-clear "$HEAD" "$DIFF")" op-clear >/dev/null
 bin/pr-safety-review-controller
-check "clear result needs no handoff or human queue item" "q \"SELECT status||'/'||coalesce(posted_ref,'') FROM requests WHERE dedupe_key='op-clear';\" | grep -qx 'done/clear' && [[ ! -e \"$HANDOFF_ROOT/op-clear.md\" ]] && q \"SELECT count(*) FROM pending_maintenance_reviews;\" | grep -qx 1"
+check "clear result needs no handoff or human queue item" "q \"SELECT status||'/'||coalesce(posted_ref,'') FROM requests WHERE dedupe_key='op-clear';\" | grep -qx 'done/clear' && [[ ! -e \"$HANDOFF_ROOT/o__r__pr7__op-clear.md\" ]] && q \"SELECT count(*) FROM pending_maintenance_reviews;\" | grep -qx 1"
 export TEST_OPERATION_ID=op-clear-with-finding TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-clear-with-finding "$HEAD" "$DIFF")" op-clear-with-finding >/dev/null
 bin/pr-safety-review-controller
-check "clear with finding fails without discarding evidence" "q \"SELECT status FROM requests WHERE dedupe_key='op-clear-with-finding';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/op-clear-with-finding.md\" ]]"
+check "clear with finding fails without discarding evidence" "q \"SELECT status FROM requests WHERE dedupe_key='op-clear-with-finding';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/o__r__pr7__op-clear-with-finding.md\" ]]"
 policy_mismatch="$(payload op-policy-mismatch "$HEAD" "$DIFF" | jq '.policy_version = "v2"')"
 queue_enqueue pr-safety-review "$policy_mismatch" op-policy-mismatch >/dev/null
 bin/pr-safety-review-controller
-check "active policy mismatch fails without analyst handoff" "q \"SELECT status FROM requests WHERE dedupe_key='op-policy-mismatch';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/op-policy-mismatch.md\" ]]"
+check "active policy mismatch fails without analyst handoff" "q \"SELECT status FROM requests WHERE dedupe_key='op-policy-mismatch';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/o__r__pr7__op-policy-mismatch.md\" ]]"
 _psql -v payload="$(payload op-success "$HEAD" "$DIFF")" <<'SQL' >/dev/null
 INSERT INTO requests(kind, payload, dedupe_key) VALUES ('pr-safety-review', :'payload'::jsonb, 'op-success');
 SQL
@@ -79,12 +79,12 @@ check "path outside snapshot root fails" "q \"SELECT status FROM requests WHERE 
 export TEST_OPERATION_ID=op-invalid-result TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-invalid-result "$HEAD" "$DIFF")" op-invalid-result >/dev/null
 bin/pr-safety-review-controller
-check "invalid result fails without handoff" "q \"SELECT status FROM requests WHERE dedupe_key='op-invalid-result';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/op-invalid-result.md\" ]]"
+check "invalid result fails without handoff" "q \"SELECT status FROM requests WHERE dedupe_key='op-invalid-result';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/o__r__pr7__op-invalid-result.md\" ]]"
 
 export TEST_OPERATION_ID=op-invalid-handoff TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-invalid-handoff "$HEAD" "$DIFF")" op-invalid-handoff >/dev/null
 bin/pr-safety-review-controller
-check "invalid handoff fails without promotion" "q \"SELECT status FROM requests WHERE dedupe_key='op-invalid-handoff';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/op-invalid-handoff.md\" ]]"
+check "invalid handoff fails without promotion" "q \"SELECT status FROM requests WHERE dedupe_key='op-invalid-handoff';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/o__r__pr7__op-invalid-handoff.md\" ]]"
 
 # Real-LLM shape: readable handoff that neither embeds the identity JSON nor byte-copies finding
 # claims. Controller must stamp identity and promote it. Placed last to avoid perturbing the
@@ -92,6 +92,6 @@ check "invalid handoff fails without promotion" "q \"SELECT status FROM requests
 export TEST_OPERATION_ID=op-paraphrase TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-paraphrase "$HEAD" "$DIFF")" op-paraphrase >/dev/null
 bin/pr-safety-review-controller
-check "paraphrased handoff is stamped with identity and promoted" "q \"SELECT status FROM requests WHERE dedupe_key='op-paraphrase';\" | grep -qx done && [[ -f \"$HANDOFF_ROOT/op-paraphrase.md\" ]] && grep -q 'operation_id: op-paraphrase' \"$HANDOFF_ROOT/op-paraphrase.md\" && grep -q 'reworded the findings' \"$HANDOFF_ROOT/op-paraphrase.md\""
+check "paraphrased handoff is stamped with identity and promoted" "q \"SELECT status FROM requests WHERE dedupe_key='op-paraphrase';\" | grep -qx done && [[ -f \"$HANDOFF_ROOT/o__r__pr7__op-paraphrase.md\" ]] && grep -q 'operation_id: op-paraphrase' \"$HANDOFF_ROOT/o__r__pr7__op-paraphrase.md\" && grep -q 'reworded the findings' \"$HANDOFF_ROOT/o__r__pr7__op-paraphrase.md\""
 
 (( fail == 0 ))
