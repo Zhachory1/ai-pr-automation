@@ -28,3 +28,8 @@ docker run --rm --stop-timeout 10 --network "$network" --read-only --user 65532:
   -e HTTPS_PROXY="$proxy" -e HTTP_PROXY="$proxy" -e NODE_USE_ENV_PROXY=1 \
   -e NO_PROXY=coderag,swarmvault-mcp,hindsight -e no_proxy=coderag,swarmvault-mcp,hindsight \
   "$image" --model "$model" "$(<"$prompt")" > "$PR_SAFETY_RESULT_FILE"
+
+# Best-effort repair of structurally-broken analyst JSON (duplicated key token, wrapping prose,
+# trailing junk) seen on large reviews. Only rewrites the file if repair yields valid JSON; a valid
+# result is left untouched and an unrepairable one is left for the controller to reject.
+python3 "$(dirname "$0")/pr-safety-json-repair.py" "$PR_SAFETY_RESULT_FILE" || true
