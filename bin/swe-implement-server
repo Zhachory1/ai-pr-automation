@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# forward-fix-server — serial queue-draining worker for the 'forward-fix' kind.
+# swe-implement-server — serial queue-draining worker for the 'swe-implement' kind.
 #
-# Claims one forward-fix request at a time and runs bin/pr-safety-forward-fix (the harness) to turn
+# Claims one swe-implement request at a time and runs bin/swe-implement (the harness) to turn
 # an approved task into a DRAFT corrective PR. Mirrors bin/agent-server's concurrency machinery
 # (per-kind single-instance advisory lock held for process life; reclaim; FOR UPDATE SKIP LOCKED
 # claim; heartbeat self-exit) via lib/queue.sh, but the per-request work is the harness, not the
 # PR-review runner.
 #
-# Request payload (requests.kind = 'forward-fix'):
+# Request payload (requests.kind = 'swe-implement'):
 #   { "source": "handoff" | "issue" | "prompt",
 #     "handoff_path": "<abs path>",          # source=handoff
 #     "issue": "owner/repo#N",               # source=issue
@@ -22,15 +22,15 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/queue.sh
 . "$HERE/lib/queue.sh"
 
-KIND=forward-fix
-POLL_INTERVAL="${FORWARD_FIX_POLL_INTERVAL:-15}"
-PER_REQUEST_TIMEOUT="${FORWARD_FIX_PER_REQUEST_TIMEOUT:-2400}"   # 40m ceiling (clone+agent+validate)
-LOOP_HEARTBEAT_MAX="${FORWARD_FIX_LOOP_HEARTBEAT_MAX:-7200}"
-HARNESS="${FORWARD_FIX_HARNESS:-$HERE/bin/pr-safety-forward-fix}"
+KIND=swe-implement
+POLL_INTERVAL="${SWE_IMPLEMENT_POLL_INTERVAL:-15}"
+PER_REQUEST_TIMEOUT="${SWE_IMPLEMENT_PER_REQUEST_TIMEOUT:-2400}"   # 40m ceiling (clone+agent+validate)
+LOOP_HEARTBEAT_MAX="${SWE_IMPLEMENT_LOOP_HEARTBEAT_MAX:-7200}"
+HARNESS="${SWE_IMPLEMENT_HARNESS:-$HERE/bin/swe-implement}"
 AGENT_SERVER_LOCK_KEY="${AGENT_SERVER_LOCK_KEY:-4242}"
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
-log() { echo "$(ts) forward-fix-server $*"; }
+log() { echo "$(ts) swe-implement-server $*"; }
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
 need psql; need jq; need git; need gh
 [[ -x "$HARNESS" ]] || { echo "missing harness: $HARNESS" >&2; exit 2; }
@@ -46,7 +46,7 @@ acquire_single_instance() {
   printf "SELECT pg_try_advisory_lock(%s::int, hashtext('%s'));\n" "$AGENT_SERVER_LOCK_KEY" "$KIND" >&"${LOCKSESSION[1]}"
   local got; read -r got <&"${LOCKSESSION[0]}" || true
   if [[ "$got" != "t" ]]; then
-    log "another forward-fix-server holds the single-instance lock; refusing to start"; exit 0
+    log "another swe-implement-server holds the single-instance lock; refusing to start"; exit 0
   fi
   exec {LOCK_HOLD_FD}>&"${LOCKSESSION[1]}"
   log "single-instance lock acquired (holder pid $LOCKSESSION_PID)"
@@ -86,7 +86,7 @@ process_one() {
   local id="$1" payload="$2" run_id="$3"
   local argfile; argfile="$(mktemp)"; local rc=0
   if ! harness_args_from_payload "$payload" > "$argfile"; then
-    queue_mark_failed "$id" "invalid forward-fix payload"; rm -f "$argfile"; return 0
+    queue_mark_failed "$id" "invalid swe-implement payload"; rm -f "$argfile"; return 0
   fi
   local -a args=(); local line
   while IFS= read -r line; do args+=("$line"); done < "$argfile"
@@ -107,8 +107,8 @@ process_one() {
   else
     # harness exit 1 = agent produced no commit (nothing to fix); >1 = a real error. Both are
     # terminal for this request; a new head re-enqueues a fresh row.
-    local reason; reason="$(printf '%s' "$out" | sed -n 's/^.*forward-fix: //p' | tail -1)"
-    queue_mark_failed "$id" "forward-fix rc=$rc${reason:+: }$reason"
+    local reason; reason="$(printf '%s' "$out" | sed -n 's/^.*swe-implement: //p' | tail -1)"
+    queue_mark_failed "$id" "swe-implement rc=$rc${reason:+: }$reason"
     log "request $id failed rc=$rc"
   fi
 }
@@ -116,7 +116,7 @@ process_one() {
 trap 'log "shutting down"' TERM INT
 acquire_single_instance
 queue_reclaim_stale "$KIND" || log "reclaim failed (continuing)"
-log "forward-fix-server up (serial, kind=$KIND); poll ${POLL_INTERVAL}s, per-request ${PER_REQUEST_TIMEOUT}s"
+log "swe-implement-server up (serial, kind=$KIND); poll ${POLL_INTERVAL}s, per-request ${PER_REQUEST_TIMEOUT}s"
 last_progress="$(date +%s)"
 
 while true; do

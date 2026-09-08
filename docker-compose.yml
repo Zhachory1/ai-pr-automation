@@ -267,18 +267,18 @@ services:
       schema-migrate:
         condition: service_completed_successfully
 
-  # --- forward-fix: serial worker for the 'forward-fix' queue kind ---
-  # Claims forward-fix requests and runs the swe-implementer harness (fresh clone, implement, open a
+  # --- swe-implement: serial worker for the 'swe-implement' queue kind ---
+  # Claims swe-implement requests and runs the swe-implementer harness (fresh clone, implement, open a
   # DRAFT PR). Unlike the read-only pr-safety analyst, this legitimately pushes + opens PRs, so its
   # GH_TOKEN needs push + org SAML. Clones go to an ephemeral named volume, never the mounted code
-  # root. Enqueue rows via bin/forward-fix-ui (host) or the status/inject path.
-  forward-fix-server:
-    profiles: ["forward-fix"]
-    image: agent-fleet/forward-fix-server:${FORWARD_FIX_VERSION:-latest}
+  # root. Enqueue rows via bin/swe-implement-ui (host) or the status/inject path.
+  swe-implement-server:
+    profiles: ["swe-implement"]
+    image: agent-fleet/swe-implement-server:${SWE_IMPLEMENT_VERSION:-latest}
     build:
       context: .
-      dockerfile: Dockerfile.forward-fix-server
-    container_name: fleet-forward-fix-server
+      dockerfile: Dockerfile.swe-implement-server
+    container_name: fleet-swe-implement-server
     restart: unless-stopped
     env_file: .env                      # GH_TOKEN (push+SAML), OPENAI_API_KEY, REQUESTS_DB_PASSWORD
     environment:
@@ -287,11 +287,11 @@ services:
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
       REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      PR_SAFETY_FORWARD_FIX_MODEL: ${PR_SAFETY_FORWARD_FIX_MODEL:-openai/gpt-5.6-terra}
+      SWE_IMPLEMENT_MODEL: ${SWE_IMPLEMENT_MODEL:-openai/gpt-5.6-terra}
       TMPDIR: /work
       HOME: /work
     volumes:
-      - forward_fix_work:/work                              # ephemeral clone scratch (not code root)
+      - swe_implement_work:/work                              # ephemeral clone scratch (not code root)
     depends_on:
       db-requests:
         condition: service_healthy
@@ -409,6 +409,7 @@ services:
       PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
       PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
       HINDSIGHT_URL: http://hindsight:8888
+      HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against the controller's path
       STATUS_BIND: 0.0.0.0
     depends_on:
       db-requests:
@@ -426,4 +427,4 @@ volumes:
   redisdata:
   hindsight_pgdata:
   coderag_cache:
-  forward_fix_work:
+  swe_implement_work:

@@ -40,6 +40,7 @@ ALLOWED_REPOS = set(filter(None, os.environ.get("PR_PRODUCER_REPOSITORIES", "").
 ALLOWED_ORGS = set(filter(None, os.environ.get("PR_PRODUCER_ORGS", "").split(",")))
 ALLOW_ALL_REPOS = os.environ.get("PR_PRODUCER_ALLOW_ALL_REPOS", "false") == "true"
 KINDS = {"pr-review", "pr-maintain"}
+HANDOFF_ROOT = os.environ.get("HANDOFF_ROOT", "")   # for validating swe-implement handoff submissions
 CSRF_TOKEN = secrets.token_urlsafe(32)          # per-process; page embeds it, POST must echo it
 ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
@@ -109,6 +110,50 @@ def inject(repo: str, pr: str, kind: str) -> str:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "insert failed")
     return f"injected {kind} {repo}#{pr}"
+
+
+def _swe_enqueue(payload: dict, dedupe_key: str) -> str:
+    """Enqueue a 'swe-implement' request (credential-free write; the swe-implement-server does the
+    actual clone/agent/PR). Parameterized SQL; dedups on an already-active task."""
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    proc = _psql(
+        ["-v", f"payload={payload_json}", "-v", f"dk={dedupe_key}"],
+        "INSERT INTO requests(kind,payload,dedupe_key) "
+        "SELECT 'swe-implement', :'payload'::jsonb, :'dk' "
+        "WHERE NOT EXISTS (SELECT 1 FROM requests WHERE kind='swe-implement' "
+        "AND dedupe_key=:'dk' AND status IN ('queued','running')) "
+        "ON CONFLICT DO NOTHING RETURNING 1")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "insert failed")
+    return "enqueued swe-implement" if proc.stdout.strip() == "1" else "already queued/running (deduped)"
+
+
+def swe_implement_handoff(handoff_path: str) -> str:
+    """Enqueue a swe-implement task from a handoff path (as shown in the human-review queue). The
+    path is validated to be a non-empty .md under HANDOFF_ROOT; the server re-derives everything."""
+    if not HANDOFF_ROOT:
+        raise ValueError("HANDOFF_ROOT not configured")
+    rp = os.path.realpath(handoff_path)
+    root = os.path.realpath(HANDOFF_ROOT)
+    if not (rp == root or rp.startswith(root + os.sep)) or not rp.endswith(".md"):
+        raise ValueError("handoff path not under HANDOFF_ROOT")
+    return _swe_enqueue({"source": "handoff", "handoff_path": rp, "no_pr": False},
+                        f"handoff:{os.path.basename(rp)}")
+
+
+def swe_implement_issue(issue: str) -> str:
+    if not re.fullmatch(r"[^/\s]+/[^#\s]+#[1-9][0-9]*", issue):
+        raise ValueError("issue must be owner/repo#N")
+    return _swe_enqueue({"source": "issue", "issue": issue, "no_pr": False}, f"issue:{issue}")
+
+
+def swe_implement_prompt(repo: str, prompt: str) -> str:
+    if not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
+        raise ValueError("repo must be owner/repo")
+    if not prompt.strip():
+        raise ValueError("prompt is empty")
+    dk = f"prompt:{repo}:{abs(hash(prompt)) & 0xffffffff:08x}"
+    return _swe_enqueue({"source": "prompt", "repo": repo, "prompt": prompt, "no_pr": False}, dk)
 
 
 def update_human_review_state(review_id: int, state: str) -> str:
@@ -265,10 +310,17 @@ def human_review_table(rows: list[list[str]]) -> str:
         type_chip = ('<span class="chip s-done">review-ready</span>' if rtype == "review-ready"
                      else '<span class="chip s-running">pr-safety</span>' if rtype == "pr-safety-review"
                      else '<span class="chip s-queued">maintenance</span>')
+        implement = ""
+        if handoff:
+            implement = (f"<form class=inline method=post action=/swe-implement/handoff "
+                         f"onsubmit=\"return confirm('Enqueue swe-implement from this handoff? Opens a draft PR.')\">"
+                         f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\">"
+                         f"<input type=hidden name=handoff_path value=\"{e(handoff)}\">"
+                         f"<button type=submit>Implement</button></form>")
         body += ("<tr>"
                  f"<td>{e(review_id)}</td><td>{type_chip}</td><td>{github_pr_link(url)}</td>"
                  f"<td>{e(summary).replace(chr(10), '<br>')}</td><td>{findings_html(findings)}</td>"
-                 f"<td>{e(handoff)}</td><td>{e(created)}</td>"
+                 f"<td>{e(handoff)}<br>{implement}</td><td>{e(created)}</td>"
                  f"<td><form class=inline method=post action=\"/human-reviews/{e(review_id)}/reviewed\">"
                  f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\"><button>Reviewed</button></form>"
                  f"<form class=inline method=post action=\"/human-reviews/{e(review_id)}/dismissed\">"
@@ -375,9 +427,13 @@ def render(flash: str = "") -> str:
             "to_char(max(finished_at),'MM-DD HH24:MI') AS last_fail "
             "FROM requests WHERE status='failed' GROUP BY kind, dedupe_key "
             "HAVING count(*) >= 3 ORDER BY max(finished_at) DESC NULLS LAST LIMIT 20")
+        swe = query(
+            "SELECT id, status, dedupe_key, coalesce(posted_ref,''), coalesce(fail_response,''), "
+            "to_char(coalesce(finished_at,started_at,created_at),'MM-DD HH24:MI') "
+            "FROM requests WHERE kind='swe-implement' ORDER BY id DESC LIMIT 20")
         db_err = None
     except Exception as ex:
-        running = queued = recent = human_review = pending = today = capped = []
+        running = queued = recent = human_review = pending = today = capped = swe = []
         db_err = str(ex)
 
     banner = (f"<p class=err>DB unreachable: {e(db_err)}</p>" if db_err else "")
@@ -439,11 +495,49 @@ def render(flash: str = "") -> str:
 {table("Running now", ["id","kind","dedupe_key","elapsed"], running, "nothing running")}
 {queued_html}
 {human_review_table(human_review)}
+{swe_implement_section(swe)}
 {pending_decision_table(pending)}
 {recent_table(recent)}
 {table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}
 {table("Today by kind", ["kind","status","count"], today, "nothing today")}
 </body></html>"""
+
+
+def swe_implement_section(rows: list[list[str]]) -> str:
+    """Submit form (issue / prompt) + a table of swe-implement requests with draft-PR links. Handoff
+    tasks are submitted inline from the human-review queue's Implement button, not here."""
+    if rows:
+        body = "".join(
+            "<tr>"
+            f"<td>{e(r[0])}</td><td>{chip(r[1])}</td><td>{e(r[2])}</td>"
+            f"<td>{_swe_ref(r[3])}</td><td>{e(r[4])}</td><td>{e(r[5])}</td></tr>"
+            for r in rows)
+        tbl = ("<table><thead><tr><th>id</th><th>status</th><th>task</th><th>result</th>"
+               f"<th>detail</th><th>updated</th></tr></thead><tbody>{body}</tbody></table>")
+    else:
+        tbl = "<p class=empty>no swe-implement requests yet</p>"
+    return ("<section><h2>swe-implement <span class=sub>task → draft PR (opened by swe-implement-server)</span></h2>"
+            "<p class=hint>Implement a handoff via its <b>Implement</b> button above, or submit an issue / prompt here. "
+            "Enqueue only — the swe-implement-server clones fresh, implements, and opens a DRAFT PR.</p>"
+            "<form class=toolbar method=post action=/swe-implement/issue "
+            "onsubmit=\"return confirm('Enqueue swe-implement from this issue?')\">"
+            f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\">"
+            "<input name=issue placeholder=\"ORG/repo#123\" size=24 required>"
+            "<button type=submit>implement issue</button></form>"
+            "<form class=toolbar method=post action=/swe-implement/prompt "
+            "onsubmit=\"return confirm('Enqueue swe-implement from this prompt?')\" style=margin-top:.5rem>"
+            f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\">"
+            "<input name=repo placeholder=\"ORG/repo\" size=20 required>"
+            "<input name=prompt placeholder=\"task prompt\" size=48 required>"
+            "<button type=submit>implement prompt</button></form>"
+            f"{tbl}</section>")
+
+
+def _swe_ref(ref: str) -> str:
+    ref = (ref or "").strip()
+    if ref.startswith("http"):
+        return f'<a href="{e(ref)}" target="_blank" rel="noopener">draft PR</a>'
+    return e(ref)
 
 
 def chip(status: str) -> str:
@@ -536,6 +630,13 @@ class Handler(BaseHTTPRequestHandler):
                 result = inject(params.get("repo", [""])[0].strip(),
                                 params.get("pr", [""])[0].strip(),
                                 params.get("kind", [""])[0].strip())
+            elif self.path == "/swe-implement/handoff":
+                result = swe_implement_handoff(params.get("handoff_path", [""])[0].strip())
+            elif self.path == "/swe-implement/issue":
+                result = swe_implement_issue(params.get("issue", [""])[0].strip())
+            elif self.path == "/swe-implement/prompt":
+                result = swe_implement_prompt(params.get("repo", [""])[0].strip(),
+                                              params.get("prompt", [""])[0].strip())
             else:
                 review_match = re.fullmatch(r"/human-reviews/(\d+)/(reviewed|dismissed)", self.path)
                 decision_match = re.fullmatch(r"/pending-decisions/(\d+)/(approve|retry|reject)", self.path)

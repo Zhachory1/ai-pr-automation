@@ -183,41 +183,43 @@ Automated creation never permits merge, deployment, CI retry, Datadog apply, for
 default-branch write. Send resulting draft PR to same Chat room for notification; GitHub code-owner
 approval and merge remain human-owned.
 
-## Forward-Fix Harness
+## SWE-Implement (task → draft PR)
 
-`bin/pr-safety-forward-fix` turns an approved task into a **draft** corrective PR. It is a standalone,
-host-run harness (not wired into the producer/controller loop); trigger it by hand, or later from a
-UI/agent-server call. It accepts three input sources, normalizes each to a common brief, then runs
-the `swe-implementer` persona (`~/.mewrite/agents/swe-implementer.md`, model `gpt-5.6-terra`) against
-a **disposable fresh clone** of the target repo at its default branch:
+`swe-implement` turns an approved task into a **draft** PR. The agent is the general
+`swe-implementer` persona (`agent-config/agents/swe-implementer.md`, model `gpt-5.6-terra`); a
+handoff's concrete breakage is just one of its input sources. All inputs normalize to a common brief
+and run against a **disposable fresh clone** of the target repo at its default branch.
+
+`bin/swe-implement` is the standalone harness (run by hand or by the server):
 
 ```bash
-pr-safety-forward-fix --handoff <handoff.md>              # repo/base + '## Concrete breakage' section
-pr-safety-forward-fix --issue  ROKT/cpi#123               # GitHub issue title+body
-pr-safety-forward-fix --prompt "<text>" --repo ROKT/cpi   # free-form; --repo required
+swe-implement --handoff <handoff.md>              # repo/base + '## Concrete breakage' section
+swe-implement --issue  ROKT/cpi#123               # GitHub issue title+body
+swe-implement --prompt "<text>" --repo ROKT/cpi   # free-form; --repo required
 ```
 
 Boundaries: it never touches the author's PR branch or any existing working checkout (always a fresh
-temp clone); only the handoff's `## Concrete breakage` section is actioned (human-decision findings
-are not auto-fixed); it stops with a commit and opens a **draft** PR for human review. `--no-pr`
-stops at a committed local branch. It authors as the push+SAML-capable token identity (`GH_TOKEN`).
-Jira input is intentionally not wired (no Jira access).
+temp clone); for a handoff only the `## Concrete breakage` section is actioned (human-decision
+findings are not auto-fixed); it stops with a commit and opens a **draft** PR for human review.
+`--no-pr` stops at a committed local branch. It authors as the push+SAML-capable token identity
+(`GH_TOKEN`). Jira input is intentionally not wired (no Jira access).
 
-### Forward-fix agent-server + UI
+### Agent-server + UI
 
-The harness also runs as a queue worker, matching the agent-server pattern:
+swe-implement also runs as a queue worker, matching the agent-server pattern:
 
-- **`bin/forward-fix-server`** — a serial worker for the `forward-fix` request kind. It holds a
-  per-kind single-instance advisory lock, claims one `forward-fix` row at a time
+- **`bin/swe-implement-server`** — a serial worker for the `swe-implement` request kind. It holds a
+  per-kind single-instance advisory lock, claims one `swe-implement` row at a time
   (`FOR UPDATE SKIP LOCKED`), maps the payload to harness args, runs the harness, and marks the row
   `done` (draft-PR url in `posted_ref`) or `failed`. Runs in its own container
-  (`Dockerfile.forward-fix-server`, compose profile `forward-fix`) with git/gh/mewritecode and a
-  push+SAML `GH_TOKEN`; clones go to an ephemeral `forward_fix_work` volume, never the code root.
+  (`Dockerfile.swe-implement-server`, compose profile `swe-implement`) with git/gh/mewritecode and a
+  push+SAML `GH_TOKEN`; clones go to an ephemeral `swe_implement_work` volume, never the code root.
   Request payload: `{source: handoff|issue|prompt, handoff_path|issue|prompt+repo, no_pr?}`.
-- **`bin/forward-fix-ui`** — a standalone host page (port 8090) to submit a task (handoff picker /
-  issue / prompt+repo) and watch the request drain. It only ENQUEUES a `forward-fix` row (CSRF-
-  guarded, parameterized SQL); it holds no creds and never runs the harness — that stays with the
-  server. Handoff picker only offers handoffs with a non-empty `## Concrete breakage` section.
+- **UI: a section of the status page** (`bin/status-server`). Each row in the human-review queue with
+  a handoff gets an **Implement** button that enqueues a `swe-implement` handoff task; a submit form
+  handles issue / prompt tasks; a table shows `swe-implement` requests with their draft-PR links.
+  Enqueue-only (CSRF-guarded, parameterized SQL) — the status page holds no creds and never runs the
+  harness; the server does. Handoff paths are read from the DB, not the filesystem.
 
 ## Validation
 
@@ -229,8 +231,8 @@ bash tests/test-pr-safety-review-controller.sh
 bash tests/test-pr-safety-runtime.sh
 bash tests/test-pr-safety-chat-producer.sh
 bash tests/test-pr-safety-flow.sh
-bash tests/test-pr-safety-forward-fix.sh
-bash tests/test-forward-fix-server.sh
+bash tests/test-swe-implement.sh
+bash tests/test-swe-implement-server.sh
 ```
 
 Test guards contract language. It does not prove future runtime sandboxing. Runtime enforcement is

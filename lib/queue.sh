@@ -180,19 +180,19 @@ SELECT CASE WHEN EXISTS (
 SQL
 }
 
-# Enqueue a forward-fix request (kind='forward-fix'). payload_json carries the harness inputs
+# Enqueue a swe-implement request (kind='swe-implement'). payload_json carries the harness inputs
 # (source + handoff_path/issue/prompt+repo + optional no_pr). dedupe_key identifies the task so the
 # same task cannot sit queued/running twice. Prints '1' if a row was inserted, empty if suppressed
 # (a matching task already queued/running). Unlike PR-safety, a done/failed task CAN be re-enqueued
 # (operator may deliberately retry), so only active rows suppress.
-queue_enqueue_forward_fix() {
+queue_enqueue_swe_implement() {
   local payload_json="$1" dedupe_key="$2"
   _psql -v payload="$payload_json" -v dk="$dedupe_key" <<'SQL'
 INSERT INTO requests(kind, payload, dedupe_key)
-SELECT 'forward-fix', :'payload'::jsonb, :'dk'
+SELECT 'swe-implement', :'payload'::jsonb, :'dk'
 WHERE NOT EXISTS (
   SELECT 1 FROM requests
-   WHERE kind = 'forward-fix' AND dedupe_key = :'dk' AND status IN ('queued','running')
+   WHERE kind = 'swe-implement' AND dedupe_key = :'dk' AND status IN ('queued','running')
 )
 ON CONFLICT DO NOTHING
 RETURNING 1;

@@ -1,7 +1,7 @@
-# forward-fix-server image: serial worker for the 'forward-fix' queue kind. Same toolchain as
+# swe-implement-server image: serial worker for the 'swe-implement' queue kind. Same toolchain as
 # agent-server (git + gh + jq + psql + node/mewritecode) since it clones repos and runs the
-# swe-implementer harness, but its entrypoint is the forward-fix worker.
-# Build: docker build -f Dockerfile.forward-fix-server -t agent-fleet/forward-fix-server .
+# swe-implementer harness, but its entrypoint is the swe-implement worker.
+# Build: docker build -f Dockerfile.swe-implement-server -t agent-fleet/swe-implement-server .
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -32,6 +32,6 @@ ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
 # The harness defaults to ~/.mewrite/agents; in-container the persona is vendored here.
 ENV SWE_IMPLEMENTER_AGENT=/app/agent-config/agents/swe-implementer.md
 
-# Serial worker for kind=forward-fix. gh/push use GH_TOKEN; mewritecode uses OPENAI_API_KEY.
+# Serial worker for kind=swe-implement. gh/push use GH_TOKEN; mewritecode uses OPENAI_API_KEY.
 # No creds baked in; all via env (compose env_file: .env).
-ENTRYPOINT ["bin/forward-fix-server"]
+ENTRYPOINT ["bin/swe-implement-server"]
