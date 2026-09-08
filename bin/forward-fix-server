@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# forward-fix-server — serial queue-draining worker for the 'forward-fix' kind.
+#
+# Claims one forward-fix request at a time and runs bin/pr-safety-forward-fix (the harness) to turn
+# an approved task into a DRAFT corrective PR. Mirrors bin/agent-server's concurrency machinery
+# (per-kind single-instance advisory lock held for process life; reclaim; FOR UPDATE SKIP LOCKED
+# claim; heartbeat self-exit) via lib/queue.sh, but the per-request work is the harness, not the
+# PR-review runner.
+#
+# Request payload (requests.kind = 'forward-fix'):
+#   { "source": "handoff" | "issue" | "prompt",
+#     "handoff_path": "<abs path>",          # source=handoff
+#     "issue": "owner/repo#N",               # source=issue
+#     "prompt": "<text>", "repo": "owner/repo",  # source=prompt
+#     "no_pr": true|false }                  # optional; default false (opens a draft PR)
+# The harness owns all safety (fresh clone, evidence re-verify, draft-only, fail-closed). On success
+# the draft PR url is stored in requests.posted_ref.
+set -euo pipefail
+umask 077
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/queue.sh
+. "$HERE/lib/queue.sh"
+
+KIND=forward-fix
+POLL_INTERVAL="${FORWARD_FIX_POLL_INTERVAL:-15}"
+PER_REQUEST_TIMEOUT="${FORWARD_FIX_PER_REQUEST_TIMEOUT:-2400}"   # 40m ceiling (clone+agent+validate)
+LOOP_HEARTBEAT_MAX="${FORWARD_FIX_LOOP_HEARTBEAT_MAX:-7200}"
+HARNESS="${FORWARD_FIX_HARNESS:-$HERE/bin/pr-safety-forward-fix}"
+AGENT_SERVER_LOCK_KEY="${AGENT_SERVER_LOCK_KEY:-4242}"
+
+ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+log() { echo "$(ts) forward-fix-server $*"; }
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need psql; need jq; need git; need gh
+[[ -x "$HARNESS" ]] || { echo "missing harness: $HARNESS" >&2; exit 2; }
+: "${GH_TOKEN:?set GH_TOKEN (push + SAML authorized for the target org)}"
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+[[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
+
+# --- single instance: hold a per-kind session advisory lock for our whole life (see agent-server) --
+LOCKSESSION_PID=""
+acquire_single_instance() {
+  coproc LOCKSESSION { _psql 2>/dev/null; }
+  LOCKSESSION_PID="$!"
+  printf "SELECT pg_try_advisory_lock(%s::int, hashtext('%s'));\n" "$AGENT_SERVER_LOCK_KEY" "$KIND" >&"${LOCKSESSION[1]}"
+  local got; read -r got <&"${LOCKSESSION[0]}" || true
+  if [[ "$got" != "t" ]]; then
+    log "another forward-fix-server holds the single-instance lock; refusing to start"; exit 0
+  fi
+  exec {LOCK_HOLD_FD}>&"${LOCKSESSION[1]}"
+  log "single-instance lock acquired (holder pid $LOCKSESSION_PID)"
+}
+assert_lock_held() {
+  if [[ -z "$LOCKSESSION_PID" ]] || ! kill -0 "$LOCKSESSION_PID" 2>/dev/null; then
+    log "FATAL: single-instance lock holder died; exiting to avoid running unlocked"; exit 3
+  fi
+}
+db_up() { _psql <<<"SELECT 1;" >/dev/null 2>&1; }
+
+# Build harness args from the request payload. Prints NUL-free args one per line into the named
+# array via stdout capture (caller reads with mapfile). Rejects an unknown/invalid source.
+harness_args_from_payload() {
+  local payload="$1" source
+  source="$(jq -r '.source // empty' <<<"$payload")"
+  case "$source" in
+    handoff)
+      local hp; hp="$(jq -r '.handoff_path // empty' <<<"$payload")"
+      [[ -n "$hp" ]] || { log "payload: handoff source missing handoff_path"; return 1; }
+      printf '%s\n%s\n' --handoff "$hp" ;;
+    issue)
+      local iss; iss="$(jq -r '.issue // empty' <<<"$payload")"
+      [[ "$iss" =~ ^[^/]+/[^#]+#[1-9][0-9]*$ ]] || { log "payload: issue source needs owner/repo#N"; return 1; }
+      printf '%s\n%s\n' --issue "$iss" ;;
+    prompt)
+      local pt repo; pt="$(jq -r '.prompt // empty' <<<"$payload")"; repo="$(jq -r '.repo // empty' <<<"$payload")"
+      [[ -n "$pt" && "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || { log "payload: prompt source needs prompt + repo"; return 1; }
+      printf '%s\n%s\n%s\n%s\n' --prompt "$pt" --repo "$repo" ;;
+    *) log "payload: unknown source '$source'"; return 1 ;;
+  esac
+  [[ "$(jq -r '.no_pr // false' <<<"$payload")" == "true" ]] && printf '%s\n' --no-pr
+  return 0
+}
+
+process_one() {
+  local id="$1" payload="$2" run_id="$3"
+  local argfile; argfile="$(mktemp)"; local rc=0
+  if ! harness_args_from_payload "$payload" > "$argfile"; then
+    queue_mark_failed "$id" "invalid forward-fix payload"; rm -f "$argfile"; return 0
+  fi
+  local -a args=(); local line
+  while IFS= read -r line; do args+=("$line"); done < "$argfile"
+  rm -f "$argfile"
+
+  # Record the intent to make a side effect (draft PR) BEFORE running, so a crash mid-run leaves the
+  # row as running-with-side_effect and reclaim does not blindly requeue a possible pushed branch.
+  queue_mark_side_effect "$id" >/dev/null 2>&1 || true
+
+  local out; out="$("$TIMEOUT_BIN" --kill-after=15s "${PER_REQUEST_TIMEOUT}s" "$HARNESS" "${args[@]}" 2>&1)" || rc=$?
+  printf '%s\n' "$out" | sed 's/^/  harness: /'
+
+  if (( rc == 0 )); then
+    # harness prints "draft PR: <url>" on success (or nothing for --no-pr).
+    local url; url="$(printf '%s' "$out" | sed -n 's/.*draft PR: //p' | tail -1)"
+    queue_mark_done "$id" "$url"
+    log "request $id done${url:+ (}$url${url:+)}"
+  else
+    # harness exit 1 = agent produced no commit (nothing to fix); >1 = a real error. Both are
+    # terminal for this request; a new head re-enqueues a fresh row.
+    local reason; reason="$(printf '%s' "$out" | sed -n 's/^.*forward-fix: //p' | tail -1)"
+    queue_mark_failed "$id" "forward-fix rc=$rc${reason:+: }$reason"
+    log "request $id failed rc=$rc"
+  fi
+}
+
+trap 'log "shutting down"' TERM INT
+acquire_single_instance
+queue_reclaim_stale "$KIND" || log "reclaim failed (continuing)"
+log "forward-fix-server up (serial, kind=$KIND); poll ${POLL_INTERVAL}s, per-request ${PER_REQUEST_TIMEOUT}s"
+last_progress="$(date +%s)"
+
+while true; do
+  now="$(date +%s)"
+  if (( now - last_progress > LOOP_HEARTBEAT_MAX )); then
+    log "FATAL: no loop progress in ${LOOP_HEARTBEAT_MAX}s; self-exiting for restart"; exit 3
+  fi
+  assert_lock_held
+  if ! db_up; then log "db unreachable; backing off"; sleep "$POLL_INTERVAL"; continue; fi
+
+  run_id="$(date '+%Y%m%d-%H%M%S')-$$"
+  nonce="$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  claim="$(queue_claim_one "$KIND" "$run_id" "$nonce" || true)"
+  if [[ -z "$claim" || "$claim" == "null" ]]; then sleep "$POLL_INTERVAL"; continue; fi
+
+  id="$(jq -r '.id' <<<"$claim")"
+  payload="$(jq -c '.payload' <<<"$claim")"
+  dedupe_key="$(jq -r '.dedupe_key' <<<"$claim")"
+  log "claimed request $id ($dedupe_key)"
+  process_one "$id" "$payload" "$run_id" || log "process_one error for $id"
+  last_progress="$(date +%s)"
+done

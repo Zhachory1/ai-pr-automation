@@ -180,6 +180,25 @@ SELECT CASE WHEN EXISTS (
 SQL
 }
 
+# Enqueue a forward-fix request (kind='forward-fix'). payload_json carries the harness inputs
+# (source + handoff_path/issue/prompt+repo + optional no_pr). dedupe_key identifies the task so the
+# same task cannot sit queued/running twice. Prints '1' if a row was inserted, empty if suppressed
+# (a matching task already queued/running). Unlike PR-safety, a done/failed task CAN be re-enqueued
+# (operator may deliberately retry), so only active rows suppress.
+queue_enqueue_forward_fix() {
+  local payload_json="$1" dedupe_key="$2"
+  _psql -v payload="$payload_json" -v dk="$dedupe_key" <<'SQL'
+INSERT INTO requests(kind, payload, dedupe_key)
+SELECT 'forward-fix', :'payload'::jsonb, :'dk'
+WHERE NOT EXISTS (
+  SELECT 1 FROM requests
+   WHERE kind = 'forward-fix' AND dedupe_key = :'dk' AND status IN ('queued','running')
+)
+ON CONFLICT DO NOTHING
+RETURNING 1;
+SQL
+}
+
 queue_enqueue() {
   local kind="$1" payload_json="$2" dedupe_key="$3"
   # Cap failed retries: a head that has already FAILED >= max_attempts times is a poison PR

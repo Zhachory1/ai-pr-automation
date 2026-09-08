@@ -203,6 +203,22 @@ are not auto-fixed); it stops with a commit and opens a **draft** PR for human r
 stops at a committed local branch. It authors as the push+SAML-capable token identity (`GH_TOKEN`).
 Jira input is intentionally not wired (no Jira access).
 
+### Forward-fix agent-server + UI
+
+The harness also runs as a queue worker, matching the agent-server pattern:
+
+- **`bin/forward-fix-server`** — a serial worker for the `forward-fix` request kind. It holds a
+  per-kind single-instance advisory lock, claims one `forward-fix` row at a time
+  (`FOR UPDATE SKIP LOCKED`), maps the payload to harness args, runs the harness, and marks the row
+  `done` (draft-PR url in `posted_ref`) or `failed`. Runs in its own container
+  (`Dockerfile.forward-fix-server`, compose profile `forward-fix`) with git/gh/mewritecode and a
+  push+SAML `GH_TOKEN`; clones go to an ephemeral `forward_fix_work` volume, never the code root.
+  Request payload: `{source: handoff|issue|prompt, handoff_path|issue|prompt+repo, no_pr?}`.
+- **`bin/forward-fix-ui`** — a standalone host page (port 8090) to submit a task (handoff picker /
+  issue / prompt+repo) and watch the request drain. It only ENQUEUES a `forward-fix` row (CSRF-
+  guarded, parameterized SQL); it holds no creds and never runs the harness — that stays with the
+  server. Handoff picker only offers handoffs with a non-empty `## Concrete breakage` section.
+
 ## Validation
 
 Run:
@@ -214,6 +230,7 @@ bash tests/test-pr-safety-runtime.sh
 bash tests/test-pr-safety-chat-producer.sh
 bash tests/test-pr-safety-flow.sh
 bash tests/test-pr-safety-forward-fix.sh
+bash tests/test-forward-fix-server.sh
 ```
 
 Test guards contract language. It does not prove future runtime sandboxing. Runtime enforcement is
