@@ -47,4 +47,13 @@ expect_out "handoff with empty breakage is rejected" 'no .*Concrete breakage' --
 printf '## Concrete breakage\n- fix a thing\n' > "$TMP/norepo.md"
 expect_out "handoff without repo identity is rejected" 'no valid repo identity' -- bash "$H" --handoff "$TMP/norepo.md"
 
+# PR title is human-facing (repo#pr), not the raw handoff filename / source_ref. Assert the harness
+# builds a pr_title per input mode and uses it (falling back to source_ref only if unset).
+if grep -q 'pr_title="forward-fix(${repo##\*/}#${local_pr:-?}):' "$H" \
+   && grep -q 'title="${pr_title:-forward-fix: ${source_ref}}"' "$H"; then
+  echo 'PASS: PR title derived from repo#pr, not filename'
+else
+  echo 'FAIL: PR title derivation missing' >&2; fail=1
+fi
+
 (( fail == 0 ))
