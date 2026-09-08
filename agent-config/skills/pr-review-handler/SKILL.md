@@ -85,10 +85,15 @@ Interactive mode: ask the user to confirm classifications before proceeding.
 
 Unattended scheduler mode: if the caller explicitly says the run is approved
 for unattended/automatic/hourly PR maintenance, do **not** stop for human
-classification confirmation. Apply code changes only for low-risk, unambiguous
-ACTIONABLE or NITS items. If the caller also explicitly enables full reply
-autonomy, post grounded replies to QUESTION and DISCUSSION items and resolve
-their threads; do not invent facts or expand code-change scope to answer them.
+classification confirmation. Default to APPLYING ACTIONABLE and NITS fixes you
+can make and validate with tests — do not defer a clear, well-specified fix to a
+human just because it touches code. Flag for human decision ONLY when a fix
+needs a judgment call the reviewer did not settle (ambiguous/underspecified with
+more than one reasonable implementation, public API/contract/security/auth/data
+change, large or cross-cutting refactor, or anything you cannot validate). If
+the caller also explicitly enables full reply autonomy, post grounded replies to
+QUESTION and DISCUSSION items and resolve their threads; do not invent facts or
+expand code-change scope to answer them.
 
 ### Step 4: Address Threads by Category
 
