@@ -101,8 +101,10 @@ GitHub/CI/Datadog write actions are prevented by credential scope and mount mode
 ## Handoff Storage
 
 For non-clear results, controller gives analyst one writable `PR_SAFETY_HANDOFF_DRAFT` path inside
-a fresh, private per-operation output workspace. Analyst writes `handoff.md` there with recommendation
-content.
+a fresh, private per-operation output workspace. Analyst writes `handoff.md` there, organized into two
+required sections: `## Concrete breakage` (the mechanical, forward-fixable `findings`) and
+`## Human decisions` (each `human_decisions_needed` item plus the description-fidelity and simplicity
+assessments). Both headers are always present; an empty section states "None."
 Analyzer cannot see or write shared `HANDOFF_ROOT`, choose final path, or overwrite other handoffs.
 
 Controller validates draft against JSON result and immutable operation identity, then copies it to
