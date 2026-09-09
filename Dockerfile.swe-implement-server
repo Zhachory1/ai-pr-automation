@@ -1,6 +1,7 @@
-# swe-implement-server image: serial worker for the 'swe-implement' queue kind. Same toolchain as
-# agent-server (git + gh + jq + psql + node/mewritecode) since it clones repos and runs the
-# swe-implementer harness, but its entrypoint is the swe-implement worker.
+# swe-implement-server image: serial worker for the 'swe-implement' queue kind. Like agent-server
+# (git + gh + jq + psql + node/mewritecode) since it clones repos and runs the swe-implementer
+# harness, plus language toolchains (python/make/g++/node/go/just) so the agent can run repos'
+# validation commands in-container instead of reporting "command not found" (#65).
 # Build: docker build -f Dockerfile.swe-implement-server -t agent-fleet/swe-implement-server .
 FROM debian:bookworm-slim
 
@@ -21,6 +22,27 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @zhachory1/mewrite-code
+
+# Language toolchains for in-container validation. Only the ones that actually surfaced as missing
+# (go, just) — python3/make/g++/node are already installed above. We deliberately do NOT try to bake
+# every ROKT toolchain (see #65): the draft PR's own CI remains the authoritative signal; this just
+# lets the swe-implementer run the common validation commands instead of reporting "command not found".
+ARG GO_VERSION=1.23.4
+ARG JUST_VERSION=1.36.0
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in \
+      amd64) go_arch=amd64; just_arch=x86_64-unknown-linux-musl ;; \
+      arm64) go_arch=arm64; just_arch=aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" | tar -C /usr/local -xz \
+ && curl -fsSL "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${just_arch}.tar.gz" \
+      | tar -C /usr/local/bin -xz just \
+ && /usr/local/go/bin/go version && just --version
+# GOTOOLCHAIN=auto (Go's default) lets `go` fetch the exact version a repo's go.mod pins (repos
+# routinely require a newer Go than we bake); the bundled GO_VERSION is just the bootstrap. This
+# needs egress to proxy.golang.org, which the worker already has (it clones + pushes).
+ENV PATH="/usr/local/go/bin:${PATH}" GOTOOLCHAIN=auto
 
 WORKDIR /app
 COPY bin/ ./bin/
