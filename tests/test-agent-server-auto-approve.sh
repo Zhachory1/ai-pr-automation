@@ -2,6 +2,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+[[ "$(grep -Fc 'Default to no Hindsight retain call.' bin/agent-server)" == 2 ]]
+[[ "$(grep -Fc 'another agent could act differently on a later task' bin/agent-server)" == 2 ]]
+[[ "$(grep -Fc 'Never retain review completion, verdict, run status' bin/agent-server)" == 2 ]]
+
 CID="agent-server-auto-approve-test-$$"
 TMP="$(mktemp -d)"
 PORT="$(python3 - <<'PY'
@@ -63,6 +67,13 @@ SH
 cat > "$TMP/bin/runner" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+grep -Fq 'Default to no Hindsight retain call.' "$1"
+grep -Fq 'another agent could act differently on a later task' "$1"
+grep -Fq 'the conclusion stays valid after this PR' "$1"
+grep -Fq 'non-obvious, and is not cheap to recover from code or docs' "$1"
+grep -Fq 'Never retain review completion, verdict, run status, clean result, test result, PR URL, commit SHA' "$1"
+grep -Fq 'Provenance alone is not useful' "$1"
+! grep -Fq 'memory.decisions' "$1"
 printf '%s\n' "$PR_NUMBER" >> "$TEST_STATE/runner-prs"
 if gh pr review "$PR_NUMBER" -R "$PR_REPO" --approve 2> "$TEST_STATE/shim-$PR_NUMBER"; then exit 4; fi
 grep -Fq 'agent-server owns APPROVE reviews' "$TEST_STATE/shim-$PR_NUMBER"
@@ -71,15 +82,17 @@ grep -Fq 'agent-server owns APPROVE reviews' "$TEST_STATE/shim-short-$PR_NUMBER"
 printf '{"event":"APPROVE"}\n' > "$PR_WORK_ROOT/agent-approval.json"
 if gh api --method POST "repos/$PR_REPO/pulls/$PR_NUMBER/reviews" --input "$PR_WORK_ROOT/agent-approval.json" 2> "$TEST_STATE/shim-api-$PR_NUMBER"; then exit 4; fi
 grep -Fq 'agent-server owns APPROVE reviews' "$TEST_STATE/shim-api-$PR_NUMBER"
-if [[ "$PR_NUMBER" == 8 ]]; then
-  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"comment",findings:[],summary:"clean",ready_for_human_review:true,memory:{decisions:[]}}' > "$AGENT_RESULT_FILE"
+if [[ "$PR_NUMBER" == 7 ]]; then
+  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"approve",findings:[],summary:"clean",ready_for_human_review:true,memory:{decisions:[{scope:"fleet",rule:"legacy proposal",rationale:"must be ignored"}]}}' > "$AGENT_RESULT_FILE"
+elif [[ "$PR_NUMBER" == 8 ]]; then
+  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"comment",findings:[],summary:"clean",ready_for_human_review:true}' > "$AGENT_RESULT_FILE"
 elif [[ "$PR_NUMBER" == 11 ]]; then
-  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"approve",findings:[{severity:"minor",blocks_merge:"false"}],summary:"malformed",ready_for_human_review:true,memory:{decisions:[]}}' > "$AGENT_RESULT_FILE"
+  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"approve",findings:[{severity:"minor",blocks_merge:"false"}],summary:"malformed",ready_for_human_review:true}' > "$AGENT_RESULT_FILE"
 elif [[ "$PR_NUMBER" == 12 ]]; then
   echo CHANGES_REQUESTED > "$TEST_STATE/review-12"
-  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"approve",findings:[],summary:"conflict",ready_for_human_review:true,memory:{decisions:[]}}' > "$AGENT_RESULT_FILE"
+  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"approve",findings:[],summary:"conflict",ready_for_human_review:true}' > "$AGENT_RESULT_FILE"
 else
-  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"approve",findings:[],summary:"clean",ready_for_human_review:true,memory:{decisions:[]}}' > "$AGENT_RESULT_FILE"
+  jq -cn --arg nonce "$AGENT_RUN_NONCE" '{nonce:$nonce,verdict:"approve",findings:[],summary:"clean",ready_for_human_review:true}' > "$AGENT_RESULT_FILE"
 fi
 SH
 cat > "$TMP/bin/curl" <<'SH'
@@ -97,7 +110,7 @@ done
 export REQUESTS_DB_USER=postgres REQUESTS_DB_NAME=fleet REQUESTS_DB_HOST=localhost REQUESTS_DB_PORT="$PORT" PGPASSWORD=t
 export AGENT_SERVER_KIND=pr-review AGENT_SERVER_RUNNER="$TMP/bin/runner" AGENT_SERVER_WORK_ROOT="$TMP/work"
 export AGENT_SERVER_POLL_INTERVAL=1 AGENT_SERVER_LEASE_SECONDS=30 AGENT_SERVER_LEASE_HEARTBEAT=5 AGENT_SERVER_LEASE_DB_TIMEOUT=3
-export AGENT_SERVER_LOOP_HEARTBEAT_MAX=60 AGENT_SERVER_GATE_CALL_TIMEOUT=5 HINDSIGHT_URL=http://hindsight.invalid
+export AGENT_SERVER_LOOP_HEARTBEAT_MAX=60
 export TEST_STATE="$TMP" PATH="$TMP/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 bin/agent-server > "$TMP/server.log" 2>&1 & worker=$!
 for _ in $(seq 1 60); do
@@ -115,6 +128,7 @@ worker=""
 grep -Fq "<!-- ai-pr-automation head=$(printf '%040d' 7) -->" "$TMP/payload-7.json"
 [[ "$(cat "$TMP/posts-7")" == 1 ]]
 [[ "$(q "SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=(SELECT id FROM requests WHERE dedupe_key LIKE 'owner/repo#7@%');")" == 1 ]]
+[[ "$(q "SELECT count(*) FROM pending_decisions;")" == 0 ]]
 [[ "$(q "SELECT status FROM requests WHERE dedupe_key LIKE 'owner/repo#8@%';")" == failed ]]
 [[ "$(q "SELECT status FROM requests WHERE dedupe_key LIKE 'owner/repo#9@%';")" == failed ]]
 [[ "$(q "SELECT status FROM requests WHERE dedupe_key LIKE 'owner/repo#10@%';")" == failed ]]

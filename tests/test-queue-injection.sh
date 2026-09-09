@@ -71,12 +71,9 @@ echo "[5] already-posted detection via posted_ref"
 check "true for posted dedupe_key (EVIL was posted in [3])" "queue_already_posted pr-review \"\$EVIL\""
 check "false for unposted (clean-1)" "! queue_already_posted pr-review clean-1"
 
-echo "[6] pending_decisions insert (human-batch path)"
-# Start a fresh attempt so inserts are fenced to a live nonce.
+echo "[6] start fresh live attempt for maintenance routing"
 q "UPDATE requests SET status='running', finished_at=NULL, posted_ref=NULL, run_nonce='nonce6', lease_expires_at=clock_timestamp()+interval '60 seconds' WHERE id=$ID;" >/dev/null
-pending_decision_insert "$ID" "pr-review" '{"decision":"x"}' '{"run_id":"r","written_by":"agent-server"}' nonce6 >/dev/null
-check "pending_decisions row present + pending" "q \"SELECT state FROM pending_decisions WHERE request_id=$ID;\" | grep -qx pending"
-check "wrong nonce cannot insert pending decision" "! pending_decision_insert '$ID' pr-review '{}' '{}' wrong >/dev/null"
+check "no pending memory approvals" "q \"SELECT count(*) FROM pending_decisions;\" | grep -qx 0"
 
 echo "[7] blocked maintenance uses separate deduplicated human-review queue"
 pending_maintenance_review_insert "$ID" '{"finding":"retry semantics need human review"}' '{"run_id":"retry","written_by":"agent-server"}' nonce6 >/dev/null

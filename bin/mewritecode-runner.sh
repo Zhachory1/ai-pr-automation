@@ -2,7 +2,7 @@
 # mewritecode runner for the containerized agent-server. Contract: runner <prompt_file>, reads
 # PR_* + AGENT_RESULT_FILE + AGENT_RUN_NONCE from env. Runs mewritecode non-interactively on the
 # prompt (review, non-approval feedback, result.json). If the agent did not write a valid
-# nonce-bound result.json, synthesize a minimal one so the write-path gate
+# nonce-bound result.json, synthesize a minimal one so post-run routing
 # still gets typed input.
 #
 # mewritecode is the public engine roktcode wraps. Skills + MCP come from $MEWRITE_CODING_AGENT_DIR
@@ -23,7 +23,7 @@ printf '%s\n' "$out" | tail -20 >&2
 if ! jq -e --arg n "$AGENT_RUN_NONCE" '.nonce == $n' "$AGENT_RESULT_FILE" >/dev/null 2>&1; then
   log "agent did not write a valid result.json; synthesizing minimal one"
   jq -cn --arg nonce "$AGENT_RUN_NONCE" --arg summary "$(printf '%s' "$out" | tail -c 800)" \
-    '{nonce:$nonce, verdict:"comment", findings:[], summary:$summary, ready_for_human_review:false, memory:{decisions:[]}}' \
+    '{nonce:$nonce, verdict:"comment", findings:[], summary:$summary, ready_for_human_review:false}' \
     > "$AGENT_RESULT_FILE"
 fi
 

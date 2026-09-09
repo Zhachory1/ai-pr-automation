@@ -306,19 +306,6 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM request) THEN '1' ELSE '' END;
 SQL
 }
 
-# A durable decision is an explicit reusable rule, never a run summary or finding.
-valid_memory_decisions() {
-  jq -e 'type == "array" and length > 0 and all(.[]; type == "object" and (keys | sort) == ["rationale","rule","scope"] and (.scope == "repository" or .scope == "fleet") and (.rule | type == "string" and test("\\S")) and (.rationale | type == "string" and test("\\S")))' >/dev/null 2>&1
-}
-
-# Route an agent-authored memory proposal to its human batch. NEVER auto-writes shared memory.
-pending_decision_insert() {
-  local request_id="$1" kind="$2" proposal_json="$3" provenance_json="$4" nonce="$5"
-  _psql -v rid="$request_id" -v kind="$kind" -v prop="$proposal_json" -v prov="$provenance_json" -v nonce="$nonce" \
-    <<<"INSERT INTO pending_decisions(request_id, kind, proposal, provenance) SELECT :'rid', :'kind', :'prop'::jsonb, :'prov'::jsonb FROM requests WHERE id=:'rid' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() FOR UPDATE RETURNING 1;" \
-    | grep -qx 1
-}
-
 # Blocked PR maintenance waits in a separate queue: completing it cannot approve a memory proposal.
 pending_maintenance_review_insert() {
   local request_id="$1" proposal_json="$2" provenance_json="$3" nonce="$4"

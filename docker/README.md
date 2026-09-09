@@ -44,12 +44,15 @@ Open `http://localhost:8080` for agent status. Blocked `pr-maintain` findings ap
 human-review queue with an **Open PR** link, agent summary, findings, and local **Reviewed** /
 **Dismiss** controls. These controls do not write to GitHub.
 
-Pending decisions show their stored proposal, findings, and provenance before action. **Approve**
-synchronously retains that exact stored data to `fleet-shared` as
-`pending-decision-<id>`, then marks the local row approved. **Reject** only updates the local row.
-A retain failure remains `publishing`; use **Retry** to replace the same Hindsight document safely.
-For rollback, delete that Hindsight document by its deterministic ID, then investigate before
-changing database history.
+Agents use the Hindsight MCP endpoint bound to `fleet-shared`; no human approval is required.
+Prompts default to no retain call and allow only durable, non-obvious conclusions that could change
+a future agent's action, such as decisions with rationale, recurring root causes, undocumented
+conventions, or cross-run gotchas. Review completion, verdicts, run status, clean/test results, PR
+provenance, one-off findings, raw PR text, comments, secrets, personal data, and recalled content are
+excluded.
+
+Pending decisions created by older workers remain visible. Their **Approve**, **Reject**, and
+**Retry** controls stay available for draining that legacy queue.
 
 ## What runs as a service vs. what does not
 
@@ -112,18 +115,16 @@ configure automatic indexing or watcher scope; agents still own their worktree d
    do NOT work headless in a container — there is no logged-in session inside the container
    (`Not logged in · Please run /login`). Do not use them for an unattended server; use a keyed
    provider.
-2. **hindsight retain/recall REST paths.** `scripts/m0-verify.sh` check [3] uses
-   `/v1/banks/{bank}/retain|recall` as a best guess; the upstream README documents the SDK, not raw
-   REST. Verify against hindsight's API-reference and adjust the probe if paths differ. (The SDK or
-   the per-bank MCP endpoint `/mcp/{bank}/` are alternatives.)
+2. **hindsight agent wiring.** Complete. Agents use the bank-scoped
+   `http://hindsight:8888/mcp/fleet-shared/` endpoint through `mcp-remote --allow-http`.
 3. **coderag agent wiring.** Complete. Agents use `http://coderag:9750/mcp` and
    `http://swarmvault-mcp:9760/mcp` through `mcp-remote --allow-http`; they mount neither Coderag
    cache nor vault.
 
 ## Schema
 
-`docker/initdb/01-schema.sql` loads once on first Postgres boot. `requests` (queue+record) and
-`pending_decisions` (the daily human-review batch for decision-shaped memory writes). The
+`docker/initdb/01-schema.sql` loads once on first Postgres boot. `requests` stores queue records;
+`pending_decisions` remains for compatibility with older workers that used human-gated memory. The
 `schema-migrate` service reapplies additive schema changes for existing database volumes, including
 `pending_maintenance_reviews`, the local queue for maintenance findings needing human judgment, and
 pending-decision `publishing` recovery fields.
