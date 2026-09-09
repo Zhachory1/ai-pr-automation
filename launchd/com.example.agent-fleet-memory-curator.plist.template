@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.agent-fleet-memory-curator</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/ABSOLUTE/PATH/TO/ai-pr-automation/scripts/memory-curator-launch.sh</string>
+  </array>
+  <!-- Ruminate every 6h. The curator watermarks its last run, so this is a look-back cadence, not a
+       per-run volume. Bounded per run (MAX_MEMORIES, MAX_SOURCE_DOCS, MEMORY_CURATOR_TIMEOUT). -->
+  <key>StartInterval</key>
+  <integer>21600</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>300</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/CHANGE_ME/Library/Logs/agent-fleet-memory-curator/out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/CHANGE_ME/Library/Logs/agent-fleet-memory-curator/err.log</string>
+</dict>
+</plist>
