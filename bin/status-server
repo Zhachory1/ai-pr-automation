@@ -428,8 +428,9 @@ def render(flash: str = "") -> str:
             "FROM requests WHERE status='failed' GROUP BY kind, dedupe_key "
             "HAVING count(*) >= 3 ORDER BY max(finished_at) DESC NULLS LAST LIMIT 20")
         swe = query(
-            "SELECT id, status, dedupe_key, coalesce(posted_ref,''), coalesce(fail_response,''), "
-            "to_char(coalesce(finished_at,started_at,created_at),'MM-DD HH24:MI') "
+            "SELECT id, status, dedupe_key AS task, coalesce(posted_ref,'') AS result, "
+            "coalesce(fail_response,'') AS detail, "
+            "to_char(coalesce(finished_at,started_at,created_at),'MM-DD HH24:MI') AS updated "
             "FROM requests WHERE kind='swe-implement' ORDER BY id DESC LIMIT 20")
         db_err = None
     except Exception as ex:
