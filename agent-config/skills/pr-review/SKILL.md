@@ -5,10 +5,9 @@ description: "Agent PR review workflow for correctness, safety, maintainability,
 
 # PR Review
 
-> **AGENT-FLEET OVERRIDE (unattended containerized runs):** this deployment NEVER submits `APPROVE`.
-> Map every non-blocking verdict to `COMMENT` and every blocking verdict to `REQUEST_CHANGES`.
-> Ignore the upstream "submit APPROVE when no findings / verdict mapping" lines below — the
-> agent-server prompt is authoritative and forbids APPROVE. Use the marker
+> **AGENT-FLEET OVERRIDE (unattended containerized runs):** return a typed `approve` signal for a
+> clean review but never submit `APPROVE` yourself; agent-server validates the signal and posts it.
+> Submit `COMMENT` or `REQUEST_CHANGES` yourself for other verdicts. Use the marker
 > `<!-- ai-pr-automation head=<sha> -->` (not the autopraxis-pr-review marker) for idempotency.
 
 Review a pull request against real intent, not guesswork. Produce prioritized, actionable feedback and preserve human accountability for merge.
@@ -23,7 +22,7 @@ Review a pull request against real intent, not guesswork. Produce prioritized, a
 
 **Re-review the delta.** After author changes, focus on modified code and unresolved findings.
 
-**Human owns merge.** Agent review submits GitHub `REQUEST_CHANGES` or `COMMENT` according to its evidence-backed verdict (never `APPROVE` in this deployment), and it never merges. Accountable merge remains human-owned.
+**Human owns merge.** Agent-server submits GitHub `APPROVE` for a validated clean verdict; other verdicts submit `REQUEST_CHANGES` or `COMMENT`. It never merges. Accountable merge remains human-owned.
 
 **A target PR URL implies review delivery.** When the user invokes `pr-review` to review a specific pull-request URL, default to publishing one GitHub review on that PR. Do not silently downgrade to chat-only output. Incidental links do not trigger posting. Explicit `read-only`, `draft-only`, `report-only`, or `do not post` language overrides this default.
 
@@ -59,14 +58,14 @@ Use agent-fleet council levels. Most PRs should use no council. Use `single-lens
 - **Diff, patch, or local branch without a PR URL:** `report-only` mode unless the user explicitly asks to publish to a named PR.
 - **No write access or authentication:** return `blocked` delivery status with the exact missing capability; do not pretend the review was posted.
 - **PR author reviewing own PR:** GitHub does not permit self-approval or self-request-changes. Submit `COMMENT` with the verdict recommendation. If GitHub rejects review submission, return blocked rather than falling back to an unpinned issue comment.
-- **Verdict mapping (agent-fleet: never APPROVE):** `approve`, `approve-with-nits`, and `needs-info` submit `COMMENT`; `request-changes` and `block` submit `REQUEST_CHANGES`. This deployment never submits `APPROVE`. The body must preserve the actual recommendation.
-- **No findings:** submit `COMMENT` stating no blockers (never `APPROVE`).
+- **Verdict mapping (agent-fleet):** `approve` and `approve-with-nits` return `verdict=approve` plus `ready_for_human_review=true` without posting; agent-server submits `APPROVE`. `needs-info` submits `COMMENT`; `request-changes` and `block` submit `REQUEST_CHANGES`.
+- **No findings:** return the typed approval signal without posting; agent-server submits `APPROVE` pinned to the reviewed head.
 - **Blocking findings:** publish actionable inline comments and a `REQUEST_CHANGES` summary review when permitted; otherwise submit `COMMENT` with the blocking recommendation.
 - **Prior-feedback ledger / avoid duplicates:** before analysis, retrieve every paginated issue comment, review, inline review comment, thread reply, and thread resolution/outdated state. Normalize them into a private ledger by concern, file/line, author response, and status. Treat every prior concern as covered—resolved, dismissed, replied to, or open—and do not repeat it. Revisit an area only when code changed or materially new evidence/risk exists; state what changed and reference the earlier feedback. Prefer one submitted review containing all new inline findings over several separate comments.
 - **Idempotency:** add exactly `<!-- ai-pr-automation head=<sha> -->` (NOT an autopraxis-pr-review marker). Search all paginated reviews/comments authored by this account for that exact marker before posting and again after an ambiguous API failure; return the existing review URL instead of retrying.
-- **Preview before publish:** write the exact review body to a file or structured API payload and preview it before posting. Preserve Markdown literally; never build multi-line bodies through shell interpolation.
+- **Preview before publish:** for `COMMENT` or `REQUEST_CHANGES`, write the exact review body to a file or structured API payload and preview it before posting. Agent-server owns the fixed approval body. Preserve Markdown literally; never build multi-line bodies through shell interpolation.
 - **Head safety:** capture the reviewed head SHA. Immediately before publishing, fetch the head again. If it changed, re-review the delta before posting. Submit the review with `commit_id` pinned to the verified reviewed SHA, verify the API response commit, then re-read the PR head and report if the posted review was superseded.
-- **Published result:** capture the GitHub review/comment URL and include it in the final response.
+- **Published result:** capture the GitHub review/comment URL for agent-posted feedback. For approval, report delivery as delegated to agent-server.
 
 ## Execution
 
@@ -80,7 +79,7 @@ Use agent-fleet council levels. Most PRs should use no council. Use `single-lens
 
 **Construct feedback.** Compare every candidate against the prior-feedback ledger before drafting. Skip concerns already raised; when materially new code or evidence changes a previously discussed area, explain that delta and reference the earlier feedback. Prioritize blockers, majors, minors, and nits. Make every comment actionable. Map findings to current diff lines where possible.
 
-**Publish feedback.** In `post` mode, re-check the head SHA, map the verdict to the GitHub event, compute/check the idempotency marker, preview the exact body/payload, then submit one GitHub review pinned with `commit_id` and containing new inline findings plus summary verdict. Verify the response commit, re-read the PR head, and capture the resulting URL. In `report-only` mode, state that nothing was posted.
+**Publish feedback.** In `post` mode, re-check the head SHA and map the verdict. For a clean verdict, write the typed approval signal and do not post; agent-server re-checks the head and submits `APPROVE`. Otherwise compute/check the idempotency marker, preview the exact body/payload, then submit one GitHub review pinned with `commit_id`. In `report-only` mode, state that nothing was posted.
 
 **Author loop.** After revisions, re-review only changed files, unresolved findings, and newly introduced risk. Bound iterations. Do not post stale findings against a superseded head.
 
@@ -132,13 +131,14 @@ Use agent-fleet council levels. Most PRs should use no council. Use `single-lens
 
 ## Delivery
 - mode: post | report-only
-- status: posted | report-only | skipped-by-user | blocked | failed
+- status: posted | delegated-to-server | report-only | skipped-by-user | blocked | failed
   - `posted`: GitHub review published for target PR URL
+  - `delegated-to-server`: validated approval signal returned; agent-server owns approval delivery
   - `report-only`: no target PR URL existed, so publishing was not requested by contract
   - `skipped-by-user`: target PR URL existed, but user explicitly said read-only, draft-only, report-only, no posting, or do not post
   - `blocked`: posting required but authentication, permission, or GitHub review submission was unavailable
   - `failed`: posting was attempted but failed after idempotent recovery checks
-- GitHub event: REQUEST_CHANGES | COMMENT | none
+- GitHub event: APPROVE | REQUEST_CHANGES | COMMENT | none
 - GitHub review/comment URL:
 - posted head SHA:
 - prior-feedback ledger: reviewed | unavailable
@@ -161,7 +161,7 @@ Use agent-fleet council levels. Most PRs should use no council. Use `single-lens
 - target PR URL review invocations publish a verdict-appropriate GitHub review by default unless the user explicitly opts out.
 - published feedback is pinned to the verified reviewed head, idempotent across retries, and its URL is reported.
 - all available prior PR feedback is checked before drafting; already raised concerns are not repeated unless a documented code or evidence delta warrants it.
-- final human approval package exists for merge.
+- final human merge package exists.
 - `run-telemetry` event emitted.
 
 ## Common Failure Modes
@@ -180,7 +180,7 @@ Use agent-fleet council levels. Most PRs should use no council. Use `single-lens
 
 **Repeat of earlier feedback.** Fix by building and checking the prior-feedback ledger before drafting. Skip the concern unless new code or material evidence changes it, then cite that delta and the prior feedback.
 
-**Autopilot merge.** `REQUEST_CHANGES` or `COMMENT` records the review verdict; neither permits the agent to merge. Route merge readiness to `human-approval-gate`; never merge automatically.
+**Autopilot merge.** `APPROVE`, `REQUEST_CHANGES`, or `COMMENT` records the review verdict; none permits the agent to merge. Route merge readiness to `human-approval-gate`; never merge automatically.
 
 ## Self-Improvement
 
