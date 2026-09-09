@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # mewritecode runner for the containerized agent-server. Contract: runner <prompt_file>, reads
 # PR_* + AGENT_RESULT_FILE + AGENT_RUN_NONCE from env. Runs mewritecode non-interactively on the
-# prompt (which instructs the agent to review + post a COMMENT and write result.json). If the agent
-# did not write a valid nonce-bound result.json, synthesize a minimal one so the write-path gate
+# prompt (review, non-approval feedback, result.json). If the agent did not write a valid
+# nonce-bound result.json, synthesize a minimal one so the write-path gate
 # still gets typed input.
 #
 # mewritecode is the public engine roktcode wraps. Skills + MCP come from $MEWRITE_CODING_AGENT_DIR

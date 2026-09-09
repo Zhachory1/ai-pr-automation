@@ -23,7 +23,7 @@ Fair, bounded automation for GitHub pull-request review and maintenance — as a
 
 | Mode | GitHub query | Behavior |
 | --- | --- | --- |
-| `review` | Open PRs assigned to `@me` | Review only; posts `COMMENT` or `REQUEST_CHANGES` from verdict (never auto-`APPROVE`) |
+| `review` | Open PRs assigned to `@me` | Review only; agent-server posts `APPROVE` for validated clean verdicts, otherwise `COMMENT` or `REQUEST_CHANGES` |
 | `maintain` | Open PRs authored by `@me` | Handle review feedback and CI with one bounded fix pass |
 
 ```bash
