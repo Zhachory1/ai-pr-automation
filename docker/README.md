@@ -1,7 +1,7 @@
 # M0 — Agent fleet substrate
 
-One `docker-compose.yml` (repo root) + this dir. Stands up the services the serial agent-server
-(M1) depends on. **Inert until M1 wires them** — merging M0 changes no behavior.
+One `docker-compose.yml` (repo root) + this dir. Stands up the services the leased agent workers
+(M1) depend on. **Inert until M1 wires them** — merging M0 changes no behavior.
 
 ## Bring it up
 
@@ -10,6 +10,34 @@ cp .env.example .env      # then edit: CODE_ROOT (host-absolute), passwords, pro
 scripts/compose.sh up -d --build  # validates vault path, then builds and starts all services
 scripts/m0-verify.sh      # runs the six exit checks
 scripts/verify-agent-mcps.sh # verifies worker MCP client -> bridge -> tool calls
+```
+
+First lease upgrade is a stop-the-world worker cutover: stop old agent-server containers, run
+`schema-migrate`, then start only the new image. Do not overlap pre-lease and lease-aware workers.
+
+Scale maintain capacity without partition config:
+
+```bash
+docker compose up -d --scale agent-server-maintain=3
+docker compose up -d --scale agent-server-maintain=1  # scale back down
+```
+
+Each worker renews its Postgres lease. Different PR lineages run in parallel; one partial unique
+index prevents two workers from maintaining the same PR. Scale-down drains active work for up to
+`stop_grace_period`. After abrupt worker removal, untouched work becomes claimable when
+`AGENT_SERVER_LEASE_SECONDS` expires. Work that crossed the maintenance side-effect boundary enters
+`reconcile` instead of replaying a possible push or reply. Lease duration must cover two heartbeat
+plus DB-timeout windows; defaults are 120s/30s/10s. `reconcile` rows appear in status Recent list. Verify GitHub state before manually
+marking one `done` or returning it to `queued`; automatic producer retries stay blocked for that head.
+Use one audited transaction after inspecting request ID and remote PR:
+
+```sql
+-- Effects landed: UPDATE requests SET status='done', posted_ref='manually-reconciled',
+--   finished_at=now(), run_id=NULL, run_nonce=NULL, side_effect_at=NULL,
+--   lease_expires_at=NULL, fail_response=NULL WHERE id=123 AND status='reconcile';
+-- No effects landed: UPDATE requests SET status='queued', started_at=NULL, finished_at=NULL,
+--   run_id=NULL, run_nonce=NULL, side_effect_at=NULL, lease_expires_at=NULL, fail_response=NULL
+--   WHERE id=123 AND status='reconcile';
 ```
 
 Open `http://localhost:8080` for agent status. Blocked `pr-maintain` findings appear in its
@@ -99,8 +127,9 @@ configure automatic indexing or watcher scope; agents still own their worktree d
 `schema-migrate` service reapplies additive schema changes for existing database volumes, including
 `pending_maintenance_reviews`, the local queue for maintenance findings needing human judgment, and
 pending-decision `publishing` recovery fields.
-Validated against postgres:16: dedupe index blocks two active rows for the same `(kind, dedupe_key)`
-and allows re-enqueue after `done`.
+Validated against postgres:16: dedupe index blocks two active rows for the same `(kind, dedupe_key)`;
+running-lineage index blocks concurrent work on different heads of the same PR; expired attempts are
+nonce-fenced and reclaimed.
 
 **hindsight data + PG major version:** `hindsight_pgdata` is mounted at the fixed pg18 PGDATA path
 (`/var/lib/postgresql/18/docker`) and the db image is pinned to `pgvector/pgvector:pg18`. This is
@@ -114,7 +143,7 @@ at the wrong path and silently re-init an empty cluster — data loss, no error.
 `bin/pr-producer <review|maintain>` is enqueue-only: it discovers matching PRs (assigned for
 `review`, authored for `maintain`), applies the repo allowlist + stale-age cutoff, resolves each
 PR's head sha, and inserts one `requests` row per PR (`dedupe_key = repo#num@headsha`). It never
-runs the agent — the serial `bin/agent-server` drains the queue.
+runs the agent — scalable `bin/agent-server` workers drain the queue through leased claims.
 
 Dedupe is two-layered (see `lib/queue.sh`):
 - the partial unique index blocks a second **active** (queued|running) row for the same key;

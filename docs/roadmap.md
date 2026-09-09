@@ -1,7 +1,7 @@
 # Roadmap — Agent Pub/Sub Orchestration
 
 Date: 2026-09-02
-Status: proposed
+Status: superseded by shipped architecture in `README.md` and `docker/README.md`
 Owner: Zhach
 Supersedes design in: `inbox/plan-2026-09-02-agent-pubsub-orchestration.md` (council-reviewed; see it for the killed-complexity history)
 

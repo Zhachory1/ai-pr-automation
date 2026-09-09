@@ -7,13 +7,13 @@ Fair, bounded automation for GitHub pull-request review and maintenance — as a
 >
 > ```
 > bin/pr-producer  ──enqueue──▶  Postgres `requests`  ──drain──▶  bin/agent-server ──▶ posts review
->   (cron: discover PRs)            (dedupe + record)               (serial, one at a time)
+>   (cron: discover PRs)          (dedupe + leased claims)             (scalable workers)
 > ```
 >
 > - **`bin/pr-producer <review|maintain>`** — discovers PRs (assigned / authored via `gh search`),
 >   applies the repo allowlist + stale-age cutoff, and enqueues one row per PR. Never runs an agent.
-> - **`bin/agent-server`** — long-lived serial worker; claims one request at a time, runs your agent
->   runner, applies the write-path gate (server-owned memory writes; agent prose never auto-persists
+> - **`bin/agent-server`** — long-lived worker; atomically claims one request with a renewable lease,
+>   runs your agent runner, applies the write-path gate (server-owned memory writes; agent prose never auto-persists
 >   to shared memory), posts the review, marks the row terminal. Blocked maintenance findings enter
 >   the local human-review queue instead of disappearing with the worker workspace.
 > - Substrate (Postgres + Redis + memory/MCP stack) and full setup: **[`docker/README.md`](docker/README.md)**.
@@ -338,7 +338,7 @@ The repository files are templates; copy them to names without `.template` after
 ```bash
 # queue layer: parameterized SQL (';DROP fixture), claim/reclaim/posted_ref state machine
 bash tests/test-queue-injection.sh
-# per-kind single-instance advisory lock
+# concurrent claims, lease expiry/reclaim, and nonce fencing
 bash tests/test-single-instance.sh
 # producer enqueue + dedupe semantics
 bash tests/test-producer-dedupe.sh
@@ -350,7 +350,7 @@ The tests use a throwaway `postgres:16` container. They do not contact GitHub or
 
 Exit status:
 
-- `0`: successful run, no matching work, dry run, or another valid run already holds the lock
+- `0`: successful run, no matching work, or dry run
 - `1`: one or more runner attempts failed or timed out
 - `2`: invalid configuration or missing dependency
 - `3`: GitHub discovery failed or hit the 1,000-result search cap

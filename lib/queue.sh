@@ -10,11 +10,7 @@ set -euo pipefail
 : "${REQUESTS_DB_PORT:=5432}"
 # PGPASSWORD expected in env (from .env / launchd keychain), never on the command line.
 
-# Advisory lock key for single-instance enforcement. Per-KIND so one serial worker runs per kind:
-# a review container and a comment-handler container each hold their own lock; a duplicate of the
-# SAME kind refuses to start. Derived from the kind via hashtext() at lock time (see
-# queue_try_single_instance_lock), with this constant as a namespace base for standalone/legacy use.
-AGENT_SERVER_LOCK_KEY="${AGENT_SERVER_LOCK_KEY:-774411}"
+QUEUE_LEASE_SECONDS="${QUEUE_LEASE_SECONDS:-120}"
 
 _psql() {
   # -qAt: quiet, unaligned, tuples-only. Returns are single JSON objects (claim) or scalars;
@@ -25,78 +21,146 @@ _psql() {
     -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"
 }
 
-# Hold a session advisory lock for the life of THIS psql session, scoped to a KIND. Returns t/f.
-# Two-int advisory lock: (namespace base, hashtext(kind)) so different kinds never collide and the
-# same kind always maps to the same key. Caller keeps the session alive to hold the lock.
-queue_try_single_instance_lock() {
-  local kind="${1:?kind}"
-  _psql -v base="$AGENT_SERVER_LOCK_KEY" -v kind="$kind" \
-    <<<"SELECT pg_try_advisory_lock(:'base'::int, hashtext(:'kind'));"
-}
-
-# Startup reclaim for a KIND (fail-closed, uses posted_ref as the 'posted' truth so transient
-# pre-post failures are safely retried instead of dead-lettered):
-#   posted_ref present            -> genuinely posted; terminal 'done' (no re-run).
-#   side_effect intent, not posted -> safe to requeue (head-dedup marker prevents double-post).
-#   clean running                 -> requeue.
-# Scoped to KIND so a review worker never reclaims a comment-handler's rows.
+# Reclaim only expired leases for this kind. Posted work is terminal; an expired older head is
+# superseded when a newer head is already queued; otherwise it becomes claimable again.
 queue_reclaim_stale() {
   local kind="${1:?kind}"
   _psql -v kind="$kind" <<'SQL'
+BEGIN;
 UPDATE requests
-   SET status = 'done', finished_at = now()
- WHERE status = 'running' AND kind = :'kind' AND posted_ref IS NOT NULL;
+   SET status = 'done', finished_at = clock_timestamp(), lease_expires_at = NULL
+ WHERE status = 'running' AND kind = :'kind'
+   AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+   AND posted_ref IS NOT NULL;
 
 UPDATE requests
-   SET status = 'queued', started_at = NULL, run_id = NULL, run_nonce = NULL, side_effect_at = NULL
- WHERE status = 'running' AND kind = :'kind' AND posted_ref IS NULL;
-SQL
-}
+   SET status = 'reconcile', finished_at = clock_timestamp(), lease_expires_at = NULL,
+       fail_response = 'lease expired after maintenance side-effect intent; reconcile before retry'
+ WHERE status = 'running' AND kind = 'pr-maintain'
+   AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+   AND posted_ref IS NULL AND side_effect_at IS NOT NULL;
 
-# Claim one queued row OF THIS KIND -> running, stamping run_id + nonce. Emits ONE json object
-# (avoids tab/newline parsing hazards from untrusted dedupe_key/payload). Empty if none queued.
-# FOR UPDATE SKIP LOCKED keeps a future 2nd worker safe.
-queue_claim_one() {
-  local kind="${1:?kind}" run_id="$2" nonce="$3"
-  _psql -v kind="$kind" -v run_id="$run_id" -v nonce="$nonce" <<'SQL'
-WITH claimed AS (
-  SELECT id FROM requests
-   WHERE status = 'queued' AND kind = :'kind'
-   ORDER BY created_at
-   FOR UPDATE SKIP LOCKED
-   LIMIT 1
-)
 UPDATE requests r
-   SET status = 'running', started_at = now(),
-       run_id = :'run_id', run_nonce = :'nonce'
-  FROM claimed
- WHERE r.id = claimed.id
- RETURNING json_build_object('id', r.id, 'kind', r.kind, 'payload', r.payload, 'dedupe_key', r.dedupe_key)::text;
+   SET status = 'superseded', finished_at = clock_timestamp(), lease_expires_at = NULL,
+       fail_response = 'expired lease superseded by newer queued head'
+ WHERE status = 'running' AND kind = :'kind'
+   AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+   AND posted_ref IS NULL
+   AND EXISTS (
+     SELECT 1 FROM requests q
+      WHERE q.kind = r.kind AND q.status = 'queued'
+        AND split_part(q.dedupe_key, '@', 1) = split_part(r.dedupe_key, '@', 1)
+   );
+
+UPDATE requests r
+   SET status = 'queued', started_at = NULL, run_id = NULL, run_nonce = NULL,
+       side_effect_at = NULL, lease_expires_at = NULL
+ WHERE status = 'running' AND kind = :'kind'
+   AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+   AND posted_ref IS NULL
+   AND NOT EXISTS (
+     SELECT 1 FROM requests q
+      WHERE q.kind = r.kind AND q.status = 'queued'
+        AND split_part(q.dedupe_key, '@', 1) = split_part(r.dedupe_key, '@', 1)
+   );
+COMMIT;
 SQL
 }
 
-# Mark a side-effect intent in the SAME txn as the caller expects to act next. Advisory fence.
+# Reclaim expired attempts, then atomically claim one queued row for this kind. The newest queued
+# head is canonical within each PR lineage; SKIP LOCKED distributes different lineages across
+# workers. The partial unique index is the final same-lineage concurrency guard.
+queue_claim_one() {
+  local kind="${1:?kind}" run_id="$2" nonce="$3" lease_seconds="${4:-$QUEUE_LEASE_SECONDS}"
+  queue_reclaim_stale "$kind" >/dev/null
+  _psql -v kind="$kind" -v run_id="$run_id" -v nonce="$nonce" -v lease="$lease_seconds" <<'SQL'
+WITH candidate AS (
+  SELECT r.id, split_part(r.dedupe_key, '@', 1) AS lineage
+    FROM requests r
+   WHERE r.status = 'queued' AND r.kind = :'kind'
+     AND NOT EXISTS (
+       SELECT 1 FROM requests active
+        WHERE active.kind = r.kind AND active.status = 'running'
+          AND split_part(active.dedupe_key, '@', 1) = split_part(r.dedupe_key, '@', 1)
+     )
+     AND NOT EXISTS (
+       SELECT 1 FROM requests newer
+        WHERE newer.kind = r.kind AND newer.status = 'queued'
+          AND split_part(newer.dedupe_key, '@', 1) = split_part(r.dedupe_key, '@', 1)
+          AND (newer.created_at, newer.id) > (r.created_at, r.id)
+     )
+   ORDER BY r.created_at, r.id
+   FOR UPDATE OF r SKIP LOCKED
+   LIMIT 1
+), stale AS (
+  UPDATE requests r
+     SET status = 'superseded', finished_at = clock_timestamp(),
+         fail_response = 'superseded by newer queued head'
+    FROM candidate c
+   WHERE r.kind = :'kind' AND r.status = 'queued' AND r.id <> c.id
+     AND split_part(r.dedupe_key, '@', 1) = c.lineage
+), claimed AS (
+  UPDATE requests r
+     SET status = 'running', started_at = clock_timestamp(),
+         run_id = :'run_id', run_nonce = :'nonce',
+         lease_expires_at = clock_timestamp() + make_interval(secs => :'lease'::int)
+    FROM candidate c
+   WHERE r.id = c.id
+  RETURNING r.*
+)
+SELECT json_build_object('id', id, 'kind', kind, 'payload', payload, 'dedupe_key', dedupe_key)::text
+  FROM claimed;
+SQL
+}
+
+# Returns renewed, finished, or lost. A nonce may never revive an already-expired lease.
+queue_renew_lease() {
+  local id="$1" nonce="$2" lease_seconds="${3:-$QUEUE_LEASE_SECONDS}"
+  _psql -v id="$id" -v nonce="$nonce" -v lease="$lease_seconds" <<'SQL'
+WITH renewed AS (
+  UPDATE requests
+     SET lease_expires_at = clock_timestamp() + make_interval(secs => :'lease'::int)
+   WHERE id = :'id' AND status = 'running' AND run_nonce = :'nonce'
+     AND lease_expires_at > clock_timestamp()
+  RETURNING 1
+)
+SELECT CASE
+  WHEN EXISTS (SELECT 1 FROM renewed) THEN 'renewed'
+  WHEN EXISTS (SELECT 1 FROM requests WHERE id = :'id' AND status <> 'running') THEN 'finished'
+  ELSE 'lost'
+END;
+SQL
+}
+
+# Every attempt-owned transition is fenced by nonce and an unexpired lease. Prints 1 on success.
 queue_mark_side_effect() {
-  local id="$1"
-  _psql -v id="$id" <<<"UPDATE requests SET side_effect_at = now() WHERE id = :'id' AND status='running';"
+  local id="$1" nonce="$2"
+  _psql -v id="$id" -v nonce="$nonce" \
+    <<<"UPDATE requests SET side_effect_at=clock_timestamp() WHERE id=:'id' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() RETURNING 1;"
 }
 
 queue_mark_done() {
-  local id="$1" posted_ref="${2:-}"
-  _psql -v id="$id" -v ref="$posted_ref" \
-    <<<"UPDATE requests SET status='done', finished_at=now(), posted_ref = NULLIF(:'ref','') WHERE id = :'id';"
+  local id="$1" posted_ref="${2:-}" nonce="$3"
+  _psql -v id="$id" -v ref="$posted_ref" -v nonce="$nonce" \
+    <<<"UPDATE requests SET status='done', finished_at=clock_timestamp(), posted_ref=NULLIF(:'ref',''), lease_expires_at=NULL WHERE id=:'id' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() RETURNING 1;"
 }
 
 queue_mark_failed() {
-  local id="$1" reason="$2"
-  _psql -v id="$id" -v reason="$reason" \
-    <<<"UPDATE requests SET status='failed', finished_at=now(), fail_response = :'reason' WHERE id = :'id';"
+  local id="$1" reason="$2" nonce="$3"
+  _psql -v id="$id" -v reason="$reason" -v nonce="$nonce" \
+    <<<"UPDATE requests SET status='failed', finished_at=clock_timestamp(), fail_response=:'reason', lease_expires_at=NULL WHERE id=:'id' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() RETURNING 1;"
+}
+
+queue_mark_reconcile() {
+  local id="$1" reason="$2" nonce="$3"
+  _psql -v id="$id" -v reason="$reason" -v nonce="$nonce" \
+    <<<"UPDATE requests SET status='reconcile', finished_at=clock_timestamp(), fail_response=:'reason', lease_expires_at=NULL WHERE id=:'id' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() RETURNING 1;"
 }
 
 queue_mark_superseded() {
-  local id="$1" reason="$2"
-  _psql -v id="$id" -v reason="$reason" \
-    <<<"UPDATE requests SET status='superseded', finished_at=now(), fail_response = :'reason' WHERE id = :'id';"
+  local id="$1" reason="$2" nonce="$3"
+  _psql -v id="$id" -v reason="$reason" -v nonce="$nonce" \
+    <<<"UPDATE requests SET status='superseded', finished_at=clock_timestamp(), fail_response=:'reason', lease_expires_at=NULL WHERE id=:'id' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() RETURNING 1;"
 }
 
 # DB-side record that a review was posted (self-describing row; verifiable without a GitHub call).
@@ -142,7 +206,7 @@ WITH event AS (
      AND NOT EXISTS (
        SELECT 1 FROM requests
         WHERE kind = 'pr-safety-review' AND dedupe_key = :'dk'
-          AND status IN ('queued','running','done')
+          AND status IN ('queued','running','done','reconcile')
      )
      AND (
        :'maxatt' = '0'
@@ -218,7 +282,7 @@ WITH request AS (
   WHERE NOT EXISTS (
     SELECT 1 FROM requests
      WHERE kind = :'kind' AND dedupe_key = :'dk'
-       AND status IN ('queued','running','done')
+       AND status IN ('queued','running','done','reconcile')
   )
   AND (
     :'maxatt' = '0'
@@ -249,16 +313,30 @@ valid_memory_decisions() {
 
 # Route an agent-authored memory proposal to its human batch. NEVER auto-writes shared memory.
 pending_decision_insert() {
-  local request_id="$1" kind="$2" proposal_json="$3" provenance_json="$4"
-  _psql -v rid="$request_id" -v kind="$kind" -v prop="$proposal_json" -v prov="$provenance_json" \
-    <<<"INSERT INTO pending_decisions(request_id, kind, proposal, provenance) VALUES (:'rid', :'kind', :'prop'::jsonb, :'prov'::jsonb);"
+  local request_id="$1" kind="$2" proposal_json="$3" provenance_json="$4" nonce="$5"
+  _psql -v rid="$request_id" -v kind="$kind" -v prop="$proposal_json" -v prov="$provenance_json" -v nonce="$nonce" \
+    <<<"INSERT INTO pending_decisions(request_id, kind, proposal, provenance) SELECT :'rid', :'kind', :'prop'::jsonb, :'prov'::jsonb FROM requests WHERE id=:'rid' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() FOR UPDATE RETURNING 1;" \
+    | grep -qx 1
 }
 
 # Blocked PR maintenance waits in a separate queue: completing it cannot approve a memory proposal.
 pending_maintenance_review_insert() {
-  local request_id="$1" proposal_json="$2" provenance_json="$3"
-  _psql -v rid="$request_id" -v prop="$proposal_json" -v prov="$provenance_json" \
-    <<<"INSERT INTO pending_maintenance_reviews(request_id, proposal, provenance) VALUES (:'rid', :'prop'::jsonb, :'prov'::jsonb) ON CONFLICT (request_id) DO NOTHING;"
+  local request_id="$1" proposal_json="$2" provenance_json="$3" nonce="$4"
+  _psql -v rid="$request_id" -v prop="$proposal_json" -v prov="$provenance_json" -v nonce="$nonce" <<'SQL' \
+    | grep -qx 1
+WITH eligible AS (
+  SELECT 1 FROM requests
+   WHERE id = :'rid' AND status = 'running' AND run_nonce = :'nonce'
+     AND lease_expires_at > clock_timestamp()
+   FOR UPDATE
+), inserted AS (
+  INSERT INTO pending_maintenance_reviews(request_id, proposal, provenance)
+  SELECT :'rid', :'prop'::jsonb, :'prov'::jsonb FROM eligible
+  ON CONFLICT (request_id) DO NOTHING
+  RETURNING 1
+)
+SELECT CASE WHEN EXISTS (SELECT 1 FROM eligible) THEN 1 ELSE 0 END;
+SQL
 }
 
 pending_maintenance_review_operation_exists() {

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# agent-server — serial queue-draining worker (M1).
+# agent-server — leased queue-draining worker (M1).
 # Claims one request at a time from Postgres, runs the agent, applies the write-path gate.
 # Reuses the runner contract + safety machinery from bin/pr-automation.
 #
 # COUNCIL-required invariants (see docs/m1 DD revisions):
-#  - single instance via pg advisory lock held for the whole process life
-#  - reclaim keys on side-effect state, never a blanket requeue
+#  - renewable DB leases + nonce fencing; workers may scale independently
+#  - reclaim only expired leases, never live work
 #  - no agent-authored prose auto-persists to shared memory; server writes server-facts only;
 #    agent-authored bodies -> pending_decisions (human batch); agent does NOT self-classify tier
 #  - GitHub egress: no auto-approve; server-assembled body; no recalled content inlined
@@ -18,18 +18,24 @@ umask 077
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/queue.sh
 . "$HERE/lib/queue.sh"
+export REQUESTS_DB_USER REQUESTS_DB_NAME REQUESTS_DB_HOST REQUESTS_DB_PORT
 
-# The kind this worker serves. One serial container per kind; the advisory lock is per-kind, and
-# claim/reclaim are scoped to this kind, so a review worker never touches comment-handler rows.
+# The kind this worker serves. Any number of workers may claim this kind; leases and the
+# running-lineage index keep one active attempt per PR.
 KIND="${AGENT_SERVER_KIND:?set AGENT_SERVER_KIND (e.g. pr-review, pr-maintain)}"
-# KIND is an operator-set identifier, not untrusted data. Constrain it so it is safe to embed in the
-# advisory-lock query (which runs in a coproc where psql -v binding is awkward) and as a bank suffix.
 [[ "$KIND" =~ ^[a-z0-9-]+$ ]] || { echo "AGENT_SERVER_KIND must match ^[a-z0-9-]+$" >&2; exit 2; }
 
 POLL_INTERVAL="${AGENT_SERVER_POLL_INTERVAL:-10}"
 PER_REQUEST_TIMEOUT="${AGENT_SERVER_PER_REQUEST_TIMEOUT:-1800}"   # 30m paid-agent ceiling
 GATE_CALL_TIMEOUT="${AGENT_SERVER_GATE_CALL_TIMEOUT:-60}"          # hindsight/gate external calls
 LOOP_HEARTBEAT_MAX="${AGENT_SERVER_LOOP_HEARTBEAT_MAX:-3600}"      # self-exit if no progress
+LEASE_SECONDS="${AGENT_SERVER_LEASE_SECONDS:-120}"
+LEASE_HEARTBEAT="${AGENT_SERVER_LEASE_HEARTBEAT:-30}"
+LEASE_DB_TIMEOUT="${AGENT_SERVER_LEASE_DB_TIMEOUT:-10}"
+[[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_HEARTBEAT" =~ ^[1-9][0-9]*$ && "$LEASE_DB_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
+  || { echo "lease seconds, heartbeat, and DB timeout must be positive integers" >&2; exit 2; }
+(( LEASE_HEARTBEAT * 3 <= LEASE_SECONDS && 2 * (LEASE_HEARTBEAT + LEASE_DB_TIMEOUT) + 2 <= LEASE_SECONDS )) \
+  || { echo "lease must cover two heartbeat+DB-timeout windows with safety margin" >&2; exit 2; }
 RUNNER="${AGENT_SERVER_RUNNER:?set AGENT_SERVER_RUNNER to the agent runner executable}"
 WORK_ROOT="${AGENT_SERVER_WORK_ROOT:-$HOME/.local/share/agent-fleet/work}"
 HINDSIGHT_URL="${HINDSIGHT_URL:-http://localhost:8888}"
@@ -40,37 +46,68 @@ log() { echo "$(ts) $*"; }
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
 need psql; need jq; need "$RUNNER"
+[[ "$KIND" == pr-maintain ]] && need flock
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
 
-# --- single instance: hold a session advisory lock for our whole life via a long-lived coproc ---
-# The coproc's psql session stays alive because we keep its write-fd open (global, never closed)
-# and it blocks reading stdin; the session lock releases only when this process dies (fd closes).
-LOCKSESSION_PID=""
-acquire_single_instance() {
-  coproc LOCKSESSION { _psql 2>/dev/null; }
-  LOCKSESSION_PID="$!"
-  # Per-kind two-int advisory lock: (namespace base, hashtext(KIND)).
-  printf "SELECT pg_try_advisory_lock(%s::int, hashtext('%s'));\n" "$AGENT_SERVER_LOCK_KEY" "$KIND" >&"${LOCKSESSION[1]}"
-  local got; read -r got <&"${LOCKSESSION[0]}" || true
-  if [[ "$got" != "t" ]]; then
-    log "another agent-server holds the single-instance lock; refusing to start"
-    exit 0
-  fi
-  # Keep the write-fd open for process life so psql never sees EOF and the lock is held.
-  # Copy it to a dedicated global fd that we deliberately never close.
-  exec {LOCK_HOLD_FD}>&"${LOCKSESSION[1]}"
-  log "single-instance lock acquired (holder pid $LOCKSESSION_PID)"
-}
-
-# Verify the lock holder is still alive; if it died, our lock is gone -> exit rather than run unlocked.
-assert_lock_held() {
-  if [[ -z "$LOCKSESSION_PID" ]] || ! kill -0 "$LOCKSESSION_PID" 2>/dev/null; then
-    log "FATAL: single-instance lock holder died; exiting to avoid running unlocked"; exit 3
-  fi
-}
-
 db_up() { _psql <<<"SELECT 1;" >/dev/null 2>&1; }
+
+ACTIVE_CHILD=""
+ACTIVE_REPO=""
+ACTIVE_WORKTREE=""
+LEASE_HEARTBEAT_PID=""
+SHUTDOWN_REQUESTED=false
+WORKER_PID="$$"
+
+request_shutdown() {
+  SHUTDOWN_REQUESTED=true
+  log "shutdown requested; draining active request"
+}
+
+abort_lost_lease() {
+  log "worker lost its lease; aborting active request"
+  stop_lease_heartbeat
+  if [[ -n "$ACTIVE_CHILD" ]]; then
+    kill -TERM "$ACTIVE_CHILD" 2>/dev/null || true
+    sleep 2
+    kill -KILL "$ACTIVE_CHILD" 2>/dev/null || true
+    wait "$ACTIVE_CHILD" 2>/dev/null || true
+  fi
+  [[ -n "$ACTIVE_REPO" && -n "$ACTIVE_WORKTREE" ]] && cleanup_maintain_worktree "$ACTIVE_REPO" "$ACTIVE_WORKTREE" || true
+  exit 143
+}
+trap request_shutdown TERM INT
+trap abort_lost_lease USR1
+
+start_lease_heartbeat() {
+  local id="$1" nonce="$2"
+  (
+    failures=0
+    while sleep "$LEASE_HEARTBEAT"; do
+      state="$("$TIMEOUT_BIN" --kill-after=2s "${LEASE_DB_TIMEOUT}s" bash -c \
+        '. "$1"; queue_renew_lease "$2" "$3" "$4"' _ "$HERE/lib/queue.sh" "$id" "$nonce" "$LEASE_SECONDS" \
+        2>/dev/null)" || state=error
+      case "$state" in
+        renewed) failures=0 ;;
+        finished) exit 0 ;;
+        lost) log "FATAL: lease lost for request $id; stopping worker"; kill -USR1 "$WORKER_PID"; exit 1 ;;
+        *)
+          failures=$((failures + 1))
+          (( failures < 2 )) && continue
+          log "FATAL: lease renewal failed twice for request $id; stopping worker"
+          kill -USR1 "$WORKER_PID"; exit 1 ;;
+      esac
+    done
+  ) &
+  LEASE_HEARTBEAT_PID="$!"
+}
+
+stop_lease_heartbeat() {
+  [[ -n "$LEASE_HEARTBEAT_PID" ]] || return 0
+  kill "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  LEASE_HEARTBEAT_PID=""
+}
 
 # --- write-path gate: server writes memory, agent does NOT ---
 # Reads $work_root/result.json. Validates schema + nonce. Auto-retains ONLY server-synthesized
@@ -96,12 +133,12 @@ apply_write_path_gate() {
   decisions="$(jq -c 'if (.memory | type) == "object" then (.memory.decisions // []) else [] end' "$result")"
   if valid_memory_decisions <<<"$decisions"; then
     local proposal; proposal="$(jq -c '{decisions: (.memory.decisions // []), findings: (.findings // []), summary: (.summary // "")}' "$result")"
-    pending_decision_insert "$id" "$kind" "$proposal" "$prov" \
+    pending_decision_insert "$id" "$kind" "$proposal" "$prov" "$nonce" \
       && log "gate: routed agent-authored proposal to pending_decisions"
   fi
   if [[ "$kind" == pr-maintain ]] && jq -e '.maintenance.needs_human_review == true' "$result" >/dev/null 2>&1; then
     local maintenance_proposal; maintenance_proposal="$(jq -c '{findings: (.findings // []), summary: (.summary // "")}' "$result")"
-    if ! pending_maintenance_review_insert "$id" "$maintenance_proposal" "$prov"; then
+    if ! pending_maintenance_review_insert "$id" "$maintenance_proposal" "$prov" "$nonce"; then
       log "gate: failed to route blocked maintenance work to human-review queue"
       return 1
     fi
@@ -113,7 +150,7 @@ apply_write_path_gate() {
   if [[ "$kind" == pr-review ]] && jq -e '.ready_for_human_review == true' "$result" >/dev/null 2>&1; then
     local ready_proposal
     ready_proposal="$(jq -c '{ready: true, summary: (.summary // ""), findings: (.findings // [])}' "$result")"
-    if ! pending_maintenance_review_insert "$id" "$ready_proposal" "$prov"; then
+    if ! pending_maintenance_review_insert "$id" "$ready_proposal" "$prov" "$nonce"; then
       log "gate: failed to route review-ready PR to human-review queue"
       return 1
     fi
@@ -152,11 +189,11 @@ process_one() {
   url="$(jq -r '.url // empty' <<<"$payload")"
   title="$(jq -r '.title // empty' <<<"$payload")"
 
-  local work_root="$WORK_ROOT/${repo//\//-}-$pr/$run_id"
+  local work_root="$WORK_ROOT/${repo//\//-}-$pr/$nonce"
   rm -rf "$work_root"; mkdir -p "$work_root"   # wipe: no stale result.json survives
 
   head_sha="$("$TIMEOUT_BIN" --kill-after=5s 60s gh pr view "$pr" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
-  [[ -z "$head_sha" ]] && { queue_mark_failed "$id" "could not resolve head sha"; return 0; }
+  [[ -z "$head_sha" ]] && { queue_mark_failed "$id" "could not resolve head sha" "$nonce" >/dev/null; return 0; }
 
   # Idempotency (crash-proof) for REVIEW: if a review with this head's marker is already on GitHub,
   # no-op. GitHub marker, not the DB posted_ref column, so a crash between posting and mark_done
@@ -164,26 +201,31 @@ process_one() {
   # apply to it — maintain idempotency is the per-head dedupe key + the side_effect_at fence.
   if [[ "$kind" != pr-maintain ]] && github_already_reviewed "$repo" "$pr" "$head_sha" "$GITHUB_LOGIN"; then
     log "marker for $repo#$pr@$head_sha already on GitHub; marking done without re-running"
-    queue_mark_done "$id" "head=$head_sha"; return 0
+    queue_mark_done "$id" "head=$head_sha" "$nonce" >/dev/null; return 0
   fi
 
   local prompt_file="$work_root/prompt.md"
   build_prompt "$kind" "$repo" "$pr" "$url" "$title" "$head_sha" "$nonce" "$work_root" > "$prompt_file"
 
-  # Maintain pushes code, so it needs a real worktree checked out at the claim-time head. Build it
-  # here (off the mounted local clone, NOT a fresh clone) before handing control to the agent. On
-  # any setup failure, fail the request rather than run the agent against a missing tree.
+  # Every runner gets a lease-gated gh shim. Maintain also gets a real worktree and push gate.
+  local shim_dir saved_path="$PATH"
   if [[ "$kind" == pr-maintain ]]; then
-    local shim_dir saved_path="$PATH"
-    if ! shim_dir="$(setup_maintain_worktree "$repo" "$pr" "$head_sha" "$work_root/worktree")"; then
-      queue_mark_failed "$id" "maintain worktree setup failed (no local clone / fetch / add)"; return 0
+    ACTIVE_REPO="$repo"; ACTIVE_WORKTREE="$work_root/worktree"
+    if ! shim_dir="$(setup_maintain_worktree "$repo" "$pr" "$head_sha" "$ACTIVE_WORKTREE" "$id" "$nonce")"; then
+      ACTIVE_REPO=""; ACTIVE_WORKTREE=""
+      queue_mark_failed "$id" "maintain worktree setup failed (no local clone / fetch / add)" "$nonce" >/dev/null; return 0
     fi
-    export PATH="$shim_dir:$PATH"   # push egress gate: shim git ahead of real git for this run
-    trap 'export PATH="$saved_path"' RETURN   # restore on any return (long-running loop)
+  elif ! shim_dir="$(setup_github_lease_shim "$work_root/.lease-shim" "$id" "$nonce")"; then
+    queue_mark_failed "$id" "GitHub lease gate setup failed" "$nonce" >/dev/null; return 0
   fi
+  export PATH="$shim_dir:$PATH"
+  trap 'export PATH="$saved_path"' RETURN
 
   # side-effect fence: stamp intent BEFORE handing control to the agent (which may post a review).
-  queue_mark_side_effect "$id"
+  if [[ "$(queue_mark_side_effect "$id" "$nonce")" != 1 ]]; then
+    log "lease lost before side-effect boundary for $repo#$pr"
+    return 0
+  fi
 
   export PR_AUTOMATION_MODE="$kind" PR_REPO="$repo" PR_NUMBER="$pr" PR_URL="$url" \
          PR_TITLE="$title" PR_HEAD_SHA="$head_sha" PR_WORK_ROOT="$work_root" \
@@ -191,7 +233,12 @@ process_one() {
 
   local status=0
   "$TIMEOUT_BIN" --kill-after=10s "${PER_REQUEST_TIMEOUT}s" "$RUNNER" "$prompt_file" & local child=$!
-  wait "$child" || status=$?
+  ACTIVE_CHILD="$child"
+  while true; do
+    if wait "$child"; then status=0; else status=$?; fi
+    kill -0 "$child" 2>/dev/null || break
+  done
+  ACTIVE_CHILD=""
 
   if [[ "$status" -eq 0 ]]; then
     local verdict; verdict="$(jq -r '.verdict // "unknown"' "$work_root/result.json" 2>/dev/null || echo unknown)"
@@ -199,19 +246,31 @@ process_one() {
     # approve is not a permitted egress verdict; whitelist to the two the agent may post.
     case "$verdict" in comment|request-changes) ;; *) verdict=unknown ;; esac
     if ! apply_write_path_gate "$id" "$kind" "$repo" "$pr" "$head_sha" "$run_id" "$nonce" "$work_root" "$verdict"; then
-      queue_mark_failed "$id" "human-review queue insert failed"
+      if [[ "$kind" == pr-maintain ]]; then
+        queue_mark_reconcile "$id" "human-review queue insert failed after side-effect intent" "$nonce" >/dev/null
+      else
+        queue_mark_failed "$id" "human-review queue insert failed" "$nonce" >/dev/null
+      fi
       log "failed $repo#$pr: human-review queue insert failed"
-    else
-      queue_mark_done "$id" "head=$head_sha"
+    elif [[ "$(queue_mark_done "$id" "head=$head_sha" "$nonce")" == 1 ]]; then
       log "done $repo#$pr (verdict=$verdict)"
+    else
+      log "lease lost before completing $repo#$pr"
     fi
   else
-    queue_mark_failed "$id" "runner exited $status (side_effect_at set: not auto-retried)"
+    if [[ "$kind" == pr-maintain ]]; then
+      queue_mark_reconcile "$id" "runner exited $status after side-effect intent" "$nonce" >/dev/null
+    else
+      queue_mark_failed "$id" "runner exited $status" "$nonce" >/dev/null
+    fi
     log "failed $repo#$pr (exit $status)"
   fi
   # Always tear down the maintain worktree (prune the registration too) so clones don't accumulate
   # orphan worktrees and a re-run of the same head can re-add cleanly.
-  if [[ "$kind" == pr-maintain ]]; then cleanup_maintain_worktree "$repo" "$work_root/worktree"; fi
+  if [[ "$kind" == pr-maintain ]]; then
+    cleanup_maintain_worktree "$repo" "$work_root/worktree"
+    ACTIVE_REPO=""; ACTIVE_WORKTREE=""
+  fi
 }
 
 # Map a repo slug (owner/name) to a local clone under CODE_ROOT and print its path. Many dirs may
@@ -231,28 +290,57 @@ find_local_clone() {
   return 1
 }
 
+setup_github_lease_shim() {
+  local shim_dir="$1" request_id="$2" nonce="$3"
+  local real_gh real_psql; real_gh="$(command -v gh)"; real_psql="$(command -v psql)"
+  mkdir -p "$shim_dir"
+  cat > "$shim_dir/lease-check" <<SHIM
+#!/usr/bin/env bash
+set -o pipefail
+"$TIMEOUT_BIN" --kill-after=2s "${LEASE_DB_TIMEOUT}s" "$real_psql" -v ON_ERROR_STOP=1 -qAt \
+  -h "\${REQUESTS_DB_HOST}" -p "\${REQUESTS_DB_PORT}" \
+  -U "\${REQUESTS_DB_USER}" -d "\${REQUESTS_DB_NAME}" \
+  -v id="$request_id" -v nonce="$nonce" \
+  <<<"SELECT EXISTS (SELECT 1 FROM requests WHERE id=:'id' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp());" \
+  | grep -qx t
+SHIM
+  cat > "$shim_dir/gh" <<SHIM
+#!/usr/bin/env bash
+"$shim_dir/lease-check" || { echo "gh-shim: request lease lost; GitHub call blocked" >&2; exit 3; }
+exec "$real_gh" "\$@"
+SHIM
+  chmod +x "$shim_dir/lease-check" "$shim_dir/gh"
+  printf '%s' "$shim_dir"
+}
+
+git_with_repo_lock() {
+  local clone="$1"; shift
+  local common_dir; common_dir="$(git -C "$clone" rev-parse --path-format=absolute --git-common-dir)" || return 1
+  flock -w 120 "$common_dir/agent-fleet.lock" git -C "$clone" "$@"
+}
+
 # Prepare a git worktree at the PR head for maintain. Detached HEAD (never checks out a branch that
 # may be live in the main tree). Token-auth the push. Returns 0 on success.
 setup_maintain_worktree() {
-  local repo="$1" pr="$2" head_sha="$3" wt="$4"
-  local clone; clone="$(find_local_clone "$repo")" || { log "maintain: no local clone for $repo under $CODE_ROOT"; return 1; }
-  log "maintain: using clone $clone for $repo#$pr"
+  local repo="$1" pr="$2" head_sha="$3" wt="$4" request_id="$5" nonce="$6"
+  local clone; clone="$(find_local_clone "$repo")" || { log "maintain: no local clone for $repo under $CODE_ROOT" >&2; return 1; }
+  log "maintain: using clone $clone for $repo#$pr" >&2
   rm -rf "$wt"
   # Fetch the PR head over a TOKEN-authed https URL (the clone's own remote is often ssh, and the
   # container has no ssh key). Same-repo authored PRs only — forks are out of scope.
   local auth_url="https://x-access-token:${GH_TOKEN}@github.com/${repo}.git"
-  git -C "$clone" fetch "$auth_url" "pull/$pr/head" >/dev/null 2>&1 \
-    || git -C "$clone" fetch "$auth_url" >/dev/null 2>&1 || { log "maintain: fetch failed"; return 1; }
+  git_with_repo_lock "$clone" fetch "$auth_url" "pull/$pr/head" >/dev/null 2>&1 \
+    || git_with_repo_lock "$clone" fetch "$auth_url" >/dev/null 2>&1 || { log "maintain: fetch failed" >&2; return 1; }
   if ! git -C "$clone" rev-parse --verify "${head_sha}^{commit}" >/dev/null 2>&1; then
-    log "maintain: claim-time head $head_sha not in clone after fetch"; return 1
+    log "maintain: claim-time head $head_sha not in clone after fetch" >&2; return 1
   fi
   # Fetch the PR's ACTUAL base branch over https too, updating origin/<base>, so the agent can
   # rebase onto it without hitting the clone's ssh remote. Base from the API (never assume master).
   local base; base="$("$TIMEOUT_BIN" --kill-after=5s 60s gh pr view "$pr" -R "$repo" --json baseRefName --jq .baseRefName 2>/dev/null || true)"
   if [[ -n "$base" ]]; then
-    git -C "$clone" fetch "$auth_url" "+refs/heads/${base}:refs/remotes/origin/${base}" >/dev/null 2>&1 || log "maintain: base fetch ($base) failed; rebase may be unavailable"
+    git_with_repo_lock "$clone" fetch "$auth_url" "+refs/heads/${base}:refs/remotes/origin/${base}" >/dev/null 2>&1 || log "maintain: base fetch ($base) failed; rebase may be unavailable" >&2
   fi
-  git -C "$clone" worktree add --detach "$wt" "$head_sha" >/dev/null 2>&1 || { log "maintain: worktree add failed"; return 1; }
+  git_with_repo_lock "$clone" worktree add --detach "$wt" "$head_sha" >/dev/null 2>&1 || { log "maintain: worktree add failed" >&2; return 1; }
   # NOTE: a git worktree SHARES the clone's config, so we must NOT `remote set-url` (it would leak
   # the token into the operator's real clone config, persistently). Instead the shim below rewrites
   # any `push`/`fetch origin` to an explicit token URL at call time — token never persists on disk.
@@ -263,11 +351,12 @@ setup_maintain_worktree() {
   # regardless of what the (untrusted-comment-influenced) agent tries. Prompt instructs; this
   # enforces. Allowed force is ONLY --force-with-lease=<branch>:<claim-head>. Everything non-push
   # passes straight through to real git.
-  local shim_dir="$wt/.git-shim" real_git; real_git="$(command -v git)"
-  mkdir -p "$shim_dir"
+  local shim_dir="$wt/.git-shim" real_git
+  real_git="$(command -v git)"
+  setup_github_lease_shim "$shim_dir" "$request_id" "$nonce" >/dev/null || return 1
   cat > "$shim_dir/git" <<SHIM
 #!/usr/bin/env bash
-REAL="$real_git"; EXPECTED_HEAD="$head_sha"; AUTH_URL="https://x-access-token:\${GH_TOKEN}@github.com/${repo}.git"
+REAL="$real_git"; CHECK="$shim_dir/lease-check"; EXPECTED_HEAD="$head_sha"; AUTH_URL="https://x-access-token:\${GH_TOKEN}@github.com/${repo}.git"
 # Find the git SUBCOMMAND: skip leading global opts. -C/-c/--git-dir/--work-tree take a value.
 args=("\$@"); sub=""; i=0
 while (( i < \${#args[@]} )); do
@@ -284,6 +373,7 @@ if [[ "\$sub" == push || "\$sub" == fetch || "\$sub" == pull ]]; then
   set -- "\${newargs[@]}"
 fi
 if [[ "\$sub" == push ]]; then
+  "\$CHECK" || { echo "git-shim: request lease lost; push blocked" >&2; exit 3; }
   if [[ -n "\${MAINTAIN_DRY_RUN:-}" ]]; then echo "git-shim: DRY-RUN push suppressed: git \$*" >&2; exit 0; fi
   for a in "\$@"; do
     case "\$a" in
@@ -305,8 +395,8 @@ cleanup_maintain_worktree() {
   local repo="$1" wt="$2"
   [[ -d "$wt" ]] || return 0
   local clone; clone="$(find_local_clone "$repo")" || { rm -rf "$wt"; return 0; }
-  git -C "$clone" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
-  git -C "$clone" worktree prune 2>/dev/null || true
+  git_with_repo_lock "$clone" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+  git_with_repo_lock "$clone" worktree prune 2>/dev/null || true
 }
 
 build_prompt() {
@@ -441,7 +531,6 @@ PROMPT
 }
 
 # --- startup (fatal on db error) ---
-acquire_single_instance
 if ! db_up; then log "FATAL: Postgres not reachable at startup; exiting for launchd backoff"; exit 3; fi
 # Resolve the authenticated GitHub login once; used to match our own head-dedup markers.
 # Resolve the authenticated GitHub login once; used to match our own head-dedup markers.
@@ -457,26 +546,30 @@ queue_reclaim_stale "$KIND" || { log "FATAL: reclaim failed"; exit 3; }
 # Maintain: prune orphan worktrees left by any crashed run so clones don't accumulate registrations.
 if [[ "$KIND" == pr-maintain ]]; then
   for d in "$CODE_ROOT"/*/ "$CODE_ROOT"/*/*/; do
-    [[ -d "$d/.git" || -f "$d/.git" ]] && git -C "$d" worktree prune 2>/dev/null || true
+    [[ -d "$d/.git" || -f "$d/.git" ]] && git_with_repo_lock "$d" worktree prune 2>/dev/null || true
   done
 fi
 
-log "agent-server up (serial, kind=$KIND); poll ${POLL_INTERVAL}s, per-request ${PER_REQUEST_TIMEOUT}s"
+log "agent-server up (leased, kind=$KIND); poll ${POLL_INTERVAL}s, lease ${LEASE_SECONDS}s/${LEASE_HEARTBEAT}s heartbeat"
 last_progress="$(date +%s)"
 mkdir -p "$WORK_ROOT"
 
 while true; do
+  [[ "$SHUTDOWN_REQUESTED" == true ]] && { stop_lease_heartbeat; exit 0; }
   # wedged-server guard: if nothing has progressed in LOOP_HEARTBEAT_MAX, self-exit for restart.
   now="$(date +%s)"
   if (( now - last_progress > LOOP_HEARTBEAT_MAX )); then
     log "FATAL: no loop progress in ${LOOP_HEARTBEAT_MAX}s; self-exiting for launchd restart"; exit 3
   fi
-  assert_lock_held
   if ! db_up; then log "db unreachable; backing off"; sleep "$POLL_INTERVAL"; continue; fi
 
-  run_id="$(date '+%Y%m%d-%H%M%S')-$$"
   nonce="$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  claim="$(queue_claim_one "$KIND" "$run_id" "$nonce" || true)"
+  run_id="$(date '+%Y%m%d-%H%M%S')-${HOSTNAME:-worker}-${nonce:0:8}"
+  if ! claim="$(queue_claim_one "$KIND" "$run_id" "$nonce" "$LEASE_SECONDS")"; then
+    log "claim failed; backing off"
+    sleep "$POLL_INTERVAL"
+    continue
+  fi
   if [[ -z "$claim" || "$claim" == "null" ]]; then sleep "$POLL_INTERVAL"; continue; fi
 
   # claim is a single JSON object; parse it as JSON (no intermediate TSV format).
@@ -485,6 +578,9 @@ while true; do
   payload="$(jq -c '.payload' <<<"$claim")"
   dedupe_key="$(jq -r '.dedupe_key' <<<"$claim")"
   log "claimed request $id ($kind, $dedupe_key)"
+  start_lease_heartbeat "$id" "$nonce"
   process_one "$id" "$kind" "$payload" "$dedupe_key" "$run_id" "$nonce" || log "process_one error for $id"
+  stop_lease_heartbeat
   last_progress="$(date +%s)"
+  [[ "$SHUTDOWN_REQUESTED" == true ]] && exit 0
 done

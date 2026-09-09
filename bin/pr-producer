@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pr-producer — enqueue-only producer for the agent-fleet queue (M2).
 # Discovers matching PRs (same logic as the old bin/pr-automation) and inserts one requests row
-# per PR for the serial agent-server (M1) to drain. Never invokes the agent runner.
+# per PR for leased agent-server workers (M1) to drain. Never invokes the agent runner.
 #
 # Usage: pr-producer <review|maintain>
 #   review   -> PRs assigned to @me      (kind=pr-review)

@@ -196,13 +196,14 @@ services:
       swarmvault-watch:
         condition: service_healthy
 
-  # --- agent-servers: one SERIAL worker container per KIND ---
-  # Compose by kind, not by replicas. Each holds its own per-kind advisory lock and claims only its
-  # own kind's rows. Add a new kind = add a service (copy a block, change AGENT_SERVER_KIND).
+  # --- agent-servers: leased workers; maintain replicas scale horizontally ---
+  # Each replica claims its kind with SKIP LOCKED and renews a DB lease. Scale maintain workers
+  # without repartitioning; one running-lineage index prevents concurrent work on the same PR.
   # They reach the substrate by SERVICE NAME (db-requests / hindsight), not localhost.
   # Secrets (REQUESTS_DB_PASSWORD, GH_TOKEN, OPENAI_API_KEY) come from .env via env_file.
   agent-server-review:
     image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
+    stop_grace_period: ${AGENT_SERVER_STOP_GRACE_PERIOD:-35m}
     build:
       context: .
       dockerfile: Dockerfile.agent-server
@@ -213,6 +214,8 @@ services:
       AGENT_SERVER_KIND: pr-review
       AGENT_SERVER_RUNNER: /app/bin/mewritecode-runner.sh
       AGENT_SERVER_SHARED_BANK: fleet-shared
+      AGENT_SERVER_LEASE_SECONDS: ${AGENT_SERVER_LEASE_SECONDS:-120}
+      AGENT_SERVER_LEASE_HEARTBEAT: ${AGENT_SERVER_LEASE_HEARTBEAT:-30}
       REQUESTS_DB_HOST: db-requests       # in-network service name, NOT localhost
       REQUESTS_DB_PORT: "5432"
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
@@ -231,21 +234,26 @@ services:
         condition: service_healthy
       swarmvault-mcp:
         condition: service_healthy
+      schema-migrate:
+        condition: service_completed_successfully
 
   # Second kind: identical except AGENT_SERVER_KIND. maintain PRs push fix commits, so its GH_TOKEN
   # (in .env, or a kind-specific token) needs Contents:write; review's token can stay read-only.
   agent-server-maintain:
     image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
+    stop_grace_period: ${AGENT_SERVER_STOP_GRACE_PERIOD:-35m}
     build:
       context: .
       dockerfile: Dockerfile.agent-server
-    container_name: fleet-agent-server-maintain
     restart: unless-stopped
     env_file: .env
     environment:
       AGENT_SERVER_KIND: pr-maintain
       AGENT_SERVER_RUNNER: /app/bin/mewritecode-runner.sh
       AGENT_SERVER_SHARED_BANK: fleet-shared
+      AGENT_SERVER_LEASE_SECONDS: ${AGENT_SERVER_LEASE_SECONDS:-120}
+      AGENT_SERVER_LEASE_HEARTBEAT: ${AGENT_SERVER_LEASE_HEARTBEAT:-30}
+      AGENT_SERVER_WORK_ROOT: ${CODE_ROOT}/_roktcode-worktrees/agent-server
       REQUESTS_DB_HOST: db-requests
       REQUESTS_DB_PORT: "5432"
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
@@ -339,6 +347,7 @@ services:
   pr-safety-review-controller:
     profiles: ["pr-safety"]
     image: agent-fleet/pr-safety-controller:${PR_SAFETY_CONTROLLER_VERSION:-latest}
+    stop_grace_period: ${PR_SAFETY_CONTROLLER_STOP_GRACE_PERIOD:-35m}
     build:
       context: .
       dockerfile: Dockerfile.pr-safety-controller

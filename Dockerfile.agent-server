@@ -1,10 +1,10 @@
-# agent-server image: one serial worker per kind. Carries gh + git + jq + psql + coreutils and the
+# agent-server image: leased workers scalable per kind. Carries gh + git + jq + psql + coreutils and the
 # agent runner. Postgres/Redis/hindsight run in OTHER containers; this reaches them by service name.
 # Build: docker build -f Dockerfile.agent-server -t agent-fleet/agent-server .
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash git jq curl ca-certificates coreutils postgresql-client gnupg \
+      bash git jq curl ca-certificates coreutils util-linux postgresql-client gnupg \
       python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
 
@@ -38,7 +38,7 @@ RUN chmod +x bin/*
 # BUILDKITE_API_TOKEN via env at runtime).
 ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
 
-# Serial-per-kind worker. AGENT_SERVER_KIND selects the queue kind this container serves.
+# AGENT_SERVER_KIND selects the queue kind this worker serves.
 # gh uses GH_TOKEN; mewritecode uses OPENAI_API_KEY; buildkite MCP uses BUILDKITE_API_TOKEN.
 # Coderag and SwarmVault MCP bridges use only internal Compose DNS.
 # All injected via env (compose env_file: .env). No creds baked into the image.

@@ -399,7 +399,7 @@ def render(flash: str = "") -> str:
         recent = query(
             "SELECT id, kind, status, dedupe_key, coalesce(fail_response,''), "
             "to_char(finished_at,'MM-DD HH24:MI') "
-            "FROM requests WHERE status IN ('done','failed') "
+            "FROM requests WHERE status IN ('done','failed','reconcile') "
             "ORDER BY finished_at DESC NULLS LAST LIMIT 20")
         human_review = query(
             "SELECT d.id AS id, d.request_id AS request_id, "
@@ -541,7 +541,7 @@ def _swe_ref(ref: str) -> str:
 
 
 def chip(status: str) -> str:
-    s = status if status in ("queued", "running", "done", "failed") else "queued"
+    s = "failed" if status == "reconcile" else status if status in ("queued", "running", "done", "failed") else "queued"
     return f'<span class="chip s-{s}">{e(status)}</span>'
 
 

@@ -6,6 +6,7 @@ umask 077
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/queue.sh
 . "$HERE/lib/queue.sh"
+export REQUESTS_DB_USER REQUESTS_DB_NAME REQUESTS_DB_HOST REQUESTS_DB_PORT
 
 KIND=pr-safety-review
 RUNNER="${PR_SAFETY_ANALYST_RUNNER:?set PR_SAFETY_ANALYST_RUNNER}"
@@ -24,12 +25,68 @@ need jq; need git; need psql; need "$RUNNER"; need python3
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required" >&2; exit 2; }
 ANALYST_TIMEOUT="${PR_SAFETY_ANALYST_TIMEOUT:-1800}"
+LEASE_SECONDS="${PR_SAFETY_LEASE_SECONDS:-120}"
+LEASE_HEARTBEAT="${PR_SAFETY_LEASE_HEARTBEAT:-30}"
+LEASE_DB_TIMEOUT="${PR_SAFETY_LEASE_DB_TIMEOUT:-10}"
+[[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_HEARTBEAT" =~ ^[1-9][0-9]*$ && "$LEASE_DB_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
+  || { echo "PR safety lease timing must use positive integers" >&2; exit 2; }
+(( LEASE_HEARTBEAT * 3 <= LEASE_SECONDS && 2 * (LEASE_HEARTBEAT + LEASE_DB_TIMEOUT) + 2 <= LEASE_SECONDS )) \
+  || { echo "PR safety lease must cover two heartbeat+DB-timeout windows" >&2; exit 2; }
+
+ACTIVE_CHILD=""
+LEASE_HEARTBEAT_PID=""
+SHUTDOWN_REQUESTED=false
+CONTROLLER_PID="$$"
+
+request_shutdown() {
+  SHUTDOWN_REQUESTED=true
+}
+
+abort_lost_lease() {
+  [[ -n "$LEASE_HEARTBEAT_PID" ]] && kill "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  if [[ -n "$ACTIVE_CHILD" ]]; then
+    kill -TERM "$ACTIVE_CHILD" 2>/dev/null || true
+    sleep 2
+    kill -KILL "$ACTIVE_CHILD" 2>/dev/null || true
+    wait "$ACTIVE_CHILD" 2>/dev/null || true
+  fi
+  exit 143
+}
+trap request_shutdown TERM INT
+trap abort_lost_lease USR1
+
+start_lease_heartbeat() {
+  local id="$1" nonce="$2"
+  (
+    failures=0
+    while sleep "$LEASE_HEARTBEAT"; do
+      state="$("$TIMEOUT_BIN" --kill-after=2s "${LEASE_DB_TIMEOUT}s" bash -c \
+        '. "$1"; queue_renew_lease "$2" "$3" "$4"' _ "$HERE/lib/queue.sh" "$id" "$nonce" "$LEASE_SECONDS" \
+        2>/dev/null)" || state=error
+      case "$state" in
+        renewed) failures=0 ;;
+        finished) exit 0 ;;
+        lost) kill -USR1 "$CONTROLLER_PID"; exit 1 ;;
+        *) failures=$((failures + 1)); (( failures < 2 )) || { kill -USR1 "$CONTROLLER_PID"; exit 1; } ;;
+      esac
+    done
+  ) &
+  LEASE_HEARTBEAT_PID="$!"
+}
+
+stop_lease_heartbeat() {
+  [[ -n "$LEASE_HEARTBEAT_PID" ]] || return 0
+  kill "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  LEASE_HEARTBEAT_PID=""
+}
 
 resolve_path() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
 inside_root() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
 digest() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
-fail() { queue_mark_failed "$1" "$2"; }
-supersede() { queue_mark_superseded "$1" "$2"; }
+ATTEMPT_NONCE=""
+fail() { queue_mark_failed "$1" "$2" "$ATTEMPT_NONCE" >/dev/null; }
+supersede() { queue_mark_superseded "$1" "$2" "$ATTEMPT_NONCE" >/dev/null; }
 
 SNAPSHOT_ROOT="$(resolve_path "$SNAPSHOT_ROOT")"
 POLICY_ROOT="$(resolve_path "$POLICY_ROOT")"
@@ -101,8 +158,8 @@ queue_handoff() {
   else
     proposal="$(jq -cn --arg path "$final" --arg digest "$handoff_digest" '{summary:"Recovered PR safety handoff",findings:[],handoff_path:$path,handoff_digest:$digest}')"
   fi
-  pending_maintenance_review_operation_exists "$op" || pending_maintenance_review_insert "$id" "$proposal" "$provenance" || return 1
-  queue_mark_done "$id" "handoff=$handoff_digest"
+  pending_maintenance_review_operation_exists "$op" || pending_maintenance_review_insert "$id" "$proposal" "$provenance" "$ATTEMPT_NONCE" || return 1
+  queue_mark_done "$id" "handoff=$handoff_digest" "$ATTEMPT_NONCE" >/dev/null
 }
 
 process_one() {
@@ -158,14 +215,20 @@ EOF
     GH_TOKEN="${GH_TOKEN:-}" BUILDKITE_API_TOKEN="${BUILDKITE_API_TOKEN:-}" DD_PAT="${DD_PAT:-}" \
     PR_SAFETY_SNAPSHOT_PATH="$snapshot" PR_SAFETY_POLICY_PATH="$policy_path" \
     PR_SAFETY_HANDOFF_DRAFT="$draft" PR_SAFETY_RESULT_FILE="$result" \
-    "$RUNNER" "$prompt" || status=$?
+    "$RUNNER" "$prompt" & local child=$!
+  ACTIVE_CHILD="$child"
+  while true; do
+    if wait "$child"; then status=0; else status=$?; fi
+    kill -0 "$child" 2>/dev/null || break
+  done
+  ACTIVE_CHILD=""
   if (( status != 0 )); then fail "$id" "analyst runner exited $status"; return; fi
   valid_result "$result" "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy" "$policy_digest" || { fail "$id" "invalid analyst result"; return; }
   local result_status; result_status="$(jq -r .status "$result")"
   if [[ "$result_status" == superseded ]]; then supersede "$id" "analyst reported superseded"; return; fi
   if [[ "$result_status" == clear ]]; then
     rm -f "$draft"
-    queue_mark_done "$id" "clear"
+    queue_mark_done "$id" "clear" "$ATTEMPT_NONCE" >/dev/null
     return
   fi
   # Prepend a controller-authenticated identity block so the promoted handoff always carries the
@@ -195,8 +258,16 @@ EOF
 
 queue_reclaim_stale "$KIND"
 while true; do
-  claim="$(queue_claim_one "$KIND" "$(date +%s)-$$" "$(date +%s%N 2>/dev/null || date +%s)-$$" || true)"
-  if [[ -n "$claim" && "$claim" != null ]]; then process_one "$(jq -r .id <<<"$claim")" "$(jq -c .payload <<<"$claim")"; fi
-  [[ "${PR_SAFETY_CONTROLLER_ONCE:-false}" == true ]] && exit 0
+  [[ "$SHUTDOWN_REQUESTED" == true ]] && { stop_lease_heartbeat; exit 0; }
+  ATTEMPT_NONCE="$(date +%s%N 2>/dev/null || date +%s)-$$"
+  claim="$(queue_claim_one "$KIND" "$(date +%s)-$$" "$ATTEMPT_NONCE" "$LEASE_SECONDS" || true)"
+  if [[ -n "$claim" && "$claim" != null ]]; then
+    request_id="$(jq -r .id <<<"$claim")"
+    start_lease_heartbeat "$request_id" "$ATTEMPT_NONCE"
+    process_one "$request_id" "$(jq -c .payload <<<"$claim")"
+    stop_lease_heartbeat
+    [[ "$SHUTDOWN_REQUESTED" == true ]] && exit 0
+  fi
+  [[ "${PR_SAFETY_CONTROLLER_ONCE:-false}" == true ]] && { stop_lease_heartbeat; exit 0; }
   [[ -n "$claim" && "$claim" != null ]] || sleep "$POLL_INTERVAL"
 done
