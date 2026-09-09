@@ -3,7 +3,8 @@
 #
 # Takes a task from one of three sources, normalizes it to a common brief, runs the swe-implementer
 # persona (via mewritecode exec) against a DISPOSABLE fresh clone of the target repo at its default
-# branch, and — only if a commit was produced — pushes the work branch and opens a DRAFT PR.
+# branch, and — only if a commit was produced — creates the commit on a remote branch via the
+# GitHub API (signed/"Verified" by GitHub) and opens a DRAFT PR.
 #
 #   swe-implement --handoff <file>                 repo/base come from the handoff identity
 #   swe-implement --issue  <owner/repo#N>          task = the GitHub issue title+body
@@ -135,15 +136,44 @@ if (( ! open_pr )); then
   exit 0
 fi
 
-# --- push + open DRAFT PR (authored as the push-capable token identity) ---------------------------
-# Push over a token-embedded https URL rather than relying on a git credential helper: the clone's
-# origin may be ssh, and a container has no global gh git-credential setup. Same approach as
-# agent-server's maintain push. The token is not written to any on-disk git config.
-log "pushing $branch and opening DRAFT PR"
-push_url="https://x-access-token:${GH_TOKEN}@github.com/${repo}.git"
-git push "$push_url" "HEAD:refs/heads/$branch" >/dev/null 2>&1 || die "push failed (token needs push + SAML on $repo)"
+# --- create the commit on the remote branch via the GitHub API, then open a DRAFT PR -------------
+# Replay the agent's local commit through GraphQL createCommitOnBranch instead of `git push`, so the
+# resulting commit is signed by GitHub (committer=GitHub, "Verified") without shipping a signing key
+# into the container. The local commit is used only to compute the tree delta.
+log "creating signed commit on $branch via GitHub API and opening DRAFT PR"
+
+# The remote branch ref must exist at base before createCommitOnBranch (expectedHeadOid = base).
+gh api --method POST "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$base_sha" >/dev/null 2>&1 \
+  || die "could not create remote branch $branch (needs push + SAML on $repo; already exists?)"
+drop_remote_branch() { gh api --method DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null 2>&1 || true; }
+
+# Build fileChanges from the local diff. --no-renames turns a rename into delete-old + add-new, which
+# is exactly the additions/deletions shape createCommitOnBranch wants. base64 is binary-safe.
+adds_nd="$work/adds.ndjson"; dels_nd="$work/dels.ndjson"; : >"$adds_nd"; : >"$dels_nd"
+while IFS= read -r -d '' status && IFS= read -r -d '' path; do
+  case "$status" in
+    D) jq -cn --arg p "$path" '{path:$p}' >>"$dels_nd" ;;
+    *) b64="$(git show "HEAD:$path" | base64 | tr -d '\n')"
+       jq -cn --arg p "$path" --arg c "$b64" '{path:$p, contents:$c}' >>"$adds_nd" ;;
+  esac
+done < <(git diff --name-status --no-renames -z "$base_sha" HEAD)
+
+commit_oid="$(jq -cn \
+  --arg repo "$repo" --arg br "$branch" --arg oid "$base_sha" \
+  --arg h "$(git log -1 --format='%s' HEAD)" --arg b "$(git log -1 --format='%b' HEAD)" \
+  --slurpfile a <(jq -cs '.' "$adds_nd") --slurpfile d <(jq -cs '.' "$dels_nd") '
+  {query:"mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",
+   variables:{input:{
+     branch:{repositoryNameWithOwner:$repo, branchName:$br},
+     message:{headline:$h, body:$b},
+     expectedHeadOid:$oid,
+     fileChanges:{additions:$a[0], deletions:$d[0]}}}}' \
+  | gh api graphql --input - --jq '.data.createCommitOnBranch.commit.oid' 2>&1)" \
+  && [[ -n "$commit_oid" && "$commit_oid" != null ]] \
+  || { drop_remote_branch; die "createCommitOnBranch failed: ${commit_oid:-no oid}"; }
+log "signed commit $commit_oid on $branch"
 title="${pr_title:-swe-implement: ${source_ref}}"
 body="$(printf 'Automated swe-implement draft from the PR-safety pipeline.\n\nSource: %s\nBase: %s@%s\n\nAgent: swe-implementer (%s). This is a DRAFT for human review; it was produced against a fresh clone of the default branch and does not touch any author PR branch.\n\n---\n\n%s\n' "$source_ref" "$default_branch" "${base_sha:0:10}" "$MODEL" "$(printf '%s' "$task_text" | head -c 4000)")"
-url="$(gh pr create --repo "$repo" --base "$default_branch" --head "$branch" --draft --title "$title" --body "$body" 2>&1)" || die "gh pr create failed: $url"
+url="$(gh pr create --repo "$repo" --base "$default_branch" --head "$branch" --draft --title "$title" --body "$body" 2>&1)" || { drop_remote_branch; die "gh pr create failed: $url"; }
 log "draft PR: $url"
 trap - EXIT   # keep the clone for the pushed branch's provenance
