@@ -20,7 +20,7 @@ ALTER TABLE requests ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
 -- Ambiguous maintenance attempts (lease expired after side-effect intent) stop for reconciliation.
 ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_status_check;
 ALTER TABLE requests ADD CONSTRAINT requests_status_check
-  CHECK (status IN ('queued','running','done','failed','superseded','reconcile'));
+  CHECK (status IN ('queued','running','done','failed','skipped','superseded','reconcile'));
 
 -- Upgrade buffer for rows already running when migration starts. Worker rollout remains
 -- stop-the-world; replaying this migration does not extend the lease.

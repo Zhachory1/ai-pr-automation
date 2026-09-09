@@ -157,6 +157,14 @@ queue_mark_reconcile() {
     <<<"UPDATE requests SET status='reconcile', finished_at=clock_timestamp(), fail_response=:'reason', lease_expires_at=NULL WHERE id=:'id' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() RETURNING 1;"
 }
 
+# Terminal 'skipped': the worker ran cleanly but chose not to act (nothing to do), as opposed to
+# 'failed' (something broke). Reason is retained in fail_response for the UI/detail column.
+queue_mark_skipped() {
+  local id="$1" reason="$2" nonce="$3"
+  _psql -v id="$id" -v reason="$reason" -v nonce="$nonce" \
+    <<<"UPDATE requests SET status='skipped', finished_at=clock_timestamp(), fail_response=:'reason', lease_expires_at=NULL WHERE id=:'id' AND status='running' AND run_nonce=:'nonce' AND lease_expires_at>clock_timestamp() RETURNING 1;"
+}
+
 queue_mark_superseded() {
   local id="$1" reason="$2" nonce="$3"
   _psql -v id="$id" -v reason="$reason" -v nonce="$nonce" \

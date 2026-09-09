@@ -144,9 +144,14 @@ process_one() {
     local url; url="$(sed -n 's/.*draft PR: //p' "$outfile" | tail -1)"
     queue_mark_done "$id" "$url" "$nonce" >/dev/null
     log "request $id done${url:+ (}$url${url:+)}"
+  elif (( rc == 1 )); then
+    # rc==1 is the harness's clean no-op: the agent re-verified the findings and produced no commit
+    # (already fixed upstream / nothing to forward-fix). That is a legitimate 'skipped', not a
+    # failure. A new head re-enqueues a fresh row.
+    queue_mark_skipped "$id" "no commit produced (nothing to forward-fix)" "$nonce" >/dev/null
+    log "request $id skipped (no commit produced)"
   else
-    # harness exit 1 = agent produced no commit (nothing to fix); >1 = a real error. Both are
-    # terminal for this request; a new head re-enqueues a fresh row.
+    # rc>1 (or timeout) is a real error: clone/validation/push/API broke.
     local reason; reason="$(sed -n 's/^.*swe-implement: //p' "$outfile" | tail -1)"
     queue_mark_failed "$id" "swe-implement rc=$rc${reason:+: }$reason" "$nonce" >/dev/null
     log "request $id failed rc=$rc"

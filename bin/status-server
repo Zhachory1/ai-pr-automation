@@ -474,6 +474,7 @@ def render(flash: str = "") -> str:
  .chip{{display:inline-block;padding:.05rem .5rem;border-radius:999px;font-size:.75rem;font-weight:600;font-family:system-ui}}
  .s-queued{{background:#2b2f3a;color:#c8ccd8}} .s-running{{background:#12324f;color:#5ab0ff}}
  .s-done{{background:#123a22;color:#7ee787}} .s-failed{{background:#3a1620;color:#ff8095}}
+ .s-skipped{{background:#2b2f3a;color:#9aa0ac}}
  button{{font:inherit;font-size:.8rem;background:#3a1620;color:#ff8095;border:1px solid #5a2230;
    border-radius:6px;padding:.15rem .6rem;cursor:pointer}}
  button:hover{{background:#5a2230}}
@@ -542,7 +543,7 @@ def _swe_ref(ref: str) -> str:
 
 
 def chip(status: str) -> str:
-    s = "failed" if status == "reconcile" else status if status in ("queued", "running", "done", "failed") else "queued"
+    s = "failed" if status == "reconcile" else status if status in ("queued", "running", "done", "failed", "skipped") else "queued"
     return f'<span class="chip s-{s}">{e(status)}</span>'
 
 

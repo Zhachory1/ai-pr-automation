@@ -2,5 +2,5 @@
 BEGIN;
 ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_status_check;
 ALTER TABLE requests ADD CONSTRAINT requests_status_check
-  CHECK (status IN ('queued','running','done','failed','superseded','reconcile'));
+  CHECK (status IN ('queued','running','done','failed','skipped','superseded','reconcile'));
 COMMIT;
