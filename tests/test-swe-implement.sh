@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Unit tests for the forward-fix harness's input handling and guards. Does NOT run the agent, clone,
+# Unit tests for the swe-implement harness's input handling and guards. Does NOT run the agent, clone,
 # or push (those need live creds + a model); it exercises arg parsing, input normalization, and the
 # precondition failures that must stop before any network or write action.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-H=bin/pr-safety-forward-fix
+H=bin/swe-implement
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 # expect_out <name> <regex> -- <cmd...>: run cmd, assert combined output matches regex
@@ -49,8 +49,8 @@ expect_out "handoff without repo identity is rejected" 'no valid repo identity' 
 
 # PR title is human-facing (repo#pr), not the raw handoff filename / source_ref. Assert the harness
 # builds a pr_title per input mode and uses it (falling back to source_ref only if unset).
-if grep -q 'pr_title="forward-fix(${repo##\*/}#${local_pr:-?}):' "$H" \
-   && grep -q 'title="${pr_title:-forward-fix: ${source_ref}}"' "$H"; then
+if grep -q 'pr_title="swe-implement(${repo##\*/}#${local_pr:-?}):' "$H" \
+   && grep -q 'title="${pr_title:-swe-implement: ${source_ref}}"' "$H"; then
   echo 'PASS: PR title derived from repo#pr, not filename'
 else
   echo 'FAIL: PR title derivation missing' >&2; fail=1

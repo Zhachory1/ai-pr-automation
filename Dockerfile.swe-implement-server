@@ -1,0 +1,37 @@
+# swe-implement-server image: serial worker for the 'swe-implement' queue kind. Same toolchain as
+# agent-server (git + gh + jq + psql + node/mewritecode) since it clones repos and runs the
+# swe-implementer harness, but its entrypoint is the swe-implement worker.
+# Build: docker build -f Dockerfile.swe-implement-server -t agent-fleet/swe-implement-server .
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash git jq curl ca-certificates coreutils postgresql-client gnupg \
+      python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @zhachory1/mewrite-code
+
+WORKDIR /app
+COPY bin/ ./bin/
+COPY lib/ ./lib/
+COPY agent-config/ ./agent-config/
+RUN chmod +x bin/*
+
+ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
+# The harness defaults to ~/.mewrite/agents; in-container the persona is vendored here.
+ENV SWE_IMPLEMENTER_AGENT=/app/agent-config/agents/swe-implementer.md
+
+# Serial worker for kind=swe-implement. gh/push use GH_TOKEN; mewritecode uses OPENAI_API_KEY.
+# No creds baked in; all via env (compose env_file: .env).
+ENTRYPOINT ["bin/swe-implement-server"]
