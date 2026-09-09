@@ -128,8 +128,12 @@ if (( ! open_pr )); then
 fi
 
 # --- push + open DRAFT PR (authored as the push-capable token identity) ---------------------------
+# Push over a token-embedded https URL rather than relying on a git credential helper: the clone's
+# origin may be ssh, and a container has no global gh git-credential setup. Same approach as
+# agent-server's maintain push. The token is not written to any on-disk git config.
 log "pushing $branch and opening DRAFT PR"
-git push -u origin "$branch" >/dev/null 2>&1 || die "push failed (token needs push + SAML on $repo)"
+push_url="https://x-access-token:${GH_TOKEN}@github.com/${repo}.git"
+git push "$push_url" "HEAD:refs/heads/$branch" >/dev/null 2>&1 || die "push failed (token needs push + SAML on $repo)"
 title="${pr_title:-swe-implement: ${source_ref}}"
 body="$(printf 'Automated swe-implement draft from the PR-safety pipeline.\n\nSource: %s\nBase: %s@%s\n\nAgent: swe-implementer (%s). This is a DRAFT for human review; it was produced against a fresh clone of the default branch and does not touch any author PR branch.\n\n---\n\n%s\n' "$source_ref" "$default_branch" "${base_sha:0:10}" "$MODEL" "$(printf '%s' "$task_text" | head -c 4000)")"
 url="$(gh pr create --repo "$repo" --base "$default_branch" --head "$branch" --draft --title "$title" --body "$body" 2>&1)" || die "gh pr create failed: $url"

@@ -298,8 +298,12 @@ services:
       SWE_IMPLEMENT_MODEL: ${SWE_IMPLEMENT_MODEL:-openai/gpt-5.6-terra}
       TMPDIR: /work
       HOME: /work
+      HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}
     volumes:
       - swe_implement_work:/work                              # ephemeral clone scratch (not code root)
+      # handoff docs (read-only) at the SAME absolute path the DB stores, so a handoff-source task
+      # can read its file. Snapshot/policy dirs are not needed; swe-implement clones fresh.
+      - ${HANDOFF_ROOT:-/var/empty}:${HANDOFF_ROOT:-/var/empty}:ro
     depends_on:
       db-requests:
         condition: service_healthy
