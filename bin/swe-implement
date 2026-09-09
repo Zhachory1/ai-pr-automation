@@ -100,6 +100,17 @@ git_login="${git_login:-swe-implement-bot}"
 git config user.name "$git_login"
 git config user.email "${git_login}@users.noreply.github.com"
 
+# Let the agent's validation build private modules. Go's `go mod download` shells out to git over
+# https, which has no credentials in the container. Inject a token rewrite via GIT_CONFIG_* env (NOT
+# on-disk config, so the token isn't persisted) and mark the target org private so Go skips the
+# public checksum DB. Only affects git subprocesses reaching github.com (module fetch); the agent's
+# in-clone git ops are offline and the API commit path uses gh, not git.
+owner="${repo%%/*}"
+export GOPRIVATE="github.com/${owner}" GOFLAGS="${GOFLAGS:-}"
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
+export GIT_CONFIG_VALUE_0="https://github.com/"
+
 # --- build the prompt: swe-implementer persona + normalized brief ---------------------------------
 persona="$(awk 'BEGIN{fm=0} /^---$/{fm++;next} fm>=2{print}' "$AGENT_DEF")"
 promptfile="$work/prompt.md"
