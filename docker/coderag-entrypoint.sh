@@ -9,13 +9,12 @@ case "${1:-}" in
   serve-all)
     ui_port="${CBM_UI_PORT:-9749}"
     /usr/local/bin/codebase-memory-mcp daemon start --port="$ui_port"
-    # The UI daemon listens on 127.0.0.1:${ui_port}; socat forwards the container's external IP to it
-    # so the published host port works. `hostname -i` returns EVERY container IP, so on a multi-homed
-    # container (coderag joins both the default and pr-safety-analyst networks) it is a space-
-    # separated list. Take the first IP only: a bare list makes `bind=<list>` malformed, and 0.0.0.0
-    # collides with the daemon's 127.0.0.1 bind ("address already in use"). Either kills the forwarder.
-    host="$(hostname -i | awk '{print $1}')"
-    socat "TCP-LISTEN:${ui_port},bind=${host},reuseaddr,fork" "TCP:127.0.0.1:${ui_port}" &
+    # The daemon owns 127.0.0.1:${ui_port}, so forward every external interface separately. Docker
+    # can publish through any attached network; binding only hostname's first IP breaks multi-homed
+    # containers when the published port uses another interface.
+    for host in $(hostname -i); do
+      socat "TCP-LISTEN:${ui_port},bind=${host},reuseaddr,fork" "TCP:127.0.0.1:${ui_port}" &
+    done
     exec supergateway --stdio /usr/local/bin/codebase-memory-mcp \
       --outputTransport streamableHttp --port "${CODERAG_MCP_PORT:-9750}" \
       --streamableHttpPath /mcp --healthEndpoint /healthz --stateful
