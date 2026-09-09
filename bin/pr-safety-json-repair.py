@@ -70,7 +70,7 @@ def main() -> int:
     try:
         obj = json.loads(repair(raw))
     except (json.JSONDecodeError, ValueError):
-        return 1  # unrepairable; leave original for the controller to reject
+        return 1  # unrepairable; leave original for the agent server to reject
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(obj, fh, separators=(",", ":"))
         fh.write("\n")

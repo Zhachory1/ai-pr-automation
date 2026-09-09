@@ -21,6 +21,9 @@ services:
     volumes:
       - requests_pgdata:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    networks:
+      - default
+      - pr-safety-analyst
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet}"]
       interval: 5s
@@ -379,17 +382,7 @@ services:
       schema-migrate:
         condition: service_completed_successfully
 
-  # Build-only image used by pr-safety-review-runner's per-operation `docker run`.
-  # It receives only OPENAI_API_KEY, read-only snapshot/policy mounts, and one writable handoff file.
-  pr-safety-analyst-image:
-    image: agent-fleet/pr-safety-analyst:${PR_SAFETY_ANALYST_VERSION:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile.pr-safety-analyst
-    restart: "no"
-    entrypoint: ["true"]
-
-  # Only this proxy has an external network path for analyst model inference.
+  # Only this proxy has an external network path for PR-safety model inference.
   pr-safety-egress:
     profiles: ["pr-safety"]
     image: agent-fleet/pr-safety-egress:${PR_SAFETY_EGRESS_VERSION:-latest}
@@ -414,27 +407,34 @@ services:
       retries: 6
       start_period: 10s
 
-  # Draft-only controller. It can access local Postgres and Docker to start the isolated analyst,
-  # It makes no external write itself; it forwards read-only investigation credentials to the
-  # isolated analyst runner and has no GitHub/Chat/CI/Datadog write authority.
-  pr-safety-review-controller:
+  # Dedicated PR-safety agent-server. It runs mewritecode directly with read-only investigation
+  # credentials, validates immutable inputs/results, and has no GitHub/CI/Datadog write authority.
+  agent-server-pr-safety:
     profiles: ["pr-safety"]
-    image: agent-fleet/pr-safety-controller:${PR_SAFETY_CONTROLLER_VERSION:-latest}
-    stop_grace_period: ${PR_SAFETY_CONTROLLER_STOP_GRACE_PERIOD:-35m}
+    image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
+    stop_grace_period: ${PR_SAFETY_SERVER_STOP_GRACE_PERIOD:-35m}
     build:
       context: .
-      dockerfile: Dockerfile.pr-safety-controller
+      dockerfile: Dockerfile.agent-server
+    entrypoint: ["/app/bin/agent-server-pr-safety"]
     restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: 2
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+      - /app/pr-safety-agent-config/sessions:rw,nosuid,nodev,mode=0700
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GH_TOKEN: ${GH_TOKEN:-}
       BUILDKITE_API_TOKEN: ${BUILDKITE_API_TOKEN:-}
       DD_PAT: ${DD_PAT:-}
-      PR_SAFETY_ANALYST_RUNNER: /app/bin/pr-safety-review-runner
-      PR_SAFETY_ANALYST_IMAGE: agent-fleet/pr-safety-analyst:${PR_SAFETY_ANALYST_VERSION:-latest}
-      PR_SAFETY_ANALYST_NETWORK: agent-fleet-pr-safety-analyst
       PR_SAFETY_ANALYST_PROXY: http://pr-safety-egress:3128
       PR_SAFETY_ANALYST_MODEL: ${PR_SAFETY_ANALYST_MODEL:-openai/gpt-5.6-luna}
+      PR_SAFETY_AGENT_DIR: /app/pr-safety-agent-config
       REQUESTS_DB_HOST: db-requests
       REQUESTS_DB_PORT: "5432"
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
@@ -454,18 +454,23 @@ services:
       retries: 6
       start_period: 10s
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ${PR_SAFETY_SNAPSHOT_ROOT:-/var/empty}:${PR_SAFETY_SNAPSHOT_ROOT:-/var/empty}:ro
       - ${PR_SAFETY_POLICY_ROOT:-/var/empty}:${PR_SAFETY_POLICY_ROOT:-/var/empty}:ro
       - ${PR_SAFETY_WORK_ROOT:-/var/empty}:${PR_SAFETY_WORK_ROOT:-/var/empty}:rw
       - ${HANDOFF_ROOT:-/var/empty}:${HANDOFF_ROOT:-/var/empty}:rw
+    networks:
+      - pr-safety-analyst
     depends_on:
       db-requests:
         condition: service_healthy
       schema-migrate:
         condition: service_completed_successfully
-      pr-safety-analyst-image:
-        condition: service_completed_successfully
+      hindsight:
+        condition: service_healthy
+      coderag:
+        condition: service_healthy
+      swarmvault-mcp:
+        condition: service_healthy
       pr-safety-egress:
         condition: service_healthy
 
@@ -491,7 +496,7 @@ services:
       PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
       PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
       HINDSIGHT_URL: http://hindsight:8888
-      HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against the controller's path
+      HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against PR-safety server paths
       STATUS_BIND: 0.0.0.0
     depends_on:
       db-requests:
