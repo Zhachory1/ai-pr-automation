@@ -1,0 +1,31 @@
+# memory-curator image: scheduled job that ruminates source material and writes durable memories to
+# the shared Hindsight bank via REST. Needs only bash + curl + jq + python3 + node/mewritecode (no
+# git/gh/toolchains — it reads mounted sources and talks HTTP to hindsight). See docs/memory-curation.md.
+# Build: docker build -f Dockerfile.memory-curator -t agent-fleet/memory-curator .
+FROM debian:bookworm-slim
+
+# python3/make/g++ are needed for mewritecode's native deps (better-sqlite3 -> node-gyp).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash curl ca-certificates coreutils jq python3 make g++ gnupg \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @zhachory1/mewrite-code
+
+WORKDIR /app
+COPY bin/memory-curator ./bin/memory-curator
+COPY agent-config/ ./agent-config/
+COPY docker/memory-curator-loop.sh ./bin/memory-curator-loop
+RUN chmod +x bin/memory-curator bin/memory-curator-loop
+
+ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
+# Persona is vendored here (harness default is ~/.mewrite/agents).
+ENV MEMORY_CURATOR_AGENT=/app/agent-config/agents/memory-curator.md
+# mewritecode session/home dir must be writable.
+ENV HOME=/work
+
+# Runs the curator on an interval (compose has no cron). All bounds/paths come from env (compose).
+ENTRYPOINT ["bin/memory-curator-loop"]

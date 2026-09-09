@@ -407,6 +407,43 @@ services:
       schema-migrate:
         condition: service_completed_successfully
 
+  # --- memory-curator: scheduled writer for the shared Hindsight bank ---
+  # fleet-shared is read-only over MCP (agents can't self-retain junk); this is the ONE writer, over
+  # REST. Ruminates mounted source material (private-docs + agent-fleet transcripts) on an interval
+  # and writes durable memories. Sources are mounted READ-ONLY. See docs/memory-curation.md.
+  memory-curator:
+    profiles: ["memory-curator"]
+    image: agent-fleet/memory-curator:${MEMORY_CURATOR_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.memory-curator
+    container_name: fleet-memory-curator
+    restart: unless-stopped
+    env_file: .env                      # OPENAI_API_KEY
+    environment:
+      HINDSIGHT_URL: http://hindsight:8888
+      HINDSIGHT_SHARED_BANK: ${HINDSIGHT_SHARED_BANK:-fleet-shared}
+      MEMORY_CURATOR_MODEL: ${MEMORY_CURATOR_MODEL:-openai/gpt-5.6-sol}
+      MEMORY_CURATOR_INTERVAL: ${MEMORY_CURATOR_INTERVAL:-21600}   # 6h between runs
+      # Source roots INSIDE the container (mounted read-only below).
+      MEMORY_CURATOR_TASKS_DIR: /sources/tasks
+      MEMORY_CURATOR_PRIVATE_DOCS: /sources/private-docs
+      MEMORY_CURATOR_STATE_DIR: /state
+      MEMORY_CURATOR_MAX_MEMORIES: ${MEMORY_CURATOR_MAX_MEMORIES:-15}
+      MEMORY_CURATOR_MAX_SOURCE_DOCS: ${MEMORY_CURATOR_MAX_SOURCE_DOCS:-40}
+      HOME: /work
+    volumes:
+      # Host sources, READ-ONLY. Absolute host paths come from .env (default to /var/empty if unset).
+      - ${MEMORY_CURATOR_TASKS_HOST:-/var/empty}:/sources/tasks:ro
+      - ${MEMORY_CURATOR_PRIVATE_DOCS_HOST:-/var/empty}:/sources/private-docs:ro
+      - memory_curator_state:/state                            # persisted watermark + lock
+      - memory_curator_work:/work                              # mewritecode HOME/session scratch
+    depends_on:
+      hindsight:
+        condition: service_healthy
+      hindsight-bank-init:
+        condition: service_completed_successfully   # bank exists + is configured before first write
+
   # Only this proxy has an external network path for PR-safety model inference.
   pr-safety-egress:
     profiles: ["pr-safety"]
@@ -540,3 +577,5 @@ volumes:
   hindsight_pgdata:
   coderag_cache:
   swe_implement_work:
+  memory_curator_state:
+  memory_curator_work:

@@ -44,8 +44,9 @@ mkdir -p "$STATE_DIR"
 # Single instance: don't let overlapping schedules double-write. mkdir is atomic and portable
 # (macOS has no flock). Stale locks older than 2h are reclaimed.
 LOCK="$STATE_DIR/.lock"
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }  # GNU then BSD
 if [[ -d "$LOCK" ]]; then
-  lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || stat -c %Y "$LOCK" 2>/dev/null || echo 0) ))
+  lock_age=$(( $(date +%s) - $(mtime_of "$LOCK") ))
   (( lock_age > 7200 )) && rmdir "$LOCK" 2>/dev/null || true
 fi
 mkdir "$LOCK" 2>/dev/null || { log "another curator run holds the lock; exiting"; exit 0; }
@@ -94,7 +95,7 @@ touch -t "$(python3 -c "import time;print(time.strftime('%Y%m%d%H%M.%S', time.lo
 cand="$srcdir/cand.txt"; : >"$cand"
 add_cand() { # $1 = file path
   local f="$1"; [[ -f "$f" ]] || return 0
-  local m; m="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+  local m; m="$(mtime_of "$f")"
   printf '%s\t%s\n' "$m" "$f" >>"$cand"
 }
 # agent-fleet transcripts newer than the watermark, EXCLUDING the curator's own runs (no feedback loop).
@@ -133,20 +134,27 @@ if [[ "$n_src" -eq 0 ]]; then
 fi
 log "curating from $n_src source docs (since $since_epoch)"
 
-# Build the prompt: persona body + the source material (path-labelled, size-capped per doc).
+# Build the prompt: persona body + the source material (path-labelled, size-capped per doc). The
+# whole prompt is passed as a single argv to mewritecode, so it must stay under ARG_MAX; cap the
+# TOTAL bytes (not just doc count). Docs are newest-first, so truncation drops the oldest, which the
+# watermark-cap already keeps in-window for next run.
+PROMPT_MAX_BYTES="${MEMORY_CURATOR_PROMPT_MAX_BYTES:-96000}"
+PER_DOC_BYTES="${MEMORY_CURATOR_PER_DOC_BYTES:-8000}"
 persona="$(awk 'BEGIN{fm=0} /^---$/{fm++;next} fm>=2{print}' "$AGENT_DEF")"
 promptfile="$srcdir/prompt.md"
 {
   printf '%s\n\n---\n\n# Source material for this run\n\n' "$persona"
   printf 'Consider ONLY the documents below. Cite them by their `id:` when you emit a memory.\n\n'
-  while IFS= read -r f; do
-    [[ -f "$f" ]] || continue
-    printf '## id: %s\n\n```\n' "$f"
-    head -c 8000 "$f" 2>/dev/null
-    printf '\n```\n\n'
-  done <"$manifest"
-  printf 'Emit ONLY the JSON object per your output contract. Empty is fine.\n'
 } >"$promptfile"
+included=0
+while IFS= read -r f; do
+  [[ -f "$f" ]] || continue
+  cur=$(wc -c <"$promptfile")
+  (( cur >= PROMPT_MAX_BYTES )) && { log "prompt byte budget reached ($PROMPT_MAX_BYTES); including $included of $n_src docs"; break; }
+  { printf '## id: %s\n\n```\n' "$f"; head -c "$PER_DOC_BYTES" "$f" 2>/dev/null; printf '\n```\n\n'; } >>"$promptfile"
+  included=$((included+1))
+done <"$manifest"
+printf 'Emit ONLY the JSON object per your output contract. Empty is fine.\n' >>"$promptfile"
 
 # --- 2) run the curator persona -------------------------------------------------------------------
 log "running memory-curator ($MODEL)"
