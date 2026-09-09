@@ -27,7 +27,15 @@ POLL_INTERVAL="${SWE_IMPLEMENT_POLL_INTERVAL:-15}"
 PER_REQUEST_TIMEOUT="${SWE_IMPLEMENT_PER_REQUEST_TIMEOUT:-2400}"   # 40m ceiling (clone+agent+validate)
 LOOP_HEARTBEAT_MAX="${SWE_IMPLEMENT_LOOP_HEARTBEAT_MAX:-7200}"
 HARNESS="${SWE_IMPLEMENT_HARNESS:-$HERE/bin/swe-implement}"
-AGENT_SERVER_LOCK_KEY="${AGENT_SERVER_LOCK_KEY:-4242}"
+# Renewable DB lease + nonce fencing (same model as agent-server since #58). A background heartbeat
+# renews the lease while the long-running harness works; reclaim only requeues expired leases.
+LEASE_SECONDS="${SWE_IMPLEMENT_LEASE_SECONDS:-120}"
+LEASE_HEARTBEAT="${SWE_IMPLEMENT_LEASE_HEARTBEAT:-30}"
+LEASE_DB_TIMEOUT="${SWE_IMPLEMENT_LEASE_DB_TIMEOUT:-10}"
+[[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_HEARTBEAT" =~ ^[1-9][0-9]*$ && "$LEASE_DB_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
+  || { echo "lease seconds, heartbeat, and DB timeout must be positive integers" >&2; exit 2; }
+(( LEASE_HEARTBEAT * 3 <= LEASE_SECONDS && 2 * (LEASE_HEARTBEAT + LEASE_DB_TIMEOUT) + 2 <= LEASE_SECONDS )) \
+  || { echo "lease must cover two heartbeat+DB-timeout windows with safety margin" >&2; exit 2; }
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) swe-implement-server $*"; }
@@ -37,26 +45,50 @@ need psql; need jq; need git; need gh
 : "${GH_TOKEN:?set GH_TOKEN (push + SAML authorized for the target org)}"
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
-
-# --- single instance: hold a per-kind session advisory lock for our whole life (see agent-server) --
-LOCKSESSION_PID=""
-acquire_single_instance() {
-  coproc LOCKSESSION { _psql 2>/dev/null; }
-  LOCKSESSION_PID="$!"
-  printf "SELECT pg_try_advisory_lock(%s::int, hashtext('%s'));\n" "$AGENT_SERVER_LOCK_KEY" "$KIND" >&"${LOCKSESSION[1]}"
-  local got; read -r got <&"${LOCKSESSION[0]}" || true
-  if [[ "$got" != "t" ]]; then
-    log "another swe-implement-server holds the single-instance lock; refusing to start"; exit 0
-  fi
-  exec {LOCK_HOLD_FD}>&"${LOCKSESSION[1]}"
-  log "single-instance lock acquired (holder pid $LOCKSESSION_PID)"
-}
-assert_lock_held() {
-  if [[ -z "$LOCKSESSION_PID" ]] || ! kill -0 "$LOCKSESSION_PID" 2>/dev/null; then
-    log "FATAL: single-instance lock holder died; exiting to avoid running unlocked"; exit 3
-  fi
-}
 db_up() { _psql <<<"SELECT 1;" >/dev/null 2>&1; }
+
+# --- renewable lease heartbeat (mirrors agent-server) ---
+WORKER_PID="$$"
+ACTIVE_CHILD=""
+LEASE_HEARTBEAT_PID=""
+SHUTDOWN_REQUESTED=false
+request_shutdown() { SHUTDOWN_REQUESTED=true; log "shutdown requested; draining active request"; }
+abort_lost_lease() {
+  log "worker lost its lease; aborting active request"
+  stop_lease_heartbeat
+  if [[ -n "$ACTIVE_CHILD" ]]; then
+    kill -TERM "$ACTIVE_CHILD" 2>/dev/null || true; sleep 2
+    kill -KILL "$ACTIVE_CHILD" 2>/dev/null || true; wait "$ACTIVE_CHILD" 2>/dev/null || true
+  fi
+  exit 143
+}
+trap request_shutdown TERM INT
+trap abort_lost_lease USR1
+start_lease_heartbeat() {
+  local id="$1" nonce="$2"
+  (
+    failures=0
+    while sleep "$LEASE_HEARTBEAT"; do
+      state="$("$TIMEOUT_BIN" --kill-after=2s "${LEASE_DB_TIMEOUT}s" bash -c \
+        '. "$1"; queue_renew_lease "$2" "$3" "$4"' _ "$HERE/lib/queue.sh" "$id" "$nonce" "$LEASE_SECONDS" \
+        2>/dev/null)" || state=error
+      case "$state" in
+        renewed) failures=0 ;;
+        finished) exit 0 ;;
+        lost) log "FATAL: lease lost for request $id; stopping worker"; kill -USR1 "$WORKER_PID"; exit 1 ;;
+        *) failures=$((failures + 1)); (( failures < 2 )) && continue
+           log "FATAL: lease renewal failed twice for request $id; stopping worker"; kill -USR1 "$WORKER_PID"; exit 1 ;;
+      esac
+    done
+  ) &
+  LEASE_HEARTBEAT_PID="$!"
+}
+stop_lease_heartbeat() {
+  [[ -n "$LEASE_HEARTBEAT_PID" ]] || return 0
+  kill "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  LEASE_HEARTBEAT_PID=""
+}
 
 # Build harness args from the request payload. Prints NUL-free args one per line into the named
 # array via stdout capture (caller reads with mapfile). Rejects an unknown/invalid source.
@@ -83,59 +115,70 @@ harness_args_from_payload() {
 }
 
 process_one() {
-  local id="$1" payload="$2" run_id="$3"
+  local id="$1" payload="$2" run_id="$3" nonce="$4"
   local argfile; argfile="$(mktemp)"; local rc=0
   if ! harness_args_from_payload "$payload" > "$argfile"; then
-    queue_mark_failed "$id" "invalid swe-implement payload"; rm -f "$argfile"; return 0
+    queue_mark_failed "$id" "invalid swe-implement payload" "$nonce" >/dev/null; rm -f "$argfile"; return 0
   fi
   local -a args=(); local line
   while IFS= read -r line; do args+=("$line"); done < "$argfile"
   rm -f "$argfile"
 
-  # Record the intent to make a side effect (draft PR) BEFORE running, so a crash mid-run leaves the
-  # row as running-with-side_effect and reclaim does not blindly requeue a possible pushed branch.
-  queue_mark_side_effect "$id" >/dev/null 2>&1 || true
+  # Record the intent to make a side effect (draft PR) BEFORE running, so an expired lease leaves the
+  # row as running-with-side_effect and reclaim routes it to 'reconcile' rather than blind requeue.
+  queue_mark_side_effect "$id" "$nonce" >/dev/null 2>&1 || true
 
-  local out; out="$("$TIMEOUT_BIN" --kill-after=15s "${PER_REQUEST_TIMEOUT}s" "$HARNESS" "${args[@]}" 2>&1)" || rc=$?
-  printf '%s\n' "$out" | sed 's/^/  harness: /'
+  # Run the harness with output to a FILE, not $(...) capture: command substitution would keep the
+  # pipe open until every process the harness spawned - including mewritecode's daemonized mcp-remote
+  # MCP children - closes it, entangling this worker's lifetime with those subprocesses. Track the
+  # child PID so a lost lease (USR1) can abort it.
+  local outfile; outfile="$(mktemp)"
+  "$TIMEOUT_BIN" --kill-after=15s "${PER_REQUEST_TIMEOUT}s" "$HARNESS" "${args[@]}" >"$outfile" 2>&1 </dev/null &
+  ACTIVE_CHILD="$!"
+  wait "$ACTIVE_CHILD" || rc=$?
+  ACTIVE_CHILD=""
+  sed 's/^/  harness: /' "$outfile"
 
   if (( rc == 0 )); then
     # harness prints "draft PR: <url>" on success (or nothing for --no-pr).
-    local url; url="$(printf '%s' "$out" | sed -n 's/.*draft PR: //p' | tail -1)"
-    queue_mark_done "$id" "$url"
+    local url; url="$(sed -n 's/.*draft PR: //p' "$outfile" | tail -1)"
+    queue_mark_done "$id" "$url" "$nonce" >/dev/null
     log "request $id done${url:+ (}$url${url:+)}"
   else
     # harness exit 1 = agent produced no commit (nothing to fix); >1 = a real error. Both are
     # terminal for this request; a new head re-enqueues a fresh row.
-    local reason; reason="$(printf '%s' "$out" | sed -n 's/^.*swe-implement: //p' | tail -1)"
-    queue_mark_failed "$id" "swe-implement rc=$rc${reason:+: }$reason"
+    local reason; reason="$(sed -n 's/^.*swe-implement: //p' "$outfile" | tail -1)"
+    queue_mark_failed "$id" "swe-implement rc=$rc${reason:+: }$reason" "$nonce" >/dev/null
     log "request $id failed rc=$rc"
   fi
+  rm -f "$outfile"
 }
 
-trap 'log "shutting down"' TERM INT
-acquire_single_instance
-queue_reclaim_stale "$KIND" || log "reclaim failed (continuing)"
-log "swe-implement-server up (serial, kind=$KIND); poll ${POLL_INTERVAL}s, per-request ${PER_REQUEST_TIMEOUT}s"
+log "swe-implement-server up (leased, kind=$KIND); poll ${POLL_INTERVAL}s, lease ${LEASE_SECONDS}s/${LEASE_HEARTBEAT}s heartbeat"
 last_progress="$(date +%s)"
 
 while true; do
+  [[ "$SHUTDOWN_REQUESTED" == true ]] && { stop_lease_heartbeat; exit 0; }
   now="$(date +%s)"
   if (( now - last_progress > LOOP_HEARTBEAT_MAX )); then
     log "FATAL: no loop progress in ${LOOP_HEARTBEAT_MAX}s; self-exiting for restart"; exit 3
   fi
-  assert_lock_held
   if ! db_up; then log "db unreachable; backing off"; sleep "$POLL_INTERVAL"; continue; fi
 
-  run_id="$(date '+%Y%m%d-%H%M%S')-$$"
   nonce="$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  claim="$(queue_claim_one "$KIND" "$run_id" "$nonce" || true)"
+  run_id="$(date '+%Y%m%d-%H%M%S')-${HOSTNAME:-worker}-${nonce:0:8}"
+  if ! claim="$(queue_claim_one "$KIND" "$run_id" "$nonce" "$LEASE_SECONDS")"; then
+    log "claim failed; backing off"; sleep "$POLL_INTERVAL"; continue
+  fi
   if [[ -z "$claim" || "$claim" == "null" ]]; then sleep "$POLL_INTERVAL"; continue; fi
 
   id="$(jq -r '.id' <<<"$claim")"
   payload="$(jq -c '.payload' <<<"$claim")"
   dedupe_key="$(jq -r '.dedupe_key' <<<"$claim")"
   log "claimed request $id ($dedupe_key)"
-  process_one "$id" "$payload" "$run_id" || log "process_one error for $id"
+  start_lease_heartbeat "$id" "$nonce"
+  process_one "$id" "$payload" "$run_id" "$nonce" || log "process_one error for $id"
+  stop_lease_heartbeat
   last_progress="$(date +%s)"
+  [[ "$SHUTDOWN_REQUESTED" == true ]] && exit 0
 done
