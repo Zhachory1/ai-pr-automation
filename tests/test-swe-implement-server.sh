@@ -30,6 +30,7 @@ cat > "$TMP/fake-harness" <<'SH'
 printf '%s\n' "$@" > "$FAKE_HARNESS_ARGS"
 case "$(cat "$FAKE_HARNESS_MODE" 2>/dev/null)" in
   fail) echo "swe-implement: clone failed for X" >&2; exit 2 ;;
+  skip) echo "swe-implement no commit produced"; exit 1 ;;
   nopr) echo "committed on branch (--no-pr)"; exit 0 ;;
   *)    echo "2026-01-01 swe-implement draft PR: https://github.com/ROKT/x/pull/99"; exit 0 ;;
 esac
@@ -43,7 +44,7 @@ run_one() {
   ( timeout 30 bash bin/swe-implement-server >/"$TMP"/server.log 2>&1 & echo $! > "$TMP/srv.pid" )
   for _ in $(seq 1 25); do
     local st; st="$(q "SELECT status FROM requests ORDER BY id DESC LIMIT 1")"
-    [[ "$st" == done || "$st" == failed ]] && break; sleep 1
+    [[ "$st" == done || "$st" == failed || "$st" == skipped ]] && break; sleep 1
   done
   kill "$(cat "$TMP/srv.pid")" 2>/dev/null || true; pkill -f swe-implement-server 2>/dev/null || true; sleep 1
 }
@@ -73,6 +74,12 @@ echo fail > "$TMP/mode"
 q "INSERT INTO requests(kind,payload,dedupe_key) VALUES('swe-implement','{\"source\":\"issue\",\"issue\":\"ROKT/cpi#7\",\"no_pr\":false}','issue:ROKT/cpi#7');" >/dev/null
 run_one
 check "harness error marks failed" "q \"SELECT status FROM requests WHERE dedupe_key='issue:ROKT/cpi#7'\" | grep -qx failed"
+
+# 4b) harness rc=1 (no commit) -> skipped, NOT failed
+echo skip > "$TMP/mode"
+q "INSERT INTO requests(kind,payload,dedupe_key) VALUES('swe-implement','{\"source\":\"issue\",\"issue\":\"ROKT/cpi#8\",\"no_pr\":false}','issue:ROKT/cpi#8');" >/dev/null
+run_one
+check "harness rc=1 marks skipped (not failed)" "q \"SELECT status FROM requests WHERE dedupe_key='issue:ROKT/cpi#8'\" | grep -qx skipped"
 
 # 5) invalid payload (unknown source) -> failed without calling harness
 rm -f "$TMP/args"
