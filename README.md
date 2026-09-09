@@ -7,7 +7,7 @@ Fair, bounded automation for GitHub pull-request review and maintenance — as a
 >
 > ```
 > bin/pr-producer  ──enqueue──▶  Postgres `requests`  ──drain──▶  bin/agent-server ──▶ posts review
->   (cron: discover PRs)          (dedupe + leased claims)             (scalable workers)
+> (scheduled Compose service)     (dedupe + leased claims)             (scalable workers)
 > ```
 >
 > - **`bin/pr-producer <review|maintain>`** — discovers PRs (assigned / authored via `gh search`),
@@ -17,7 +17,7 @@ Fair, bounded automation for GitHub pull-request review and maintenance — as a
 >   to shared memory), posts the review, marks the row terminal. Blocked maintenance findings enter
 >   the local human-review queue instead of disappearing with the worker workspace.
 > - Substrate (Postgres + Redis + memory/MCP stack) and full setup: **[`docker/README.md`](docker/README.md)**.
-> - launchd templates: `launchd/com.example.agent-fleet-{producer-reviews,producer-maintenance,agent-server}.plist.template`.
+> - Compose runs both producers and workers. Legacy launchd templates remain available for host scheduling.
 
 ## Modes
 
@@ -27,9 +27,8 @@ Fair, bounded automation for GitHub pull-request review and maintenance — as a
 | `maintain` | Open PRs authored by `@me` | Handle review feedback and CI with one bounded fix pass |
 
 ```bash
-bin/pr-producer review     # enqueue assigned PRs
-bin/pr-producer maintain   # enqueue authored PRs
-# bin/agent-server drains the queue (run it under launchd; see docker/README.md)
+docker compose up -d --build \
+  pr-producer-review pr-producer-maintain agent-server-review agent-server-maintain
 ```
 
 ## Requirements
@@ -49,13 +48,13 @@ producers, agent-server). In brief:
 ```bash
 gh auth status
 command -v timeout || command -v gtimeout
-cp .env.example .env    # fill CODE_ROOT, passwords, HINDSIGHT_API_LLM_API_KEY
+cp .env.example .env    # fill CODE_ROOT, passwords, GH_TOKEN, producer scope, provider key
 scripts/compose.sh up -d --build  # validates vault path, then builds and starts local fleet
 scripts/m0-verify.sh    # substrate checks
 scripts/verify-agent-mcps.sh  # worker -> bridge -> MCP tool-call checks
 
-# enqueue (scoped to your repos) then let the agent-server drain:
-PR_PRODUCER_REPOSITORIES='owner/repo' bin/pr-producer review
+# Producers use PR_PRODUCER_REPOSITORIES / PR_PRODUCER_ORGS from .env.
+docker compose logs -f pr-producer-review pr-producer-maintain
 ```
 
 The agent runner contract, queue fairness, and data-boundary guidance below still apply — the
@@ -280,12 +279,11 @@ Tool-specific CLI tokens can be separate from MCP OAuth. For example, a CI CLI m
 
 ## launchd setup
 
-The fleet primarily runs via `docker compose` (see [`docker/README.md`](docker/README.md)) — the
-agent-servers are containers. launchd is used for the **producers** (cron discovery that enqueues):
-[`launchd/com.example.agent-fleet-producer-{reviews,maintenance}.plist.template`](launchd/), and
-optionally the non-container [`agent-server`](launchd/com.example.agent-fleet-agent-server.plist.template)
-for a host-run worker. Copy a template to `~/Library/LaunchAgents/`, fill the placeholders, keep the
-DB password out of the plist (source `.env` via a wrapper or use the keychain), then
+Docker Compose runs the producers and workers by default. The launchd templates remain an optional
+host-scheduling fallback. Do not run host and Compose producers together unless duplicate GitHub
+discovery traffic is acceptable; queue dedupe prevents duplicate active rows, but both schedulers
+still query GitHub. Copy a template to `~/Library/LaunchAgents/`, fill the placeholders, keep the DB
+password out of the plist (use `scripts/producer-launch.sh` or the keychain), then
 `launchctl bootstrap gui/$(id -u) <plist>`.
 
 The sections below describe the original single-binary env contract (`PR_AUTOMATION_*`); the current
