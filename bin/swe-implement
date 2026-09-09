@@ -91,6 +91,14 @@ branch="swe-implement/${slug:-task}-$(date +%s)"
 git switch -c "$branch" >/dev/null 2>&1 || die "could not create branch"
 log "branch $branch off $default_branch@${base_sha:0:10}"
 
+# Configure a commit identity on THIS clone (not global): the swe-implementer runs `git commit`,
+# and a fresh container clone has no user.name/user.email, so git refuses and the agent (correctly)
+# will not fabricate an author. Use the push token's own GitHub login, same as agent-server maintain.
+git_login="$(GH_TOKEN="$GH_TOKEN" gh api user --jq .login 2>/dev/null || true)"
+git_login="${git_login:-swe-implement-bot}"
+git config user.name "$git_login"
+git config user.email "${git_login}@users.noreply.github.com"
+
 # --- build the prompt: swe-implementer persona + normalized brief ---------------------------------
 persona="$(awk 'BEGIN{fm=0} /^---$/{fm++;next} fm>=2{print}' "$AGENT_DEF")"
 promptfile="$work/prompt.md"
