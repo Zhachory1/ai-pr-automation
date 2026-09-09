@@ -316,6 +316,8 @@ services:
   agent-server-maintain:
     image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
     stop_grace_period: ${AGENT_SERVER_STOP_GRACE_PERIOD:-35m}
+    deploy:
+      replicas: ${AGENT_SERVER_MAINTAIN_REPLICAS:-1}
     build:
       context: .
       dockerfile: Dockerfile.agent-server
