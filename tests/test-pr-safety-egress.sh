@@ -23,8 +23,8 @@ for host in api.openai.com/v1/models api.github.com api.buildkite.com api.datado
   docker run --rm --network "$NETWORK" -e HTTPS_PROXY=http://pr-safety-egress:3128 -e NODE_USE_ENV_PROXY=1 node:24-bookworm-slim node -e "fetch('https://$host', {signal: AbortSignal.timeout(10000)}).then(() => process.exit(0)).catch(() => process.exit(1))"
 done
 docker run --rm --network "$NETWORK" -e HTTPS_PROXY=http://pr-safety-egress:3128 -e NODE_USE_ENV_PROXY=1 node:24-bookworm-slim node -e 'fetch("https://example.com", {signal: AbortSignal.timeout(10000)}).then(() => process.exit(1)).catch(() => process.exit(0))'
-grep -Fq -- '--network "$network"' bin/pr-safety-review-runner
-grep -Fq -- '-e HTTPS_PROXY="$proxy" -e HTTP_PROXY="$proxy" -e NODE_USE_ENV_PROXY=1' bin/pr-safety-review-runner
-grep -Fq -- '-e GH_TOKEN -e BUILDKITE_API_TOKEN -e DD_PAT' bin/pr-safety-review-runner
-grep -Fq -- '-e NO_PROXY=coderag,swarmvault-mcp,hindsight -e no_proxy=coderag,swarmvault-mcp,hindsight' bin/pr-safety-review-runner
+grep -Fq 'HTTPS_PROXY="$PROXY" HTTP_PROXY="$PROXY" NODE_USE_ENV_PROXY=1' bin/agent-server-pr-safety
+grep -Fq 'GH_TOKEN="${GH_TOKEN:-}" BUILDKITE_API_TOKEN="${BUILDKITE_API_TOKEN:-}" DD_PAT="${DD_PAT:-}"' bin/agent-server-pr-safety
+grep -Fq 'NO_PROXY=coderag,swarmvault-mcp,hindsight no_proxy=coderag,swarmvault-mcp,hindsight' bin/agent-server-pr-safety
+grep -A60 '^  agent-server-pr-safety:' docker-compose.yml | grep -A2 '^    networks:' | grep -Fq -- '- pr-safety-analyst'
 echo "PASS: PR safety read-services egress"

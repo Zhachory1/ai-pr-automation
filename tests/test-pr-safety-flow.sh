@@ -28,10 +28,10 @@ POLICY_DIGEST="$(shasum -a 256 "$POLICY_ROOT/policy.md" | awk '{print $1}')"
 export REQUESTS_DB_USER=postgres REQUESTS_DB_NAME=fleet REQUESTS_DB_HOST=localhost REQUESTS_DB_PORT="$PORT" PGPASSWORD=t OPENAI_API_KEY=test-key
 export PR_SAFETY_MERGED_PR_AUTHORS=roktfleet
 export PR_SAFETY_SNAPSHOT_ROOT="$TMP/snapshots" PR_SAFETY_POLICY_ROOT="$POLICY_ROOT" PR_SAFETY_POLICY_PATH="$POLICY_ROOT/policy.md" PR_SAFETY_POLICY_VERSION=v1 PR_SAFETY_POLICY_DIGEST="$POLICY_DIGEST"
-export PR_SAFETY_WORK_ROOT="$TMP/work" HANDOFF_ROOT="$TMP/handoffs" PR_SAFETY_ANALYST_RUNNER="$PWD/tests/fake-pr-safety-analyst.sh" PR_SAFETY_CONTROLLER_ONCE=true
-export PR_SAFETY_ANALYST_NETWORK=agent-fleet-pr-safety-analyst PR_SAFETY_ANALYST_PROXY=http://pr-safety-egress:3128
+export PR_SAFETY_WORK_ROOT="$TMP/work" HANDOFF_ROOT="$TMP/handoffs" PR_SAFETY_AGENT_DIR="$TMP/agent-config" PR_SAFETY_MEWRITE_BIN="$PWD/tests/fake-pr-safety-analyst.sh" PR_SAFETY_SERVER_ONCE=true
+export PR_SAFETY_ANALYST_PROXY=http://pr-safety-egress:3128
 export PR_SAFETY_TEST_REPO="$SOURCE"
-mkdir -p "$TMP/bin" "$PR_SAFETY_WORK_ROOT" "$HANDOFF_ROOT"
+mkdir -p "$TMP/bin" "$PR_SAFETY_WORK_ROOT" "$HANDOFF_ROOT" "$PR_SAFETY_AGENT_DIR/sessions"
 # fake gh: only needs to satisfy the producer's snapshot clone from the local SOURCE repo.
 cat > "$TMP/bin/gh" <<SH
 #!/usr/bin/env bash
@@ -43,7 +43,7 @@ esac
 SH
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH"
-chmod +x bin/pr-safety-merged-pr-producer bin/pr-safety-review-controller tests/fake-pr-safety-analyst.sh
+chmod +x bin/pr-safety-merged-pr-producer bin/agent-server-pr-safety tests/fake-pr-safety-analyst.sh
 q() { docker exec "$CID" psql -U postgres -d fleet -tAc "$1"; }
 
 # one merged-PR record pointing at the local SOURCE repo's base/head as merge/base
@@ -55,53 +55,24 @@ slug="$(q "SELECT replace(payload->>'repo','/','__')||'__pr'||(payload->>'pr')||
 snapshot="$(q "SELECT payload->>'snapshot_path' FROM requests WHERE id=$request_id;")"
 [[ -n "$op" && -z "$(git -C "$snapshot" status --porcelain --untracked-files=all)" && ! -w "$snapshot/x" ]]
 [[ "$(q "SELECT (payload->>'base_sha')||'/'||(payload->>'head_sha')||'/'||(payload->>'diff_hash') FROM requests WHERE id=$request_id;")" == "$BASE/$HEAD/$DIFF" ]]
-bin/pr-safety-review-controller
+bin/agent-server-pr-safety
 handoff="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$HANDOFF_ROOT/$slug.md")"
-[[ "$(q "SELECT status FROM requests WHERE id=$request_id;")" == done ]]
+[[ "$(q "SELECT status FROM requests WHERE id=$request_id;")" == "done" ]]
 [[ -f "$handoff" && "$(stat -f '%Lp' "$handoff")" == 600 ]]
 [[ "$(q "SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=$request_id AND provenance->>'operation_id'='$op';")" == 1 ]]
 [[ "$(q "SELECT (provenance->>'handoff_path')||'/'||(provenance->>'handoff_digest') FROM pending_maintenance_reviews WHERE request_id=$request_id;")" == "$handoff/$(shasum -a 256 "$handoff" | awk '{print $1}')" ]]
 [[ "$(q "SELECT (provenance->>'base_sha')||'/'||(provenance->>'head_sha')||'/'||(provenance->>'diff_hash')||'/'||(provenance->>'policy_digest') FROM pending_maintenance_reviews WHERE request_id=$request_id;")" == "$BASE/$HEAD/$DIFF/$POLICY_DIGEST" ]]
 grep -Fq "$HEAD" "$handoff"
-cat > "$TMP/bin/docker" <<'SH'
-#!/bin/sh
-printf '%s\n' "$@" > "$PR_SAFETY_DOCKER_ARGS"
-printf '{}\n'
-SH
-chmod +x "$TMP/bin/docker"
-prompt="$TMP/runner-prompt.md"; draft="$TMP/runner-draft.md"; result="$TMP/runner-result.json"
-printf 'fixture prompt\n' > "$prompt"; : > "$draft"
-PR_SAFETY_DOCKER_ARGS="$TMP/docker-args" PR_SAFETY_SNAPSHOT_PATH="$snapshot" PR_SAFETY_POLICY_PATH="$POLICY_ROOT/policy.md" \
-PR_SAFETY_ANALYST_NETWORK=agent-fleet-pr-safety-analyst PR_SAFETY_ANALYST_PROXY=http://pr-safety-egress:3128 \
-GH_TOKEN=gh-fixture BUILDKITE_API_TOKEN=bk-fixture DD_PAT=dd-fixture \
-PR_SAFETY_HANDOFF_DRAFT="$draft" PR_SAFETY_RESULT_FILE="$result" bin/pr-safety-review-runner "$prompt"
-# isolation contract
-grep -Fx -- '--read-only' "$TMP/docker-args" >/dev/null
-grep -Fx -- '--security-opt' "$TMP/docker-args" >/dev/null; grep -Fx 'no-new-privileges' "$TMP/docker-args" >/dev/null
-grep -Fx "type=bind,src=$snapshot,dst=/snapshot,readonly" "$TMP/docker-args" >/dev/null
-grep -Fx "type=bind,src=$POLICY_ROOT/policy.md,dst=/policy,readonly" "$TMP/docker-args" >/dev/null
-grep -Fx "type=bind,src=$prompt,dst=/input/prompt.md,readonly" "$TMP/docker-args" >/dev/null
-# sole writable mount: handoff draft has no ,readonly suffix (exact line)
-grep -Fx "type=bind,src=$draft,dst=/output/handoff.md" "$TMP/docker-args" >/dev/null
-grep -Fx -- '--user' "$TMP/docker-args" >/dev/null; grep -Fx '65532:65532' "$TMP/docker-args" >/dev/null
-grep -Fx -- '--cap-drop' "$TMP/docker-args" >/dev/null; grep -Fx 'ALL' "$TMP/docker-args" >/dev/null
-# tmpfs hardening + resource caps
-grep -Fx -- '--tmpfs' "$TMP/docker-args" >/dev/null; grep -Fx '/tmp:rw,noexec,nosuid,nodev,mode=1777' "$TMP/docker-args" >/dev/null
-grep -Fx '/app/agent-config/sessions:rw,nosuid,nodev,mode=1777' "$TMP/docker-args" >/dev/null
-grep -Fx -- '--pids-limit' "$TMP/docker-args" >/dev/null; grep -Fx '256' "$TMP/docker-args" >/dev/null
-grep -Fx -- '--memory' "$TMP/docker-args" >/dev/null; grep -Fx '4g' "$TMP/docker-args" >/dev/null
-grep -Fx -- '--cpus' "$TMP/docker-args" >/dev/null
-# egress contract: internal-only network via approved proxy (both cases)
-grep -Fx 'agent-fleet-pr-safety-analyst' "$TMP/docker-args" >/dev/null
-grep -Fx 'HTTPS_PROXY=http://pr-safety-egress:3128' "$TMP/docker-args" >/dev/null
-grep -Fx 'HTTP_PROXY=http://pr-safety-egress:3128' "$TMP/docker-args" >/dev/null
-grep -Fx 'NO_PROXY=coderag,swarmvault-mcp,hindsight' "$TMP/docker-args" >/dev/null
-grep -Fx 'no_proxy=coderag,swarmvault-mcp,hindsight' "$TMP/docker-args" >/dev/null
-# read credentials are forwarded (values inherited from runner env, not baked)
-grep -Fx 'GH_TOKEN' "$TMP/docker-args" >/dev/null
-grep -Fx 'BUILDKITE_API_TOKEN' "$TMP/docker-args" >/dev/null
-grep -Fx 'DD_PAT' "$TMP/docker-args" >/dev/null
-# model is pinned (no silent drift to provider default)
-grep -Fx -- '--model' "$TMP/docker-args" >/dev/null; grep -Fx 'openai/gpt-5.6-luna' "$TMP/docker-args" >/dev/null
-[[ "$(cat "$result")" == '{}' ]]
+# single-container contract: direct agent process, trusted cwd, no nested Docker or analyst image
+! grep -Fq '/var/run/docker.sock' docker-compose.yml
+! grep -Fq 'docker run' bin/agent-server-pr-safety
+grep -A25 '^  agent-server-pr-safety:' docker-compose.yml | grep -Fq 'pids_limit: 256'
+grep -A25 '^  agent-server-pr-safety:' docker-compose.yml | grep -Fq 'mem_limit: 4g'
+grep -A25 '^  agent-server-pr-safety:' docker-compose.yml | grep -Fq 'cpus: 2'
+grep -Fq 'exec --skip-git-repo-check --model' bin/agent-server-pr-safety
+grep -Fq -- '--cwd "$work"' bin/agent-server-pr-safety
+[[ ! -e bin/pr-safety-review-controller && ! -e bin/pr-safety-review-runner ]]
+[[ ! -e Dockerfile.pr-safety-controller && ! -e Dockerfile.pr-safety-analyst && ! -e Dockerfile.agent-server-pr-safety ]]
+grep -A10 '^  agent-server-pr-safety:' docker-compose.yml | grep -Fq 'dockerfile: Dockerfile.agent-server'
+jq -e '.mcpServers["hindsight-world"].command == "mcp-remote" and .mcpServers["hindsight-pr-safety"].command == "mcp-remote"' agent-config/pr-safety-mcp.json >/dev/null
 echo "PASS: merged PR reaches immutable handoff and human queue"

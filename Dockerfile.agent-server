@@ -25,20 +25,24 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # roktcode is private (internal registry) and macOS-only, so it can't go in a public Linux image.
 # mewritecode is public on npm and is the same CLI (`mewritecode exec`). It reads OPENAI_API_KEY
 # from env. Skills + MCP load from $MEWRITE_CODING_AGENT_DIR (set below to the vendored config).
-RUN npm install -g @zhachory1/mewrite-code
+RUN npm install -g @zhachory1/mewrite-code mcp-remote@0.3.0
 
 WORKDIR /app
 COPY bin/ ./bin/
 COPY lib/ ./lib/
 COPY agent-config/ ./agent-config/
-RUN chmod +x bin/*
+RUN mkdir -p /app/pr-safety-agent-config/skills /app/pr-safety-agent-config/sessions \
+ && cp -R /app/agent-config/skills/pr-safety-review /app/pr-safety-agent-config/skills/ \
+ && cp /app/agent-config/pr-safety-mcp.json /app/pr-safety-agent-config/mcp.json \
+ && cp /app/agent-config/pr-safety-models.json /app/pr-safety-agent-config/models.json \
+ && chmod +x bin/*
 
 # mewritecode discovers skills/agents/mcp from this dir (vendored: pr-review + deps, personas,
 # Buildkite MCP plus internal Coderag, SwarmVault, and Hindsight HTTP MCP bridges; Buildkite auth is
 # BUILDKITE_API_TOKEN via env at runtime).
 ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
 
-# AGENT_SERVER_KIND selects the queue kind this worker serves.
+# AGENT_SERVER_KIND selects review/maintain. PR safety overrides entrypoint with its specialized handler.
 # gh uses GH_TOKEN; mewritecode uses OPENAI_API_KEY; buildkite MCP uses BUILDKITE_API_TOKEN.
 # Coderag, SwarmVault, and Hindsight MCP bridges use only internal Compose DNS.
 # All injected via env (compose env_file: .env). No creds baked into the image.

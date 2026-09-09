@@ -29,5 +29,5 @@ PR_SAFETY_SNAPSHOT_ROOT="$TMP/snapshots" PR_SAFETY_POLICY_ROOT="$TMP/policies" \
 PR_SAFETY_POLICY_PATH="$TMP/policies/policy.md" PR_SAFETY_POLICY_VERSION=v1 \
 PR_SAFETY_POLICY_DIGEST="$digest" PR_SAFETY_WORK_ROOT="$TMP/work" HANDOFF_ROOT="$TMP/handoffs" \
 scripts/pr-safety-up.sh
-grep -q -- '--profile pr-safety up -d --build --wait pr-safety-review-controller' "$TMP/docker-args"
+grep -q -- '--profile pr-safety up -d --build --wait agent-server-pr-safety' "$TMP/docker-args"
 echo "PASS: PR safety runtime validation"
