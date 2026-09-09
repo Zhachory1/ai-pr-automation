@@ -196,6 +196,79 @@ services:
       swarmvault-watch:
         condition: service_healthy
 
+  # --- PR producers: scheduled discovery; workers below drain their queue rows ---
+  pr-producer-review:
+    image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.agent-server
+    restart: unless-stopped
+    stop_grace_period: 75s
+    init: true
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        [[ "$${PR_PRODUCER_INTERVAL_SECONDS}" =~ ^[1-9][0-9]*$ ]] || { echo "PR_PRODUCER_INTERVAL_SECONDS must be a positive integer" >&2; exit 2; }
+        while true; do
+          /app/bin/pr-producer review || echo "pr-producer review failed; retrying after $${PR_PRODUCER_INTERVAL_SECONDS}s" >&2
+          sleep "$${PR_PRODUCER_INTERVAL_SECONDS}"
+        done
+    environment:
+      GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN}
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_PORT: "5432"
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      PR_PRODUCER_REPOSITORIES: ${PR_PRODUCER_REPOSITORIES:-}
+      PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
+      PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
+      PR_PRODUCER_MAX_UPDATED_AGE_DAYS: ${PR_PRODUCER_MAX_UPDATED_AGE_DAYS:-0}
+      PR_PRODUCER_MAX_ATTEMPTS: ${PR_PRODUCER_MAX_ATTEMPTS:-3}
+      PR_PRODUCER_GH_TIMEOUT_SECONDS: ${PR_PRODUCER_GH_TIMEOUT_SECONDS:-60}
+      PR_PRODUCER_INTERVAL_SECONDS: ${PR_PRODUCER_INTERVAL_SECONDS:-900}
+    depends_on:
+      db-requests:
+        condition: service_healthy
+      schema-migrate:
+        condition: service_completed_successfully
+
+  pr-producer-maintain:
+    image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.agent-server
+    restart: unless-stopped
+    stop_grace_period: 75s
+    init: true
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        [[ "$${PR_PRODUCER_INTERVAL_SECONDS}" =~ ^[1-9][0-9]*$ ]] || { echo "PR_PRODUCER_INTERVAL_SECONDS must be a positive integer" >&2; exit 2; }
+        while true; do
+          /app/bin/pr-producer maintain || echo "pr-producer maintain failed; retrying after $${PR_PRODUCER_INTERVAL_SECONDS}s" >&2
+          sleep "$${PR_PRODUCER_INTERVAL_SECONDS}"
+        done
+    environment:
+      GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN}
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_PORT: "5432"
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      PR_PRODUCER_REPOSITORIES: ${PR_PRODUCER_REPOSITORIES:-}
+      PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
+      PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
+      PR_PRODUCER_MAX_UPDATED_AGE_DAYS: ${PR_PRODUCER_MAX_UPDATED_AGE_DAYS:-0}
+      PR_PRODUCER_MAX_ATTEMPTS: ${PR_PRODUCER_MAX_ATTEMPTS:-3}
+      PR_PRODUCER_GH_TIMEOUT_SECONDS: ${PR_PRODUCER_GH_TIMEOUT_SECONDS:-60}
+      PR_PRODUCER_INTERVAL_SECONDS: ${PR_PRODUCER_INTERVAL_SECONDS:-900}
+    depends_on:
+      db-requests:
+        condition: service_healthy
+      schema-migrate:
+        condition: service_completed_successfully
+
   # --- agent-servers: leased workers; maintain replicas scale horizontally ---
   # Each replica claims its kind with SKIP LOCKED and renews a DB lease. Scale maintain workers
   # without repartitioning; one running-lineage index prevents concurrent work on the same PR.

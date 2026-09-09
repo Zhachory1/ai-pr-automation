@@ -6,8 +6,8 @@ One `docker-compose.yml` (repo root) + this dir. Stands up the services the leas
 ## Bring it up
 
 ```bash
-cp .env.example .env      # then edit: CODE_ROOT (host-absolute), passwords, provider
-scripts/compose.sh up -d --build  # validates vault path, then builds and starts all services
+cp .env.example .env      # then edit: CODE_ROOT, passwords, provider, producer repo/org scope
+scripts/compose.sh up -d --build  # validates vault path, then builds producers, workers, and substrate
 scripts/m0-verify.sh      # runs the six exit checks
 scripts/verify-agent-mcps.sh # verifies worker MCP client -> bridge -> tool calls
 ```
@@ -140,10 +140,22 @@ at the wrong path and silently re-init an empty cluster — data loss, no error.
 
 ## Producers (M2)
 
-`bin/pr-producer <review|maintain>` is enqueue-only: it discovers matching PRs (assigned for
-`review`, authored for `maintain`), applies the repo allowlist + stale-age cutoff, resolves each
-PR's head sha, and inserts one `requests` row per PR (`dedupe_key = repo#num@headsha`). It never
-runs the agent — scalable `bin/agent-server` workers drain the queue through leased claims.
+Compose runs `pr-producer-review` and `pr-producer-maintain` every
+`PR_PRODUCER_INTERVAL_SECONDS` (default 900). `bin/pr-producer <review|maintain>` is enqueue-only: it
+discovers matching PRs (assigned for `review`, authored for `maintain`), applies the repo allowlist
+and stale-age cutoff, resolves each PR's head sha, and inserts one `requests` row per PR
+(`dedupe_key = repo#num@headsha`). It never runs the agent — scalable `bin/agent-server` workers
+drain the queue through leased claims.
+
+Configure `PR_PRODUCER_REPOSITORIES` or `PR_PRODUCER_ORGS` in `.env`, then inspect discovery logs:
+
+```bash
+docker compose logs -f pr-producer-review pr-producer-maintain
+```
+
+Before enabling these services on an existing host, unload legacy launchd/systemd producer jobs to
+avoid duplicate GitHub discovery traffic. Queue dedupe prevents duplicate active rows during the
+cutover.
 
 Dedupe is two-layered (see `lib/queue.sh`):
 - the partial unique index blocks a second **active** (queued|running) row for the same key;
@@ -151,8 +163,5 @@ Dedupe is two-layered (see `lib/queue.sh`):
   a **failed** head IS re-enqueued (a transient error should retry; permanent poison-PR protection is a future `max_attempts` concern, not a dead-letter here).
 - a PR whose head advanced gets a **new** dedupe_key → a fresh row (re-review on the new commit).
 
-launchd templates: `launchd/com.example.agent-fleet-producer-{reviews,maintenance}.plist.template`
-(the producers) and `com.example.agent-fleet-agent-server.plist.template` (the drain worker). The
-legacy `bin/pr-automation` inline loop has been retired (M2 exit) — the producers + agent-server
-fully replace it. Keep the queue DB password out of the plist — invoke
-`scripts/producer-launch.sh`, which securely loads `.env`, or use the keychain.
+Legacy launchd templates and `scripts/producer-launch.sh` remain available for hosts that cannot run
+the Compose producer services. The old `bin/pr-automation` inline loop remains retired.
