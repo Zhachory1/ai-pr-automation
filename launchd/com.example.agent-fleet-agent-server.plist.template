@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  agent-fleet SERIAL AGENT-SERVER (M1). Long-lived worker that drains the requests queue one at a
-  time. Unlike the producers (interval cron), this is KeepAlive: launchd restarts it if it exits.
-  The single-instance pg advisory lock makes a duplicate launch refuse to start, so KeepAlive is safe.
+  agent-fleet LEASED AGENT-SERVER (M1). Long-lived worker that drains the requests queue one at a
+  time. Unlike producers (interval cron), this is KeepAlive: launchd restarts it if it exits.
+  Multiple workers may share one kind; renewable Postgres leases prevent duplicate active claims.
 
   Copy to ~/Library/LaunchAgents/, fill placeholders, then:
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.agent-fleet-agent-server.plist
@@ -33,12 +33,14 @@
     <key>AGENT_SERVER_SHARED_BANK</key><string>fleet-shared</string>
   </dict>
 
-  <!-- Long-lived: restart on any exit (crash, wedged-server self-exit, sleep/wake). The advisory
-       lock prevents a double-runner; ThrottleInterval avoids a hot crash loop when Postgres is down. -->
+  <!-- Long-lived: restart on crash or wedged-server exit. Leases permit duplicate workers safely.
+       ExitTimeOut lets an active request drain; keep it above the configured request timeout. -->
   <key>KeepAlive</key>
   <dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key>
   <integer>60</integer>
+  <key>ExitTimeOut</key>
+  <integer>2100</integer>
 
   <key>StandardOutPath</key>
   <string>/Users/CHANGE_ME/Library/Logs/agent-fleet-agent-server/out.log</string>

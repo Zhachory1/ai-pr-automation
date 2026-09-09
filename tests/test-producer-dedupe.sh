@@ -53,7 +53,7 @@ check "old head o/r#5@old now superseded" "q \"SELECT status FROM requests WHERE
 check "only the new head is still queued for o/r#5" "[[ \"\$(q \"SELECT count(*) FROM requests WHERE kind='pr-review' AND split_part(dedupe_key,'@',1)='o/r#5' AND status='queued';\")\" == 1 ]]"
 
 echo "[3c] a RUNNING older head is NOT superseded by a new head (mid-analysis)"
-q "INSERT INTO requests(kind,payload,dedupe_key,status) VALUES ('pr-review','{}','o/r#7@run','running');" >/dev/null
+q "INSERT INTO requests(kind,payload,dedupe_key,status,run_nonce,lease_expires_at) VALUES ('pr-review','{}','o/r#7@run','running','run',clock_timestamp()+interval '60 seconds');" >/dev/null
 queue_enqueue pr-review '{"repo":"o/r","pr":"7"}' "o/r#7@new" >/dev/null
 check "running head stays running" "q \"SELECT status FROM requests WHERE dedupe_key='o/r#7@run';\" | grep -qx running"
 check "new head queued alongside it" "q \"SELECT status FROM requests WHERE dedupe_key='o/r#7@new';\" | grep -qx queued"
