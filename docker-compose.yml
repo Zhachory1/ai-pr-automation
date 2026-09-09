@@ -106,6 +106,25 @@ services:
       timeout: 5s
       retries: 12
 
+  # --- hindsight-bank-init: lock fleet-shared to a read-only MCP tool set (one-shot) ---
+  # Review/maintain agents have direct MCP retain access and write review-completion junk into the
+  # shared bank despite prompt rules; removing retain/sync_retain at the server makes that
+  # impossible while keeping recall. Runs once after hindsight is healthy, before any agent starts.
+  hindsight-bank-init:
+    image: curlimages/curl:8.11.1
+    restart: "no"
+    environment:
+      HINDSIGHT_URL: ${HINDSIGHT_URL:-http://hindsight:8888}
+      HINDSIGHT_SHARED_BANK: ${HINDSIGHT_SHARED_BANK:-fleet-shared}
+    volumes:
+      - ./docker/hindsight-bank-init.sh:/usr/local/bin/hindsight-bank-init:ro
+    entrypoint: ["sh", "/usr/local/bin/hindsight-bank-init"]
+    depends_on:
+      hindsight:
+        condition: service_healthy
+    networks:
+      - default
+
   # --- coderag: graph UI + internal Streamable HTTP MCP bridge ---
   coderag:
     image: agent-fleet/coderag:${CODERAG_VERSION:-latest}
@@ -310,6 +329,8 @@ services:
         condition: service_healthy
       schema-migrate:
         condition: service_completed_successfully
+      hindsight-bank-init:
+        condition: service_completed_successfully   # read-only shared bank before this agent can retain
 
   # Second kind: identical except AGENT_SERVER_KIND. maintain PRs push fix commits, so its GH_TOKEN
   # (in .env, or a kind-specific token) needs Contents:write; review's token can stay read-only.
@@ -348,6 +369,8 @@ services:
         condition: service_healthy
       schema-migrate:
         condition: service_completed_successfully
+      hindsight-bank-init:
+        condition: service_completed_successfully   # read-only shared bank before this agent can retain
 
   # --- swe-implement: serial worker for the 'swe-implement' queue kind ---
   # Claims swe-implement requests and runs the swe-implementer harness (fresh clone, implement, open a
