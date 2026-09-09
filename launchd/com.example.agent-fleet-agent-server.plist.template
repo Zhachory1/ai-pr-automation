@@ -9,8 +9,8 @@
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.agent-fleet-agent-server.plist
 
   Keep the DB password OUT of this plist. Prefer a wrapper that sources .env, or the keychain.
-  The wrapper must also export AGENT_SERVER_RUNNER (the agent runner) and the memory-stack env
-  (HINDSIGHT_URL, etc.) that the agent-server and its runner need.
+  The wrapper must also export AGENT_SERVER_RUNNER. A host-run agent needs its own MCP config with
+  host-reachable endpoints; the bundled agent config uses Compose service names.
 -->
 <plist version="1.0">
 <dict>
@@ -29,8 +29,6 @@
     <key>REQUESTS_DB_PORT</key><string>5432</string>
     <key>REQUESTS_DB_USER</key><string>fleet</string>
     <key>REQUESTS_DB_NAME</key><string>fleet</string>
-    <key>HINDSIGHT_URL</key><string>http://localhost:8888</string>
-    <key>AGENT_SERVER_SHARED_BANK</key><string>fleet-shared</string>
   </dict>
 
   <!-- Long-lived: restart on crash or wedged-server exit. Leases permit duplicate workers safely.

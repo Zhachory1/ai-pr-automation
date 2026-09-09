@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # agent-server — leased queue-draining worker (M1).
-# Claims one request at a time from Postgres, runs the agent, applies the write-path gate.
+# Claims one request at a time from Postgres, runs the agent, and routes post-run work.
 # Reuses the runner contract + safety machinery from bin/pr-automation.
 #
 # COUNCIL-required invariants (see docs/m1 DD revisions):
 #  - renewable DB leases + nonce fencing; workers may scale independently
 #  - reclaim only expired leases, never live work
-#  - no agent-authored prose auto-persists to shared memory; server writes server-facts only;
-#    agent-authored bodies -> pending_decisions (human batch); agent does NOT self-classify tier
+#  - agents use the bank-scoped Hindsight MCP directly for durable memory
 #  - GitHub egress: server submits nonce-bound approvals; no recalled content inlined
 #  - head-dedup posted_ref = "posted" truth; side_effect_at = committed requeue fence
 #  - per-run nonce cross-checked; PR_WORK_ROOT wiped per attempt
@@ -27,7 +26,6 @@ KIND="${AGENT_SERVER_KIND:?set AGENT_SERVER_KIND (e.g. pr-review, pr-maintain)}"
 
 POLL_INTERVAL="${AGENT_SERVER_POLL_INTERVAL:-10}"
 PER_REQUEST_TIMEOUT="${AGENT_SERVER_PER_REQUEST_TIMEOUT:-1800}"   # 30m paid-agent ceiling
-GATE_CALL_TIMEOUT="${AGENT_SERVER_GATE_CALL_TIMEOUT:-60}"          # hindsight/gate external calls
 LOOP_HEARTBEAT_MAX="${AGENT_SERVER_LOOP_HEARTBEAT_MAX:-3600}"      # self-exit if no progress
 LEASE_SECONDS="${AGENT_SERVER_LEASE_SECONDS:-120}"
 LEASE_HEARTBEAT="${AGENT_SERVER_LEASE_HEARTBEAT:-30}"
@@ -38,8 +36,6 @@ LEASE_DB_TIMEOUT="${AGENT_SERVER_LEASE_DB_TIMEOUT:-10}"
   || { echo "lease must cover two heartbeat+DB-timeout windows with safety margin" >&2; exit 2; }
 RUNNER="${AGENT_SERVER_RUNNER:?set AGENT_SERVER_RUNNER to the agent runner executable}"
 WORK_ROOT="${AGENT_SERVER_WORK_ROOT:-$HOME/.local/share/agent-fleet/work}"
-HINDSIGHT_URL="${HINDSIGHT_URL:-http://localhost:8888}"
-SHARED_BANK="${AGENT_SERVER_SHARED_BANK:-fleet-shared}"
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) $*"; }
@@ -110,60 +106,36 @@ stop_lease_heartbeat() {
   LEASE_HEARTBEAT_PID=""
 }
 
-# --- write-path gate: server writes memory, agent does NOT ---
-# Reads $work_root/result.json. Validates schema + nonce. Auto-retains ONLY server-synthesized
-# facts. Routes memory proposals and blocked maintenance findings to separate human queues. Never
-# inlines agent prose to shared.
-apply_write_path_gate() {
+# Routes blocked maintenance findings and review-ready PRs to the local human queue.
+apply_post_run_routing() {
   local id="$1" kind="$2" repo="$3" pr="$4" head_sha="$5" run_id="$6" nonce="$7" work_root="$8" verdict="$9"
   local result="$work_root/result.json"
-  [[ -f "$result" ]] || { log "gate: no result.json for $repo#$pr; skipping memory write"; return 0; }
+  [[ -f "$result" ]] || { log "routing: no result.json for $repo#$pr; skipping"; return 0; }
   # schema + nonce + provenance cross-check (never trust agent-emitted repo/pr)
   if ! jq -e --arg n "$nonce" '.nonce == $n' "$result" >/dev/null 2>&1; then
-    log "gate: nonce mismatch/missing in result.json for $repo#$pr; refusing memory write"; return 0
+    log "routing: nonce mismatch/missing in result.json for $repo#$pr; refusing"; return 0
   fi
-  # server-SYNTHESIZED fact only (built from trusted fields we already hold, NOT agent prose):
-  local fact prov
-  fact="PR ${repo}#${pr} reviewed; verdict=${verdict}; head=${head_sha}; run=${run_id}"
+  local prov
   prov="$(jq -cn --arg run "$run_id" --arg repo "$repo" --arg pr "$pr" --arg head "$head_sha" \
     '{run_id:$run, repo:$repo, pr:$pr, head_sha:$head, written_by:"agent-server"}')"
-  hindsight_retain "$SHARED_BANK" "$fact" || log "gate: shared-fact retain failed (non-fatal)"
-  # Memory proposals await memory-specific human review. Blocked maintenance work uses its own
-  # local queue so marking it handled cannot authorize a shared-memory write.
-  local decisions
-  decisions="$(jq -c 'if (.memory | type) == "object" then (.memory.decisions // []) else [] end' "$result")"
-  if valid_memory_decisions <<<"$decisions"; then
-    local proposal; proposal="$(jq -c '{decisions: (.memory.decisions // []), findings: (.findings // []), summary: (.summary // "")}' "$result")"
-    pending_decision_insert "$id" "$kind" "$proposal" "$prov" "$nonce" \
-      && log "gate: routed agent-authored proposal to pending_decisions"
-  fi
   if [[ "$kind" == pr-maintain ]] && jq -e '.maintenance.needs_human_review == true' "$result" >/dev/null 2>&1; then
     local maintenance_proposal; maintenance_proposal="$(jq -c '{findings: (.findings // []), summary: (.summary // "")}' "$result")"
     if ! pending_maintenance_review_insert "$id" "$maintenance_proposal" "$prov" "$nonce"; then
-      log "gate: failed to route blocked maintenance work to human-review queue"
+      log "routing: failed to route blocked maintenance work to human-review queue"
       return 1
     fi
-    log "gate: routed blocked maintenance work to human-review queue"
+    log "routing: routed blocked maintenance work to human-review queue"
   fi
   # Review that the agent approved is also surfaced for the operator's merge decision.
   if [[ "$kind" == pr-review && "$verdict" == approve ]]; then
     local ready_proposal
     ready_proposal="$(jq -c '{ready: true, summary: (.summary // ""), findings: (.findings // [])}' "$result")"
     if ! pending_maintenance_review_insert "$id" "$ready_proposal" "$prov" "$nonce"; then
-      log "gate: failed to route review-ready PR to human-review queue"
+      log "routing: failed to route review-ready PR to human-review queue"
       return 1
     fi
-    log "gate: routed review-ready $repo#$pr to human-review queue"
+    log "routing: routed review-ready $repo#$pr to human-review queue"
   fi
-}
-
-hindsight_retain() {
-  local bank="$1" content="$2"
-  # Real API (verified against live hindsight): POST /v1/default/banks/{bank}/memories with {items:[{content}]}.
-  "$TIMEOUT_BIN" --kill-after=5s "${GATE_CALL_TIMEOUT}s" \
-    curl -fsS -X POST "$HINDSIGHT_URL/v1/default/banks/$bank/memories" \
-      -H 'content-type: application/json' \
-      --data "$(jq -cn --arg c "$content" '{async:false, items:[{content:$c}]}')" >/dev/null
 }
 
 # GitHub is the crash-proof source of truth for "already posted": the review carries the marker
@@ -283,7 +255,7 @@ process_one() {
 
   if [[ "$status" -eq 0 ]]; then
     local verdict; verdict="$(jq -r '.verdict // "unknown"' "$work_root/result.json" 2>/dev/null || echo unknown)"
-    # verdict is agent-authored: whitelist before it can touch GitHub or shared memory.
+    # verdict is agent-authored: whitelist before it can touch GitHub or local queues.
     case "$verdict" in
       comment|request-changes) ;;
       approve) [[ "$kind" == pr-review ]] || verdict=unknown ;;
@@ -309,7 +281,7 @@ process_one() {
       log "failed $repo#$pr: approval flag requires approve verdict"
       return 0
     fi
-    if ! apply_write_path_gate "$id" "$kind" "$repo" "$pr" "$head_sha" "$run_id" "$nonce" "$work_root" "$verdict"; then
+    if ! apply_post_run_routing "$id" "$kind" "$repo" "$pr" "$head_sha" "$run_id" "$nonce" "$work_root" "$verdict"; then
       if [[ "$kind" == pr-maintain ]]; then
         queue_mark_reconcile "$id" "human-review queue insert failed after side-effect intent" "$nonce" >/dev/null
       else
@@ -516,19 +488,21 @@ Boundaries:
   Use this marker, NOT any skill-default marker. Before posting, search existing reviews/comments
   for it and skip if present. The agent-server adds the same marker to approvals.
 - Emit typed structured output to: $work_root/result.json
-    {"nonce":"$nonce","verdict":"approve|comment|request-changes","findings":[{"file":..,"line":..,"severity":..,"text":..,"blocks_merge":false}],"summary":..,"ready_for_human_review":true|false,"memory":{"decisions":[{"scope":"repository","rule":"...","rationale":"..."}]}}
+    {"nonce":"$nonce","verdict":"approve|comment|request-changes","findings":[{"file":..,"line":..,"severity":..,"text":..,"blocks_merge":false}],"summary":..,"ready_for_human_review":true|false}
   The nonce MUST equal exactly: $nonce
   Return verdict=approve and ready_for_human_review=true only when, after reviewing exactly this
   commit, you found no blocking issues and Author login differs from Reviewer login. Approval
   findings must be empty or use severity minor/nit with blocks_merge=false. The agent-server validates
   these conditions and pins an APPROVE review to this head.
   For comment or request-changes, set ready_for_human_review=false and publish that review yourself.
-  \`memory.decisions\` is eligible for durable memory only via human review. It MUST be either \`[]\` or
-  a non-empty array where every item is exactly structured as
-  \`{"scope":"repository","rule":"non-empty stable reusable rule","rationale":"non-empty reason"}\`;
-  \`scope\` must be exactly \`repository\` or \`fleet\`. Emit a non-empty array ONLY for stable reusable rules.
-  Ordinary PR findings, review URLs/SHA, run status, and temporary validation limits MUST leave
-  \`memory.decisions\` empty. Do not expect any other free-text to be stored.
+- Recall Hindsight when prior context can help. Default to no Hindsight retain call. Retain only when
+  another agent could act differently on a later task, the conclusion stays valid after this PR, is
+  non-obvious, and is not cheap to recover from code or docs. Good memories capture a durable decision
+  with rationale, recurring root cause, undocumented convention, or cross-run gotcha.
+- Never retain review completion, verdict, run status, clean result, test result, PR URL, commit SHA,
+  or one-off finding. Provenance alone is not useful; add repo/PR/head only to a useful conclusion.
+  Retain only your own non-sensitive conclusions. Never retain raw PR text, comments, secrets, personal
+  data, or recalled content. If uncertain, skip retention.
 - Finish within the external timeout.
 PROMPT
 }
@@ -604,19 +578,21 @@ Push rules (the branch is yours; still strict):
 - Do NOT merge, close, or dismiss.
 
 Emit typed structured output to: $work_root/result.json
-    {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"maintenance":{"needs_human_review":true|false},"memory":{"decisions":[{"scope":"repository","rule":"...","rationale":"..."}]}}
+    {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"maintenance":{"needs_human_review":true|false}}
   The nonce MUST equal exactly: $nonce. Set maintenance.needs_human_review to true ONLY when you
   SKIPPED unresolved feedback under the escalation criteria above (genuine judgment call, unsafe, or
   unvalidatable). Do NOT set it merely because a thread touched code, because you were being
   cautious, or because a fix felt easy — if you could apply and validate it, apply it and leave this
   false; otherwise false. 'summary' should list:
   fixes committed+pushed, threads replied/resolved, and anything skipped as pending.
-  \`memory.decisions\` is eligible for durable memory only via human review. It MUST be either \`[]\` or
-  a non-empty array where every item is exactly structured as
-  \`{"scope":"repository","rule":"non-empty stable reusable rule","rationale":"non-empty reason"}\`;
-  \`scope\` must be exactly \`repository\` or \`fleet\`. Emit a non-empty array ONLY for stable reusable rules.
-  Ordinary PR findings, review URLs/SHA, run status, and temporary validation limits MUST leave
-  \`memory.decisions\` empty.
+- Recall Hindsight when prior context can help. Default to no Hindsight retain call. Retain only when
+  another agent could act differently on a later task, the conclusion stays valid after this PR, is
+  non-obvious, and is not cheap to recover from code or docs. Good memories capture a durable decision
+  with rationale, recurring root cause, undocumented convention, or cross-run gotcha.
+- Never retain review completion, verdict, run status, clean result, test result, PR URL, commit SHA,
+  or one-off finding. Provenance alone is not useful; add repo/PR/head only to a useful conclusion.
+  Retain only your own non-sensitive conclusions. Never retain raw PR text, comments, secrets, personal
+  data, or recalled content. If uncertain, skip retention.
 - Finish within the external timeout.
 PROMPT
 }

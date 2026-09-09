@@ -13,9 +13,9 @@ Fair, bounded automation for GitHub pull-request review and maintenance — as a
 > - **`bin/pr-producer <review|maintain>`** — discovers PRs (assigned / authored via `gh search`),
 >   applies the repo allowlist + stale-age cutoff, and enqueues one row per PR. Never runs an agent.
 > - **`bin/agent-server`** — long-lived worker; atomically claims one request with a renewable lease,
->   runs your agent runner, applies the write-path gate (server-owned memory writes; agent prose never auto-persists
->   to shared memory), posts the review, marks the row terminal. Blocked maintenance findings enter
->   the local human-review queue instead of disappearing with the worker workspace.
+>   runs your agent runner, posts the review, and marks the row terminal. Agents can recall and retain
+>   useful durable knowledge directly through the bank-scoped Hindsight MCP. Blocked maintenance
+>   findings enter the local human-review queue instead of disappearing with the worker workspace.
 > - Substrate (Postgres + Redis + memory/MCP stack) and full setup: **[`docker/README.md`](docker/README.md)**.
 > - Compose runs both producers and workers. Legacy launchd templates remain available for host scheduling.
 

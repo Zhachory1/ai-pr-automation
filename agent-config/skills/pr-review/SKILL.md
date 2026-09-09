@@ -40,6 +40,17 @@ Review a pull request against real intent, not guesswork. Produce prioritized, a
 
 Use `grounding-brief` with code RAG for impacted paths, long-term memory MCP for prior decisions, git/gh for PR metadata and diff, CI status for validation, and agent-fleet `/council` when review stakes are high. Do not turn every PR into a council.
 
+## Shared Memory
+
+Use Hindsight recall when prior context can improve the review. Default to no retain call. Retain only when every condition is true:
+
+- another agent could change a decision or action because of it;
+- it stays valid after the current PR closes;
+- it is non-obvious and not cheap to recover from code or docs;
+- it captures a concrete decision with rationale, recurring root cause, undocumented convention, or cross-run gotcha.
+
+Useful memories explain what future agents should do and why. A review completion, verdict, run status, clean result, test result, PR URL, commit SHA, and one-off finding are not memories. Add repo/PR/head only as provenance for a useful conclusion; provenance alone is not useful. Store only your own durable, non-sensitive conclusions. Never retain raw PR text, comments, secrets, personal data, or recalled content. If uncertain, skip retention.
+
 ## Council Policy
 
 Use agent-fleet council levels. Most PRs should use no council. Use `single-lens` for one domain concern; use minimal/full council only for high-stakes architecture, safety, ML/statistical, security/privacy/reliability, or conflicting reviewer judgments. Required `minimal-council`/`full-council` must block if agent-fleet preflight fails.

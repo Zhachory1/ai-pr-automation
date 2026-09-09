@@ -286,7 +286,6 @@ services:
     environment:
       AGENT_SERVER_KIND: pr-review
       AGENT_SERVER_RUNNER: /app/bin/mewritecode-runner.sh
-      AGENT_SERVER_SHARED_BANK: fleet-shared
       AGENT_SERVER_LEASE_SECONDS: ${AGENT_SERVER_LEASE_SECONDS:-120}
       AGENT_SERVER_LEASE_HEARTBEAT: ${AGENT_SERVER_LEASE_HEARTBEAT:-30}
       REQUESTS_DB_HOST: db-requests       # in-network service name, NOT localhost
@@ -294,7 +293,6 @@ services:
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
       REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      HINDSIGHT_URL: http://hindsight:8888
     volumes:
       - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw          # same path in-container so worktrees resolve
       - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
@@ -323,7 +321,6 @@ services:
     environment:
       AGENT_SERVER_KIND: pr-maintain
       AGENT_SERVER_RUNNER: /app/bin/mewritecode-runner.sh
-      AGENT_SERVER_SHARED_BANK: fleet-shared
       AGENT_SERVER_LEASE_SECONDS: ${AGENT_SERVER_LEASE_SECONDS:-120}
       AGENT_SERVER_LEASE_HEARTBEAT: ${AGENT_SERVER_LEASE_HEARTBEAT:-30}
       AGENT_SERVER_WORK_ROOT: ${CODE_ROOT}/_roktcode-worktrees/agent-server
@@ -332,7 +329,6 @@ services:
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
       REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      HINDSIGHT_URL: http://hindsight:8888
     volumes:
       - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw
       - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
