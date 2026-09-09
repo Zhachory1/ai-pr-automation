@@ -154,5 +154,5 @@ Dedupe is two-layered (see `lib/queue.sh`):
 launchd templates: `launchd/com.example.agent-fleet-producer-{reviews,maintenance}.plist.template`
 (the producers) and `com.example.agent-fleet-agent-server.plist.template` (the drain worker). The
 legacy `bin/pr-automation` inline loop has been retired (M2 exit) — the producers + agent-server
-fully replace it. Keep the queue DB password out of the plist — source `.env` via
-`scripts/agent-server-launch.sh` (the agent-server wrapper) or use the keychain.
+fully replace it. Keep the queue DB password out of the plist — invoke
+`scripts/producer-launch.sh`, which securely loads `.env`, or use the keychain.
