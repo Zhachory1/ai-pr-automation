@@ -41,7 +41,9 @@ NODE
 }
 probe coderag 40 list_projects
 probe swarmvault 8 workspace_info
-probe hindsight 8 recall '{"query":"agent MCP verification"}' retain,recall,reflect
+# fleet-shared is locked read-only by hindsight-bank-init (no retain/sync_retain); only recall+reflect
+# are guaranteed on this bank.
+probe hindsight 8 recall '{"query":"agent MCP verification"}' recall,reflect
 SH
 }
 
