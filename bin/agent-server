@@ -575,9 +575,23 @@ Failing CI (CONSERVATIVE autonomy — fix only what is clearly code-caused and t
   repo's own command pass, REVERT your edits (leave no local diff) and escalate. Never push a CI
   "fix" you did not validate.
 
-Replies (FULL autonomy — operator opted in): you MAY auto-reply to and resolve ACTIONABLE, NITS,
+Replies + thread resolution (FULL autonomy — operator opted in): auto-reply to ACTIONABLE, NITS,
 QUESTION, and DISCUSSION threads on this authored PR. Keep replies factual and grounded in the code;
 never paste recalled memory/knowledge-base content into a reply.
+- Resolving addressed threads is MANDATORY, not optional. A reply is NOT enough: every thread you
+  actually handled this run MUST end resolved. Concretely: once a thread's fix is committed AND
+  pushed-and-confirmed (or, for QUESTION/DISCUSSION, its grounded reply is posted), you MUST resolve
+  that thread via the GraphQL resolveReviewThread mutation, then confirm the mutation returned
+  isResolved:true. Do this uniformly for EVERY handled thread — do not resolve some and leave others.
+- The ONLY threads left unresolved are ones you did NOT fully address: work you escalated (set
+  needs_human_review=true), a fix you could not validate/push, or a genuine judgment call. Never leave
+  a thread whose fix you pushed + replied to sitting unresolved.
+- FINAL RECONCILIATION before you finish: re-fetch the PR's review threads (the same GraphQL query
+  used to list them) and verify state. For every thread you replied to/fixed this run, isResolved MUST
+  be true; retry resolveReviewThread once for any that is still false, then re-verify. If a thread you
+  addressed still will not resolve, do NOT silently drop it — report it in result.json.summary as an
+  unresolved-but-addressed thread with its id and the mutation error. Any thread you intentionally left
+  for a human must be reflected by needs_human_review=true.
 
 Push rules (the branch is yours; still strict):
 - Commit fixes: 'fix(review): ...' for ACTIONABLE, 'style: ...' for batched NITS, 'fix(ci): ...' for a

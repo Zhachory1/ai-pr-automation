@@ -153,6 +153,8 @@ In interactive mode, do not resolve QUESTION/DISCUSSION threads until the user a
 
 Confirm each addressed thread returned `isResolved: true` from the mutation, then present a summary of actions taken.
 
+**Final reconciliation (do this once, at the end, before reporting).** Per-mutation confirmation is not sufficient on its own — a thread can be silently missed if classification or addressing skipped it, or a mutation can no-op on a stale/mis-mapped thread id. Re-run the Step 1 GraphQL query to re-fetch every review thread's `id`/`isResolved`, then for each thread you addressed this run (fix pushed + replied, or grounded reply posted) assert `isResolved:true`. Retry `resolveReviewThread` once for any addressed thread still showing `false`, then re-verify. Report the final tally: threads addressed, threads resolved, and any addressed-but-still-unresolved thread with its id and the mutation error. An addressed thread must never be left silently unresolved.
+
 If files were edited, do not finish with only local uncommitted work. The final
 state must be one of:
 
@@ -175,6 +177,8 @@ state must be one of:
 - **DO** resolve each thread after it is addressed (reply is not enough)
 - **DO** process each unresolved thread once and post at most one new reply to it per run
 - **DO** verify addressed threads show `isResolved: true` before reporting
+- **DO** run a final reconciliation sweep: re-fetch all threads and confirm every addressed thread is `isResolved: true`, retrying once and reporting any that are not
+- **DO** resolve addressed threads uniformly — never resolve some handled threads and leave others in the same PR
 - **DO** end with no local diff, or with validated fixes committed+pushed+replied+resolved
 - **DO NOT** leave validated local fixes uncommitted or unpushed
 - **DO NOT** auto-respond to QUESTION/DISCUSSION unless the caller explicitly enables full reply autonomy
