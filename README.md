@@ -177,11 +177,18 @@ Maintenance mode prompts enforce:
 - at most one low-risk fix pass
 - changed files must finish committed+pushed, reverted to a clean diff, or explicitly blocked by permission/head/conflict
 - fixed review comments receive commit/validation replies and are resolved when possible
-- ambiguous maintenance findings enter the local human-review queue at `http://localhost:8080`; use
-  **Reviewed** or **Dismiss** after handling them. These controls update local queue state only —
-  they never write to GitHub.
+- failing CI is handled conservatively: the agent fixes ONLY clearly code-caused, locally
+  test-validatable checks (lint/format, type errors, compile/build breaks, a unit test the diff
+  broke), reproducing and re-running the repo's own command before pushing a `fix(ci): ...` commit.
+  It never makes a check pass by weakening it (no test skip/xfail, no blanket type-ignore, no lowered
+  thresholds, no CI-config edits) — that path is an escalation, not a fix.
+- ambiguous maintenance findings AND escalated CI failures (integration/e2e, flaky/infra, timeouts,
+  credential/permission, anything unvalidatable) enter the local human-review queue at
+  `http://localhost:8080`; use **Reviewed** or **Dismiss** after handling them. These controls update
+  local queue state only — they never write to GitHub.
 - focused validation
-- at most one unrelated CI-flake retry
+- CI-state mutations (retry/rebuild/cancel of a job) are NOT performed; flaky/infra failures are
+  escalated, not retried
 
 The public base intentionally does not rebase or force-push branches. Branch refresh is a destructive, repository-specific policy and belongs in an explicitly authorized maintenance runner, not the generic scheduler.
 
