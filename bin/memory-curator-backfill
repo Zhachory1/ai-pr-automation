@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# One-time backfill: ruminate the ENTIRE private-docs corpus (not just recently-changed files) into
+# the shared bank. The recurring curator is delta-only (watermark), so a large mostly-static brain is
+# never fully mined. This walks every doc once, in prompt-budget-sized batches, calling the curator
+# with an explicit source manifest per batch. It does NOT touch the recurring schedule's watermark.
+#
+# Idempotent + resumable: a cursor file records completed files; re-running skips them. Curator dedup
+# + stable doc_ids mean re-processing a file is safe anyway. Stops when the corpus is exhausted.
+set -euo pipefail
+umask 077
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+CURATOR="${MEMORY_CURATOR_BIN:-$HERE/bin/memory-curator}"
+PRIVATE_DOCS="${MEMORY_CURATOR_PRIVATE_DOCS:-$HOME/private-docs}"
+STATE_DIR="${MEMORY_CURATOR_STATE_DIR:-$HOME/.local/share/ai-pr-automation/curator}"
+BATCH="${MEMORY_CURATOR_BACKFILL_BATCH:-10}"          # files per curator invocation
+SLEEP="${MEMORY_CURATOR_BACKFILL_SLEEP:-5}"           # pause between batches (be gentle on the model)
+CURSOR="$STATE_DIR/backfill-done"                     # newline list of already-processed files
+DONE_MARK="$STATE_DIR/backfill-complete"
+
+log() { printf '%s memory-curator-backfill %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
+[[ -x "$CURATOR" ]] || { echo "missing curator: $CURATOR" >&2; exit 2; }
+[[ -d "$PRIVATE_DOCS" ]] || { echo "private-docs not found: $PRIVATE_DOCS" >&2; exit 2; }
+mkdir -p "$STATE_DIR"; touch "$CURSOR"
+
+if [[ -f "$DONE_MARK" && "${MEMORY_CURATOR_BACKFILL_FORCE:-}" != "1" ]]; then
+  log "backfill already completed ($DONE_MARK). Set MEMORY_CURATOR_BACKFILL_FORCE=1 to redo."
+  exit 0
+fi
+
+# All corpus files (skip .git and the curator's own state), minus anything already processed.
+all="$(mktemp)"; todo="$(mktemp)"
+trap 'rm -f "$all" "$todo"' EXIT
+find "$PRIVATE_DOCS" -type f -name '*.md' 2>/dev/null | grep -v '/\.git/' | sort -u >"$all"
+grep -Fxv -f "$CURSOR" "$all" >"$todo" || true
+countlines() { grep -c . "$1" 2>/dev/null | head -1 || echo 0; }  # single-line count (BSD grep -c quirk)
+total="$(countlines "$all")"; [[ "$total" =~ ^[0-9]+$ ]] || total=0
+remaining="$(countlines "$todo")"; [[ "$remaining" =~ ^[0-9]+$ ]] || remaining=0
+log "corpus: $total docs, $remaining remaining (batch $BATCH)"
+[[ "$remaining" -gt 0 ]] || { log "nothing left to backfill"; : >"$DONE_MARK"; exit 0; }
+
+batch_no=0
+while :; do
+  # take the next BATCH files still to do (recompute each loop so the cursor drives progress).
+  manifest="$(mktemp)"
+  grep -Fxv -f "$CURSOR" "$all" 2>/dev/null | head -n "$BATCH" >"$manifest" || true
+  n="$(grep -c . "$manifest" 2>/dev/null | head -1 || echo 0)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  if [[ "$n" -eq 0 ]]; then rm -f "$manifest"; break; fi
+  batch_no=$((batch_no + 1))
+  log "batch $batch_no: $n docs"
+
+  # Run the curator over exactly these files (backfill mode: no watermark, no sweep). MAX_SOURCE_DOCS
+  # is raised to the batch size so none are dropped; the curator still enforces the prompt-byte cap.
+  if MEMORY_CURATOR_SOURCE_MANIFEST="$manifest" \
+     MEMORY_CURATOR_MAX_SOURCE_DOCS="$BATCH" \
+     "$CURATOR"; then
+    # mark this batch done only on success, so a failed batch is retried next run.
+    cat "$manifest" >>"$CURSOR"
+    sort -u "$CURSOR" -o "$CURSOR"
+  else
+    log "batch $batch_no failed; will retry on next run (cursor not advanced for it)"
+  fi
+  rm -f "$manifest"
+  sleep "$SLEEP"
+done
+
+processed="$(countlines "$CURSOR")"; [[ "$processed" =~ ^[0-9]+$ ]] || processed=0
+if [[ "$processed" -ge "$total" ]]; then
+  : >"$DONE_MARK"
+  log "backfill COMPLETE: $processed/$total docs processed"
+else
+  log "backfill paused: $processed/$total docs processed (re-run to continue)"
+fi

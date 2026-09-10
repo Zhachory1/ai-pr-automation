@@ -72,7 +72,30 @@ sweep_stale() {
         && log "swept stale memory $doc"
     done
 }
-sweep_stale || log "sweep failed (non-fatal)"
+# Backfill mode: a driver passes an explicit list of files to curate as ONE batch (see
+# bin/memory-curator-backfill). It bypasses the watermark and TTL sweep entirely so the recurring
+# schedule's state is untouched; the filter/dedup/write path below is identical.
+MANIFEST_OVERRIDE="${MEMORY_CURATOR_SOURCE_MANIFEST:-}"
+
+if [[ -z "$MANIFEST_OVERRIDE" ]]; then
+  sweep_stale || log "sweep failed (non-fatal)"
+fi
+
+if [[ -n "$MANIFEST_OVERRIDE" ]]; then
+  # --- 1b) backfill: curate exactly the provided files (no watermark, no sweep) -------------------
+  [[ -f "$MANIFEST_OVERRIDE" ]] || { echo "source manifest not found: $MANIFEST_OVERRIDE" >&2; exit 2; }
+  now_epoch="$(date +%s)"
+  srcdir="$(mktemp -d)"
+  manifest="$srcdir/manifest.txt"
+  grep -c . "$MANIFEST_OVERRIDE" >/dev/null 2>&1 || true
+  # keep only existing regular files, cap at MAX_SOURCE_DOCS for this batch.
+  awk 'NF' "$MANIFEST_OVERRIDE" | while IFS= read -r f; do [[ -f "$f" ]] && echo "$f"; done \
+    | head -n "$MAX_SOURCE_DOCS" >"$manifest"
+  n_src="$(grep -c . "$manifest" 2>/dev/null | head -1 || echo 0)"; [[ "$n_src" =~ ^[0-9]+$ ]] || n_src=0
+  (( n_src > 0 )) || { log "backfill manifest has no readable files; nothing to curate"; exit 0; }
+  watermark_cap=""   # backfill never advances the schedule watermark
+  log "backfill: curating $n_src provided docs"
+else
 
 # --- 1) gather a bounded slice of source material since the watermark -----------------------------
 since_epoch=0
@@ -133,6 +156,7 @@ if [[ "$n_src" -eq 0 ]]; then
   exit 0
 fi
 log "curating from $n_src source docs (since $since_epoch)"
+fi   # end normal vs backfill source selection
 
 # Build the prompt: persona body + the source material (path-labelled, size-capped per doc). The
 # whole prompt is passed as a single argv to mewritecode, so it must stay under ARG_MAX; cap the
@@ -246,8 +270,11 @@ log "run complete: written=$written rejected=$rejected deduped=$deduped (from $n
 # reprocessed next run (writes are idempotent: stable doc_id + replace + dedup). When we truncated to
 # the newest MAX_SOURCE_DOCS, cap the watermark to the oldest included mtime so the older excess is
 # reconsidered next run instead of being lost.
-if [[ "$agent_ok" -eq 1 ]]; then
-  echo "$watermark_cap" >"$WATERMARK"
-else
-  log "watermark NOT advanced (agent run failed); source window will be retried next run"
+# Backfill mode never advances the recurring schedule's watermark (watermark_cap is empty).
+if [[ -n "$watermark_cap" ]]; then
+  if [[ "$agent_ok" -eq 1 ]]; then
+    echo "$watermark_cap" >"$WATERMARK"
+  else
+    log "watermark NOT advanced (agent run failed); source window will be retried next run"
+  fi
 fi

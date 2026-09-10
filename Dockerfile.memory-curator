@@ -17,9 +17,10 @@ RUN npm install -g @zhachory1/mewrite-code
 
 WORKDIR /app
 COPY bin/memory-curator ./bin/memory-curator
+COPY bin/memory-curator-backfill ./bin/memory-curator-backfill
 COPY agent-config/ ./agent-config/
 COPY docker/memory-curator-loop.sh ./bin/memory-curator-loop
-RUN chmod +x bin/memory-curator bin/memory-curator-loop
+RUN chmod +x bin/memory-curator bin/memory-curator-backfill bin/memory-curator-loop
 
 ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
 # Persona is vendored here (harness default is ~/.mewrite/agents).

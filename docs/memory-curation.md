@@ -33,6 +33,27 @@ Autonomous does **not** mean the model's output is trusted verbatim — the wrap
 - Each write is tagged `curator` + `curator/v1` with `metadata.written_at`, so the set is auditable
   and purgeable.
 
+## One-time backfill of the whole brain
+
+The recurring curator is **delta-only** (it looks at files changed since its watermark), which is right
+for the transcript firehose but leaves a large, mostly-static `~/private-docs` corpus mostly unmined —
+only recently-changed notes ever get seen.
+
+`bin/memory-curator-backfill` does a **one-time** full pass: it walks every `~/private-docs/*.md`,
+curates them in prompt-budget-sized batches, and stops when the corpus is exhausted. It reuses the
+curator's exact filter/dedup/write path (via `MEMORY_CURATOR_SOURCE_MANIFEST`), and it **never touches
+the recurring schedule's watermark**, so normal delta curation is unaffected.
+
+- Resumable + idempotent: a cursor (`$STATE_DIR/backfill-done`) records completed files; re-running
+  skips them, and dedup + stable doc_ids make reprocessing safe. Writes a `backfill-complete` marker
+  when done; re-running after that is a no-op unless `MEMORY_CURATOR_BACKFILL_FORCE=1`.
+- Tuning: `MEMORY_CURATOR_BACKFILL_BATCH` (files/invocation, default 10),
+  `MEMORY_CURATOR_BACKFILL_SLEEP` (pause between batches, default 5s).
+- Run it in the container: `docker exec -d fleet-memory-curator sh -c 'MEMORY_CURATOR_BACKFILL_BATCH=10 /app/bin/memory-curator-backfill > /state/backfill.log 2>&1'`.
+- Note: this pulls the **entire** brain into `fleet-shared`, which every agent reads. That is the
+  intended scope (agents get general context on what's going on with Zhach), but it is a deliberate,
+  large expansion — credentials are filtered, sensitive prose is in scope by choice.
+
 ## Operating it
 
 - **Bounds** (env): `MEMORY_CURATOR_MAX_MEMORIES` (default 15/run), `MEMORY_CURATOR_MAX_SOURCE_DOCS`
