@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests the swe-implement-server queue worker end-to-end against ephemeral Postgres, with a FAKE
 # harness (so no live clone / agent / push). Verifies: payload->args mapping per source, claim +
-# mark-done with the draft-PR url in posted_ref, mark-failed on harness error, invalid-payload guard,
-# and dedup of an already-queued task.
+# mark-done with the draft-PR url in posted_ref, pr-review enqueue, reconciliation on missing review
+# metadata, mark-failed on harness error, invalid-payload guard, and queue deduplication.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 CID="swe-implement-server-test-$$"
@@ -32,7 +32,10 @@ case "$(cat "$FAKE_HARNESS_MODE" 2>/dev/null)" in
   fail) echo "swe-implement: clone failed for X" >&2; exit 2 ;;
   skip) echo "swe-implement no commit produced"; exit 1 ;;
   nopr) echo "committed on branch (--no-pr)"; exit 0 ;;
-  *)    echo "2026-01-01 swe-implement draft PR: https://github.com/ROKT/x/pull/99"; exit 0 ;;
+  badmeta) echo "2026-01-01 swe-implement draft PR: https://github.com/ROKT/x/pull/98"; exit 0 ;;
+  *)    echo "2026-01-01 swe-implement draft PR: https://github.com/ROKT/x/pull/99"
+        echo '2026-01-01 swe-implement draft PR review request: {"repo":"ROKT/x","pr":"99","url":"https://github.com/ROKT/x/pull/99","title":"Prevent duplicate delivery","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+        exit 0 ;;
 esac
 SH
 chmod +x "$TMP/fake-harness"
@@ -43,8 +46,8 @@ export SWE_IMPLEMENT_POLL_INTERVAL=1
 run_one() {
   ( timeout 30 bash bin/swe-implement-server >/"$TMP"/server.log 2>&1 & echo $! > "$TMP/srv.pid" )
   for _ in $(seq 1 25); do
-    local st; st="$(q "SELECT status FROM requests ORDER BY id DESC LIMIT 1")"
-    [[ "$st" == done || "$st" == failed || "$st" == skipped ]] && break; sleep 1
+    local st; st="$(q "SELECT status FROM requests WHERE kind='swe-implement' ORDER BY id DESC LIMIT 1")"
+    [[ "$st" == done || "$st" == failed || "$st" == skipped || "$st" == reconcile ]] && break; sleep 1
   done
   kill "$(cat "$TMP/srv.pid")" 2>/dev/null || true; pkill -f swe-implement-server 2>/dev/null || true; sleep 1
 }
@@ -56,6 +59,13 @@ run_one
 check "handoff maps to --handoff and marks done" "grep -qx -- '--handoff' \"$TMP/args\" && grep -qx -- '/h/x.md' \"$TMP/args\""
 check "success stores draft PR url in posted_ref" "q \"SELECT posted_ref FROM requests WHERE dedupe_key='handoff:x.md'\" | grep -q 'pull/99'"
 check "success marks done" "q \"SELECT status FROM requests WHERE dedupe_key='handoff:x.md'\" | grep -qx done"
+check "success enqueues the created head for pr-review" "q \"SELECT payload->>'title' FROM requests WHERE kind='pr-review' AND dedupe_key='ROKT/x#99@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\" | grep -qx 'Prevent duplicate delivery'"
+
+# 1b) a created PR without typed review metadata must not be marked done and retried blindly
+echo badmeta > "$TMP/mode"
+q "INSERT INTO requests(kind,payload,dedupe_key) VALUES('swe-implement','{\"source\":\"issue\",\"issue\":\"ROKT/cpi#6\",\"no_pr\":false}','issue:ROKT/cpi#6');" >/dev/null
+run_one
+check "missing review metadata requires reconciliation" "q \"SELECT status FROM requests WHERE dedupe_key='issue:ROKT/cpi#6'\" | grep -qx reconcile"
 
 # 2) issue source -> --issue owner/repo#N
 echo success > "$TMP/mode"

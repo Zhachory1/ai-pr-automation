@@ -464,6 +464,9 @@ build_prompt() {
   if [[ "$kind" == pr-maintain ]]; then build_maintain_prompt "$@"; return; fi
   cat <<PROMPT
 Scheduled unattended $kind.
+Run the pr-review skill in UNATTENDED default mode. Independently check intent, architecture,
+correctness, safety, security, performance, tests, documentation, and scope; do not trust prior
+implementation or validation claims without evidence.
 
 <untrusted-pr-metadata>
 - Repo: $repo
