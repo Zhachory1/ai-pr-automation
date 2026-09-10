@@ -178,9 +178,11 @@ swe-implement --prompt "<text>" --repo ROKT/cpi   # free-form; --repo required
 
 Boundaries: it never touches the author's PR branch or any existing working checkout (always a fresh
 temp clone); for a handoff only the `## Concrete breakage` section is actioned (human-decision
-findings are not auto-fixed); it stops with a commit and opens a **draft** PR for human review.
-`--no-pr` stops at a committed local branch. It authors as the push+SAML-capable token identity
-(`GH_TOKEN`). Jira input is intentionally not wired (no Jira access).
+findings are not auto-fixed); it stops with a commit and opens a **draft** PR for human review. The
+agent's concrete commit subject and body become the PR title and summary. Server-created PRs are
+enqueued directly for a full `pr-review` pass at the created head. `--no-pr` stops at a committed
+local branch. It authors as the push+SAML-capable token identity (`GH_TOKEN`). Jira input is
+intentionally not wired (no Jira access).
 
 ### Agent-server + UI
 
@@ -189,7 +191,8 @@ swe-implement also runs as a queue worker, matching the agent-server pattern:
 - **`bin/swe-implement-server`** — a serial worker for the `swe-implement` request kind. It holds a
   per-kind single-instance advisory lock, claims one `swe-implement` row at a time
   (`FOR UPDATE SKIP LOCKED`), maps the payload to harness args, runs the harness, and marks the row
-  `done` (draft-PR url in `posted_ref`) or `failed`. Runs in its own container
+  `done` (draft-PR url in `posted_ref`) only after enqueueing the created head for `pr-review`, or
+  `failed`/`reconcile`. Runs in its own container
   (`Dockerfile.swe-implement-server`, compose profile `swe-implement`) with git/gh/mewritecode and a
   push+SAML `GH_TOKEN`; clones go to an ephemeral `swe_implement_work` volume, never the code root.
   Request payload: `{source: handoff|issue|prompt, handoff_path|issue|prompt+repo, no_pr?}`.

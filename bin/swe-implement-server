@@ -14,7 +14,7 @@
 #     "prompt": "<text>", "repo": "owner/repo",  # source=prompt
 #     "no_pr": true|false }                  # optional; default false (opens a draft PR)
 # The harness owns all safety (fresh clone, evidence re-verify, draft-only, fail-closed). On success
-# the draft PR url is stored in requests.posted_ref.
+# the draft PR is queued for pr-review, then its URL is stored in requests.posted_ref.
 set -euo pipefail
 umask 077
 
@@ -140,8 +140,34 @@ process_one() {
   sed 's/^/  harness: /' "$outfile"
 
   if (( rc == 0 )); then
-    # harness prints "draft PR: <url>" on success (or nothing for --no-pr).
-    local url; url="$(sed -n 's/.*draft PR: //p' "$outfile" | tail -1)"
+    # A created PR must enter pr-review before this request is complete. --no-pr emits neither line.
+    local url review_request review_repo review_pr review_url review_title review_head review_payload
+    url="$(sed -n 's/.*draft PR: //p' "$outfile" | tail -1)"
+    review_request="$(sed -n 's/.*draft PR review request: //p' "$outfile" | tail -1)"
+    if [[ -n "$url" ]]; then
+      review_repo="$(jq -r '.repo // empty' <<<"$review_request" 2>/dev/null || true)"
+      review_pr="$(jq -r '.pr // empty' <<<"$review_request" 2>/dev/null || true)"
+      review_url="$(jq -r '.url // empty' <<<"$review_request" 2>/dev/null || true)"
+      review_title="$(jq -r '.title // empty' <<<"$review_request" 2>/dev/null || true)"
+      review_head="$(jq -r '.head_sha // empty' <<<"$review_request" 2>/dev/null || true)"
+      if [[ ! "$review_repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ || ! "$review_pr" =~ ^[1-9][0-9]*$ \
+         || "$review_url" != "$url" || "$review_url" != "https://github.com/$review_repo/pull/$review_pr" \
+         || ! "$review_head" =~ ^[0-9a-f]{40,64}$ || -z "$review_title" ]]; then
+        queue_mark_reconcile "$id" "draft PR created but pr-review metadata was invalid" "$nonce" >/dev/null
+        log "request $id requires reconciliation (invalid pr-review metadata for $url)"
+        rm -f "$outfile"
+        return 0
+      fi
+      review_payload="$(jq -cn --arg repo "$review_repo" --arg pr "$review_pr" --arg url "$review_url" --arg title "$review_title" \
+        '{repo:$repo, pr:$pr, url:$url, title:$title}')"
+      if ! queue_enqueue pr-review "$review_payload" "${review_repo}#${review_pr}@${review_head}" >/dev/null; then
+        queue_mark_reconcile "$id" "draft PR created but pr-review enqueue failed" "$nonce" >/dev/null
+        log "request $id requires reconciliation (pr-review enqueue failed for $url)"
+        rm -f "$outfile"
+        return 0
+      fi
+      log "enqueued pr-review ${review_repo}#${review_pr}@${review_head}"
+    fi
     queue_mark_done "$id" "$url" "$nonce" >/dev/null
     log "request $id done${url:+ (}$url${url:+)}"
   elif (( rc == 1 )); then

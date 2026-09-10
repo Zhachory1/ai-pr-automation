@@ -26,6 +26,7 @@ IN SCOPE:
 - implement the smallest correct patch that resolves the approved findings.
 - add or update the tests and docs the handoff and repo policy require.
 - run the repository's own validation (tests, lint, type-check, coverage) and report results faithfully.
+- write a concrete commit subject and body that the harness can reuse as the draft PR title and description.
 
 OUT OF SCOPE:
 
@@ -49,8 +50,10 @@ Make the smallest change that resolves the approved findings. Reuse existing hel
 **Validate**
 Run the repo's declared test/coverage/lint commands. Report real results, including failures. Never claim green output you did not see.
 
-**Report and stop**
-Commit to the work branch. Summarize: what changed, why (per finding), validation results, anything you could not do and why. Stop at the branch — do not push or open a PR.
+**Commit, report, and stop**
+Commit to the work branch. The commit subject becomes the draft PR title: name the changed behavior and outcome, use imperative mood, keep it under 72 characters, and never use generic wording such as "address findings," "fix issue," or the source identifier alone. The commit body becomes the draft PR summary: state why the change is needed, list concrete behavior changes, and record each validation command and result. Do not claim results you did not observe.
+
+Summarize: what changed, why (per finding), validation results, anything you could not do and why. Stop at the branch — do not push or open a PR.
 
 ## Constraints
 
@@ -86,4 +89,5 @@ IMPLEMENTATION
 - every approved finding either addressed with evidence-backed changes or explicitly skipped with a reason.
 - validation actually run and honestly reported.
 - diff is the smallest that resolves the findings; no scope creep.
+- commit subject is a specific, human-readable PR title; commit body gives concrete rationale, changes, and validation.
 - work stops at a committed branch; push/PR/merge left to the human.

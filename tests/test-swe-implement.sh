@@ -47,13 +47,21 @@ expect_out "handoff with empty breakage is rejected" 'no .*Concrete breakage' --
 printf '## Concrete breakage\n- fix a thing\n' > "$TMP/norepo.md"
 expect_out "handoff without repo identity is rejected" 'no valid repo identity' -- bash "$H" --handoff "$TMP/norepo.md"
 
-# PR title is human-facing (repo#pr), not the raw handoff filename / source_ref. Assert the harness
-# builds a pr_title per input mode and uses it (falling back to source_ref only if unset).
-if grep -q 'pr_title="swe-implement(${repo##\*/}#${local_pr:-?}):' "$H" \
-   && grep -q 'title="${pr_title:-swe-implement: ${source_ref}}"' "$H"; then
-  echo 'PASS: PR title derived from repo#pr, not filename'
+# Agent's concrete commit message drives human-facing PR metadata; source-specific text is fallback.
+if grep -q 'commit_title="$(git log -1' "$H" \
+   && grep -q 'commit_body="$(git log -1' "$H" \
+   && grep -q 'title="${commit_title:-' "$H" \
+   && grep -q 'title="${title:0:72}"' "$H" \
+   && grep -q 'summary="${commit_body:0:8000}"' "$H"; then
+  echo 'PASS: PR title and summary come from agent commit metadata'
 else
-  echo 'FAIL: PR title derivation missing' >&2; fail=1
+  echo 'FAIL: concrete PR metadata derivation missing' >&2; fail=1
+fi
+
+if grep -q 'draft PR review request:' "$H"; then
+  echo 'PASS: created PR emits a typed pr-review request'
+else
+  echo 'FAIL: pr-review request output missing' >&2; fail=1
 fi
 
 (( fail == 0 ))

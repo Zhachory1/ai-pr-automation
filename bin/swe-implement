@@ -44,8 +44,8 @@ command -v git >/dev/null || die "missing git"
 [[ "$mode" ]] || die "one of --handoff / --issue / --prompt is required"
 
 # --- normalize input to: repo, base_ref (optional), task_text -------------------------------------
-# source_ref = provenance (goes in the PR body). pr_title = clean human-facing PR title.
-base_ref="" task_text="" source_ref="" pr_title=""
+# source_ref is provenance for the PR body. The agent's commit subject/body become PR metadata.
+base_ref="" task_text="" source_ref="" fallback_title=""
 case "$mode" in
   handoff)
     [[ -f "$src" && ! -L "$src" ]] || die "handoff not a regular file: $src"
@@ -55,7 +55,7 @@ case "$mode" in
     local_pr="$(sed -n 's/^pr:[[:space:]]*//p' "$src" | head -1)"
     [[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || die "handoff has no valid repo identity"
     source_ref="handoff $(basename "$src") ($repo#${local_pr:-?})"
-    pr_title="swe-implement(${repo##*/}#${local_pr:-?}): address PR-safety concrete breakage"
+    fallback_title="Fix PR-safety breakage from ${repo##*/}#${local_pr:-?}"
     # only the concrete-breakage section is implementable; a section that is blank or just "None."
     # (the analyst's empty-section marker) is nothing to fix.
     task_text="$(awk '/^## Concrete breakage/{f=1;next} /^## /{f=0} f' "$src")"
@@ -68,13 +68,13 @@ case "$mode" in
     view="$(gh issue view "$num" --repo "$repo" --json title,body,url 2>&1)" || die "gh issue view failed: $view"
     source_ref="$(jq -r '.url' <<<"$view")"
     task_text="$(jq -r '"Title: "+.title+"\n\n"+(.body // "")' <<<"$view")"
-    pr_title="swe-implement(${repo##*/}#${num}): $(jq -r '.title' <<<"$view" | cut -c1-72)"
+    fallback_title="$(jq -r '.title' <<<"$view" | cut -c1-72)"
     ;;
   prompt)
     [[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || die "--prompt requires --repo owner/repo"
     source_ref="prompt"
     task_text="$prompt_text"
-    pr_title="swe-implement(${repo##*/}): $(printf '%s' "$prompt_text" | tr '\n' ' ' | cut -c1-72)"
+    fallback_title="$(printf '%s' "$prompt_text" | tr '\n' ' ' | cut -c1-72)"
     ;;
 esac
 
@@ -152,6 +152,9 @@ fi
 # resulting commit is signed by GitHub (committer=GitHub, "Verified") without shipping a signing key
 # into the container. The local commit is used only to compute the tree delta.
 log "creating signed commit on $branch via GitHub API and opening DRAFT PR"
+commit_title="$(git log -1 --format='%s' HEAD)"
+commit_body="$(git log -1 --format='%b' HEAD)"
+diff_stat="$(git -c core.pager=cat diff --stat "$base_sha"..HEAD)"
 
 # The remote branch ref must exist at base before createCommitOnBranch (expectedHeadOid = base).
 gh api --method POST "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$base_sha" >/dev/null 2>&1 \
@@ -183,8 +186,17 @@ commit_oid="$(jq -cn \
   && [[ -n "$commit_oid" && "$commit_oid" != null ]] \
   || { drop_remote_branch; die "createCommitOnBranch failed: ${commit_oid:-no oid}"; }
 log "signed commit $commit_oid on $branch"
-title="${pr_title:-swe-implement: ${source_ref}}"
-body="$(printf 'Automated swe-implement draft from the PR-safety pipeline.\n\nSource: %s\nBase: %s@%s\n\nAgent: swe-implementer (%s). This is a DRAFT for human review; it was produced against a fresh clone of the default branch and does not touch any author PR branch.\n\n---\n\n%s\n' "$source_ref" "$default_branch" "${base_sha:0:10}" "$MODEL" "$(printf '%s' "$task_text" | head -c 4000)")"
+title="${commit_title:-${fallback_title:-swe-implement: ${source_ref}}}"
+title="${title:0:72}"
+if [[ -n "$commit_body" ]]; then summary="${commit_body:0:8000}"; else summary="${task_text:0:4000}"; fi
+body="$(printf '## Summary\n\n%s\n\n## Diff\n\n```text\n%s\n```\n\n## Source\n\n- Task: %s\n- Base: `%s@%s`\n- Agent: `swe-implementer` (`%s`)\n\nDraft generated from a fresh default-branch clone. Human review and merge are required.\n' "$summary" "$diff_stat" "$source_ref" "$default_branch" "${base_sha:0:10}" "$MODEL")"
 url="$(gh pr create --repo "$repo" --base "$default_branch" --head "$branch" --draft --title "$title" --body "$body" 2>&1)" || { drop_remote_branch; die "gh pr create failed: $url"; }
 log "draft PR: $url"
+if [[ "$url" =~ ^https://github.com/[^/]+/[^/]+/pull/([1-9][0-9]*)$ ]]; then
+  review_request="$(jq -cn --arg repo "$repo" --arg pr "${BASH_REMATCH[1]}" --arg url "$url" --arg title "$title" --arg head "$commit_oid" \
+    '{repo:$repo, pr:$pr, url:$url, title:$title, head_sha:$head}')"
+  log "draft PR review request: $review_request"
+else
+  log "WARN: could not build pr-review request from draft PR url: $url"
+fi
 trap - EXIT   # keep the clone for the pushed branch's provenance
