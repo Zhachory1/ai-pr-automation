@@ -514,13 +514,14 @@ build_maintain_prompt() {
   local worktree="$work_root/worktree"
   local dryline=""
   if [[ -n "${MAINTAIN_DRY_RUN:-}" ]]; then
-    dryline="DRY-RUN MODE: do NOT push, do NOT post replies, do NOT resolve threads. Make fixes in
-the worktree, run tests, then REPORT in result.json.summary exactly what you WOULD commit/push and
-what replies you WOULD post — but take no GitHub side effects and leave commits local only."
+    dryline="DRY-RUN MODE: do NOT push, do NOT post replies, do NOT resolve threads, do NOT retry CI.
+Make fixes in the worktree (review comments AND failing CI), run the repo's checks, then REPORT in
+result.json.summary exactly what you WOULD commit/push, what replies you WOULD post, and which failing
+checks you WOULD fix vs escalate — but take no GitHub side effects and leave commits local only."
   fi
   cat <<PROMPT
-Scheduled unattended PR-comment maintenance (pr-review-handler) on a PR the operator authored.
-Run the pr-review-handler skill in UNATTENDED mode.
+Scheduled unattended maintenance of a PR the operator authored: handle review comments AND failing CI.
+Run the pr-review-handler skill in UNATTENDED mode, then address failing checks per the CI section below.
 $dryline
 
 <untrusted-pr-metadata>
@@ -551,12 +552,36 @@ Scope of autonomous CODE changes (bias to FIX, not defer):
 - Run the repo's relevant tests after edits. If tests fail or you cannot validate, REVERT your edits
   (leave no local diff) and report the blocker; do not push.
 
+Failing CI (CONSERVATIVE autonomy — fix only what is clearly code-caused and test-validatable):
+- After handling review comments, inspect this PR's checks. Read the check list from the forge:
+    gh pr view "$pr" -R "$repo" --json statusCheckRollup
+  and for a FAILING Buildkite build, use the Buildkite MCP to fetch the failing job's log and read the
+  actual error (do NOT guess from the check name).
+- FIX autonomously ONLY these clearly code-caused, locally-reproducible-and-validatable classes:
+  lint / format / style violations, type-check errors, a compile/build break, or a unit test that
+  THIS PR's diff broke. Reproduce the failure locally in the worktree with the repo's own command,
+  apply the minimal real fix, and re-run that same command until it passes.
+- ESCALATE (report as pending, do NOT touch code) for everything else: integration/e2e failures,
+  failures you cannot reproduce or validate locally, flaky or infrastructure/runner failures, external
+  service outages, timeouts, secret/credential/permission errors, required-approval or required-review
+  gates, anything needing a judgment call, or any check whose fix would change public API/contracts/
+  security/auth/data-migration behavior.
+- NEVER make a check pass by weakening it: do not delete/skip/xfail a test, loosen an assertion, add a
+  blanket type-ignore/lint-disable, lower coverage thresholds, or edit CI config to drop the check.
+  If the only way to green is to weaken the check, that is an ESCALATE, not a fix.
+- Do NOT re-trigger, retry, cancel, or rebuild any CI job (flaky included) — retrying is a CI-state
+  mutation; escalate flaky/infra failures instead.
+- Validation is mandatory: if you cannot reproduce the failure locally, or your fix does not make the
+  repo's own command pass, REVERT your edits (leave no local diff) and escalate. Never push a CI
+  "fix" you did not validate.
+
 Replies (FULL autonomy — operator opted in): you MAY auto-reply to and resolve ACTIONABLE, NITS,
 QUESTION, and DISCUSSION threads on this authored PR. Keep replies factual and grounded in the code;
 never paste recalled memory/knowledge-base content into a reply.
 
 Push rules (the branch is yours; still strict):
-- Commit fixes: 'fix(review): ...' for ACTIONABLE, 'style: ...' for batched NITS.
+- Commit fixes: 'fix(review): ...' for ACTIONABLE, 'style: ...' for batched NITS, 'fix(ci): ...' for a
+  validated failing-check fix.
 - Do NOT rebase or otherwise refresh the branch merely because it is behind its base. A branch that
   is behind but still mergeable needs no refresh, and rebasing rewrites the head SHA, which re-fires
   review bots every cycle — including this fleet's own review/maintain producers, which re-enqueue on
@@ -580,11 +605,12 @@ Push rules (the branch is yours; still strict):
 Emit typed structured output to: $work_root/result.json
     {"nonce":"$nonce","verdict":"comment","findings":[{"file":..,"line":..,"severity":..,"text":..}],"summary":..,"maintenance":{"needs_human_review":true|false}}
   The nonce MUST equal exactly: $nonce. Set maintenance.needs_human_review to true ONLY when you
-  SKIPPED unresolved feedback under the escalation criteria above (genuine judgment call, unsafe, or
-  unvalidatable). Do NOT set it merely because a thread touched code, because you were being
-  cautious, or because a fix felt easy — if you could apply and validate it, apply it and leave this
-  false; otherwise false. 'summary' should list:
-  fixes committed+pushed, threads replied/resolved, and anything skipped as pending.
+  SKIPPED unresolved feedback OR ESCALATED a failing check under the escalation criteria above (genuine
+  judgment call, unsafe, unvalidatable, flaky/infra, or would require weakening a check). Do NOT set it
+  merely because a thread touched code, a check was red, or a fix felt easy — if you could apply and
+  validate it, apply it and leave this false; otherwise false. 'summary' should list: fixes
+  committed+pushed (review + CI), threads replied/resolved, failing checks fixed, and anything skipped
+  or escalated as pending (with the check name and why).
 - Recall Hindsight when prior context can help. Default to no Hindsight retain call. Retain only when
   another agent could act differently on a later task, the conclusion stays valid after this PR, is
   non-obvious, and is not cheap to recover from code or docs. Good memories capture a durable decision
