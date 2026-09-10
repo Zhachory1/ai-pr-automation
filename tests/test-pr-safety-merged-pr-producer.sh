@@ -37,7 +37,10 @@ cat > "$TMP/bin/gh" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
 case "\$1 \$2" in
-  "search prs") cat "\$PR_SAFETY_TEST_SEARCH_JSON" ;;
+  "search prs")
+    [[ " \$* " == *" --sort updated "* && " \$* " == *" --order desc "* ]] || exit 2
+    cat "\$PR_SAFETY_TEST_SEARCH_JSON"
+    ;;
   "pr view")    cat "\$PR_SAFETY_TEST_VIEW_JSON" ;;
   "repo clone") git clone --no-checkout "$SOURCE" "\$4" >/dev/null 2>&1 ;;
   *) exit 2 ;;

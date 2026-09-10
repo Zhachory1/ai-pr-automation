@@ -124,7 +124,7 @@ process_pr() {
 # process. The gh search only yields repo+number; a per-PR view resolves the merge/base SHAs.
 records_for_author() {
   local author="$1" outfile="$2" search view repo pr
-  if ! search="$(gh search prs --author "$author" --merged --limit "$SEARCH_LIMIT" --json number,repository 2>&1)"; then
+  if ! search="$(gh search prs --author "$author" --merged --sort updated --order desc --limit "$SEARCH_LIMIT" --json number,repository 2>&1)"; then
     saml_guard "$search"; log "author $author: search failed: $search"; return 0
   fi
   saml_guard "$search"
