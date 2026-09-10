@@ -32,9 +32,9 @@ DB = {
 }
 PORT = int(os.environ.get("STATUS_PORT", "8080"))
 REFRESH_SECONDS = int(os.environ.get("STATUS_REFRESH_SECONDS", "15"))
-# Client-side live refresh: poll /fragment and swap only #live, instead of a full-page <meta refresh>
-# that scrolls to top and wipes half-typed form input. Skip the swap while the user is interacting
-# (an input/select/textarea is focused, or text is selected) and while the tab is hidden.
+# Client-side behavior: (1) poll /fragment and swap only #live instead of a full-page reload, and
+# (2) intercept button/form POSTs so a click submits via fetch and refreshes #live in place — no page
+# reload, no scroll-to-top, no wiped input. Skip the poll swap while the user is interacting.
 LIVE_JS = (
     "(function(){"
     "var ms=%d*1000;"
@@ -44,12 +44,33 @@ LIVE_JS = (
     "var s=window.getSelection&&window.getSelection();"
     "if(s&&String(s).length)return true;"
     "return false;}"
-    "async function tick(){"
-    "if(document.hidden||busy())return;"
+    "async function refresh(){"
     "try{var r=await fetch('/fragment',{cache:'no-store'});"
     "if(!r.ok)return;var h=await r.text();"
-    "if(!busy())document.getElementById('live').innerHTML=h;}catch(e){}}"
+    "document.getElementById('live').innerHTML=h;}catch(e){}}"
+    "async function tick(){if(document.hidden||busy())return;await refresh();}"
     "setInterval(tick,ms);"
+    "function flash(msg,ok){var f=document.getElementById('flash');"
+    "if(!f){f=document.createElement('p');f.id='flash';document.querySelector('h1').after(f);}"
+    "f.textContent=msg;f.className=ok?'flash':'err';"
+    "clearTimeout(f._t);f._t=setTimeout(function(){f.textContent='';f.className='';},5000);}"
+    "document.addEventListener('submit',async function(ev){"
+    "var form=ev.target;"
+    "if(!form.matches||!form.matches('form[method=post],form[method=POST]'))return;"
+    "ev.preventDefault();"
+    "var oc=form.getAttribute('onsubmit');"
+    "if(oc&&/confirm\\(/.test(oc)){try{if(new Function(oc).call(form)===false)return;}catch(e){}}"
+    "var btns=form.querySelectorAll('button,input[type=submit]');"
+    "btns.forEach(function(b){b.disabled=true;});"
+    "function undo(){btns.forEach(function(b){b.disabled=false;});}"
+    "try{var r=await fetch(form.action,{method:'POST',headers:{'X-Requested-With':'fetch'},"
+    "body:new URLSearchParams(new FormData(form))});"
+    "var d={};try{d=await r.json();}catch(e){}"
+    "flash(d.flash||(r.ok?'done':'request failed'),r.ok&&d.ok!==false);"
+    "if(r.ok&&d.ok!==false&&form.reset)form.reset();"
+    "undo();await refresh();}"
+    "catch(e){flash('request failed',false);undo();}}"
+    ",true);"
     "})();"
 ) % REFRESH_SECONDS
 HINDSIGHT_URL = os.environ.get("HINDSIGHT_URL", "http://hindsight:8888").rstrip("/")
@@ -711,6 +732,17 @@ class Handler(BaseHTTPRequestHandler):
             result = f"rejected: {ex}"
         # Audit trail (single line, stderr) — mutating a work queue should not be silent.
         print(f"WRITE {self.path} {result}", flush=True)
+        # AJAX submit (button click without a page reload): return a small JSON result and let the
+        # client refresh the live region. A normal form post still gets the full-page redirect.
+        if self.headers.get("X-Requested-With") == "fetch":
+            with Handler._lock:
+                Handler._cache = None; Handler._frag = None   # next /fragment reflects this write
+            payload = json.dumps({"ok": not result.lower().startswith("rejected"),
+                                  "flash": result}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers(); self.wfile.write(payload); return
         self._redirect(result)
 
     def log_message(self, *a):  # quiet
