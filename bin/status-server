@@ -290,9 +290,11 @@ def e(v) -> str:
 
 
 def github_pr_link(url: str) -> str:
-    if not re.fullmatch(r"https://github\.com/[^/]+/[^/]+/pull/\d+", url):
+    m = re.fullmatch(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
+    if not m:
         return e(url)
-    return f'<a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener">Open PR</a>'
+    label = f"{m.group(1)}/{m.group(2)}#{m.group(3)}"
+    return f'<a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener">{e(label)}</a>'
 
 
 def findings_html(raw: str) -> str:
