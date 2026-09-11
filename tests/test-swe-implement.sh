@@ -64,4 +64,23 @@ else
   echo 'FAIL: pr-review request output missing' >&2; fail=1
 fi
 
+# #95: gh pr create output must not be contaminated by stderr, and a created-PR-with-unparseable-URL
+# must be a hard failure (never a soft WARN that ships an un-reviewed PR).
+if grep -qE 'gh pr create .*2>"\$gherr"' "$H" && ! grep -qE 'url="\$\(gh pr create.*2>&1\)"' "$H"; then
+  echo 'PASS: gh pr create captures stdout only (stderr separated)'
+else
+  echo 'FAIL: gh pr create still mixes stderr into the URL (2>&1)' >&2; fail=1
+fi
+if grep -q 'draft PR created but its URL could not be parsed' "$H" \
+   && ! grep -q 'WARN: could not build pr-review request' "$H"; then
+  echo 'PASS: unparseable created-PR URL is a hard failure, not a soft WARN'
+else
+  echo 'FAIL: created PR with no parseable URL is not failing hard' >&2; fail=1
+fi
+if grep -q "grep -oE 'https://github" "$H"; then
+  echo 'PASS: PR URL is robustly extracted (grep), not an exact whole-output match'
+else
+  echo 'FAIL: PR URL extraction not robust' >&2; fail=1
+fi
+
 (( fail == 0 ))
