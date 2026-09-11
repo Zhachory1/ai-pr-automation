@@ -7,10 +7,20 @@ probe_agent_mcps() {
   docker compose exec -T "$1" bash -s -- "${2:-full}" <<'SH'
 set -eu
 mode="$1"
+config_root="${MEWRITE_CODING_AGENT_DIR:-/app/agent-config}"
+config="$config_root/mcp.json"
+if [ "$mode" = context ]; then
+  config="$config_root/.mcp.json"
+  clean_home="$(mktemp -d)"
+  discovered="$(cd "$config_root" && HOME="$clean_home" mewritecode mcp list)"
+  rmdir "$clean_home"
+  printf '%s\n' "$discovered" | grep -Eq '^[[:space:]]+coderag \[stdio\]'
+  printf '%s\n' "$discovered" | grep -Eq '^[[:space:]]+hindsight \[stdio\]'
+  printf 'PASS mewritecode discovered coderag+hindsight from %s\n' "$config_root"
+fi
 probe() {
   name="$1" delay="$2" tool="$3" arguments="${4:-}" required="${5:-$3}" forbidden="${6:-}"
   [ -n "$arguments" ] || arguments='{}'
-  config="${MEWRITE_CODING_AGENT_DIR:-/app/agent-config}/mcp.json"
   jq -e --arg name "$name" '.mcpServers[$name].command == "npx" and .mcpServers[$name].args[:2] == ["-y", "mcp-remote@0.3.0"] and (.mcpServers[$name].args | index("--allow-http") != null)' "$config" >/dev/null
   mapfile -t args < <(jq -r --arg name "$name" '.mcpServers[$name].args[]' "$config")
   url="$(jq -r --arg name "$name" '.mcpServers[$name].args[] | select(startswith("http"))' "$config")"

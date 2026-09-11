@@ -15,8 +15,9 @@ umask 077
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MEWRITE="${MEWRITECODE_BIN:-mewritecode}"
 MODEL="${DOC_WRITER_MODEL:-openai/gpt-5.6-sol}"
-AGENTS_DIR="${DOC_WRITER_AGENTS_DIR:-$HERE/agent-config/doc-writer/agents}"
-HANDBOOK_DIR="${DOC_WRITER_HANDBOOK_DIR:-$HERE/agent-config/doc-writer/handbook}"
+CONFIG_ROOT="${MEWRITE_CODING_AGENT_DIR:-$HERE/agent-config/doc-writer}"
+AGENTS_DIR="${DOC_WRITER_AGENTS_DIR:-$CONFIG_ROOT/agents}"
+HANDBOOK_DIR="${DOC_WRITER_HANDBOOK_DIR:-$CONFIG_ROOT/handbook}"
 STAGE_DIR="${DOC_WRITER_STAGE_DIR:-$HOME/.local/share/ai-pr-automation/doc-writer}"
 INBOX_DIR="${DOC_WRITER_INBOX_DIR:-$HOME/private-docs/inbox}"
 ROUND_CAP="${DOC_WRITER_ROUND_CAP:-4}"
@@ -45,7 +46,7 @@ run_council() {
   [[ -f "$bundled" ]] && rubric="Review rubric (from the council skill):\n$(head -c 8000 "$bundled")\n\n"
   local prompt
   prompt="You are an adversarial single-lens reviewer. Critically review the DRAFT DOCUMENT below (a Rokt PRD or Design Doc). Give a concise verdict (accept / accept-with-nits / request-changes), the top issues (each: the problem, why it matters, smallest fix), the strongest counterargument, and any named dissent. Do not rewrite the doc. ${rubric}\n---\nDRAFT:\n\n$(head -c 60000 "$draft")"
-  local rev; rev="$("$TIMEOUT_BIN" "${COUNCIL_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" "$prompt" 2>/dev/null)" || return 1
+  local rev; rev="$("$TIMEOUT_BIN" "${COUNCIL_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" --cwd "$CONFIG_ROOT" "$prompt" 2>/dev/null)" || return 1
   [[ -n "$rev" ]] || return 1
   printf '%s\n' "$rev" > "$out"; return 0
 }
@@ -102,7 +103,7 @@ promptfile="$work/prompt.md"
 } > "$promptfile"
 
 log "running $kind_label persona ($MODEL) round $round for '$title'"
-raw="$("$TIMEOUT_BIN" "${RUN_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" --cwd "$HANDBOOK_DIR" \
+raw="$("$TIMEOUT_BIN" "${RUN_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" --cwd "$CONFIG_ROOT" \
        "$(<"$promptfile")" 2>"$work/agent.err" </dev/null)" || { die "agent run failed/timed out: $(tail -c 300 "$work/agent.err")"; }
 
 # --- split the draft from the trailing open_questions JSON block ----------------------------------
