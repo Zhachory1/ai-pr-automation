@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verifies the hindsight-bank-init script: it PATCHes the shared bank to a read-only MCP tool set
-# (no retain/sync_retain), fails loud if the API rejects or retain survives, and is idempotent.
+# (no retain/sync_retain), retries transient failures, fails loud, and is idempotent.
 # Uses a tiny mock hindsight (python http.server) so no live service is required.
 set -euo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -116,5 +116,63 @@ python3 "$tmp/coldmock.py" "$port" & srv=$!
 for _ in $(seq 1 20); do curl -fsS "http://127.0.0.1:$port/health/ready" >/dev/null 2>&1 && break; sleep 0.2; done
 coldout="$(HINDSIGHT_URL="http://127.0.0.1:$port" sh docker/hindsight-bank-init.sh 2>&1)" && coldrc=0 || coldrc=$?
 check "init creates the bank and retries when first PATCH 404s" "[[ \$coldrc -eq 0 ]] && grep -q \"done: 'fleet-shared'\" <<<\"\$coldout\""
+
+# 7) transient failure: first PATCH fails, then the retry succeeds.
+cat > "$tmp/retrymock.py" <<'PY'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+attempts=0
+class H(BaseHTTPRequestHandler):
+    def log_message(self,*a): pass
+    def do_GET(self):
+        if self.path == "/attempts": self.send_response(200); self.end_headers(); self.wfile.write(str(attempts).encode()); return
+        if self.path.endswith("/health/ready"): self.send_response(200); self.end_headers(); self.wfile.write(b"ok"); return
+        self.send_response(404); self.end_headers()
+    def do_PATCH(self):
+        global attempts
+        n=int(self.headers.get("content-length",0)); body=json.loads(self.rfile.read(n) or b"{}")
+        attempts += 1
+        if attempts == 1:
+            self.send_response(503); self.end_headers(); self.wfile.write(b'{"detail":"temporarily unavailable"}'); return
+        tools=body.get("updates",{}).get("mcp_enabled_tools")
+        out=json.dumps({"config":{"mcp_enabled_tools":tools}}).encode()
+        self.send_response(200); self.send_header("content-length",str(len(out))); self.end_headers(); self.wfile.write(out)
+HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()
+PY
+kill "$srv" 2>/dev/null || true; sleep 0.3
+python3 "$tmp/retrymock.py" "$port" & srv=$!
+for _ in $(seq 1 20); do curl -fsS "http://127.0.0.1:$port/health/ready" >/dev/null 2>&1 && break; sleep 0.2; done
+retryout="$(HINDSIGHT_CONFIG_RETRY_DELAY_SECONDS=0 HINDSIGHT_URL="http://127.0.0.1:$port" sh docker/hindsight-bank-init.sh 2>&1)" && retryrc=0 || retryrc=$?
+retryattempts="$(curl -fsS "http://127.0.0.1:$port/attempts")"
+check "init retries a transient PATCH failure" "[[ \$retryrc -eq 0 && \$retryattempts -eq 2 ]] && grep -q 'attempt 1/5 failed' <<<\"\$retryout\" && grep -q \"done: 'fleet-shared'\" <<<\"\$retryout\""
+
+# 8) bounded failure: five failed PATCHes exhaust retries; a sixth would have succeeded.
+cat > "$tmp/exhaustedmock.py" <<'PY'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+attempts=0
+class H(BaseHTTPRequestHandler):
+    def log_message(self,*a): pass
+    def do_GET(self):
+        if self.path == "/attempts": self.send_response(200); self.end_headers(); self.wfile.write(str(attempts).encode()); return
+        if self.path.endswith("/health/ready"): self.send_response(200); self.end_headers(); self.wfile.write(b"ok"); return
+        self.send_response(404); self.end_headers()
+    def do_PATCH(self):
+        global attempts
+        n=int(self.headers.get("content-length",0)); body=json.loads(self.rfile.read(n) or b"{}")
+        attempts += 1
+        if attempts <= 5:
+            self.send_response(503); self.end_headers(); self.wfile.write(b'{"detail":"temporarily unavailable"}'); return
+        tools=body.get("updates",{}).get("mcp_enabled_tools")
+        out=json.dumps({"config":{"mcp_enabled_tools":tools}}).encode()
+        self.send_response(200); self.send_header("content-length",str(len(out))); self.end_headers(); self.wfile.write(out)
+HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()
+PY
+kill "$srv" 2>/dev/null || true; sleep 0.3
+python3 "$tmp/exhaustedmock.py" "$port" & srv=$!
+for _ in $(seq 1 20); do curl -fsS "http://127.0.0.1:$port/health/ready" >/dev/null 2>&1 && break; sleep 0.2; done
+exhaustedrc=0; exhaustedout="$(HINDSIGHT_CONFIG_RETRY_DELAY_SECONDS=0 HINDSIGHT_URL="http://127.0.0.1:$port" sh docker/hindsight-bank-init.sh 2>&1)" || exhaustedrc=$?
+exhaustedattempts="$(curl -fsS "http://127.0.0.1:$port/attempts")"
+check "init fails after bounded PATCH retries are exhausted" "[[ \$exhaustedrc -ne 0 && \$exhaustedattempts -eq 5 ]] && grep -q 'failed after 5 attempts' <<<\"\$exhaustedout\""
 
 (( fail == 0 ))

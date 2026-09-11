@@ -88,11 +88,8 @@ services:
       - default
       - pr-safety-analyst
     healthcheck:
-      # Probe /health/ready (not /health): on a cold volume hindsight can be LISTENING (/health 200)
-      # while its DB migrations aren't finished (/health/ready not yet 200). Gating on /health/ready
-      # means dependents that wait for service_healthy — esp. hindsight-bank-init — only start once the
-      # server is truly ready, closing the cold-start race (#99). curl is present in the image.
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/health/ready >/dev/null || exit 1"]
+      # /health returns 200; root (/) is 404. curl is present in the image (verified).
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -103,10 +100,7 @@ services:
   # impossible while keeping recall. Runs once after hindsight is healthy, before any agent starts.
   hindsight-bank-init:
     image: curlimages/curl:8.11.1
-    # on-failure (not "no"): a one-shot that hard-fails would block every agent-server waiting on
-    # service_completed_successfully. With the /health/ready gate above this should not fire, but a
-    # transient (e.g. hindsight restart mid-init) retries instead of bricking downstream startup (#99).
-    restart: on-failure:5
+    restart: "no"
     environment:
       HINDSIGHT_URL: ${HINDSIGHT_URL:-http://hindsight:8888}
       HINDSIGHT_SHARED_BANK: ${HINDSIGHT_SHARED_BANK:-fleet-shared}
