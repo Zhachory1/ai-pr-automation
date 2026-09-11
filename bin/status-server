@@ -169,6 +169,88 @@ def _swe_enqueue(payload: dict, dedupe_key: str) -> str:
     return "enqueued swe-implement" if proc.stdout.strip() == "1" else "already queued/running (deduped)"
 
 
+DOC_TYPES = ("seprd", "mlprd", "launchpad", "dd")
+DOC_WRITE_DAILY_CAP = int(os.environ.get("DOC_WRITE_DAILY_CAP", "30"))
+
+
+def _slug(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return (s[:48] or "untitled")
+
+
+def _doc_enqueue(payload: dict, dedupe_key: str) -> str:
+    """Enqueue a 'doc-write' request. Credential-free; the doc-writer-server runs the persona. Each
+    round is its own request (round in the dedupe key), so refine advances even past a done round.
+    A daily cap bounds paid model spend since the UI is credential-free."""
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    proc = _psql(
+        ["-v", f"payload={payload_json}", "-v", f"dk={dedupe_key}", "-v", f"cap={DOC_WRITE_DAILY_CAP}"],
+        "INSERT INTO requests(kind,payload,dedupe_key) "
+        "SELECT 'doc-write', :'payload'::jsonb, :'dk' "
+        "WHERE NOT EXISTS (SELECT 1 FROM requests WHERE kind='doc-write' "
+        "  AND dedupe_key=:'dk' AND status IN ('queued','running')) "
+        "AND (SELECT count(*) FROM requests WHERE kind='doc-write' "
+        "  AND created_at::date = now()::date) < :'cap'::int "
+        "ON CONFLICT DO NOTHING RETURNING 1")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "insert failed")
+    if proc.stdout.strip() == "1":
+        return "enqueued doc-write"
+    return f"not enqueued (already active, or daily cap {DOC_WRITE_DAILY_CAP} reached)"
+
+
+def doc_write(doc_type: str, title: str, requirements: str) -> str:
+    """Enqueue a new document request from the Documents form."""
+    doc_type = (doc_type or "").strip().lower()
+    title = (title or "").strip()
+    requirements = (requirements or "").strip()
+    if doc_type not in DOC_TYPES:
+        raise ValueError(f"doc_type must be one of {', '.join(DOC_TYPES)}")
+    if not title:
+        raise ValueError("title is required")
+    if not requirements:
+        raise ValueError("requirements are required")
+    dk = f"doc:{doc_type}:{_slug(title)}@round-1-{int(time.time())}"
+    return _doc_enqueue({"doc_type": doc_type, "title": title, "requirements": requirements,
+                         "round": 1}, dk)
+
+
+def doc_refine(review_id: int, answers: str, finalize: bool) -> str:
+    """From a doc-open-questions queue item: enqueue the next round with the human's answers (or
+    finalize straight to council+write). Closes the current queue row so the queue does not accrete."""
+    proc = _psql(["-v", f"rid={review_id}"],
+                 "SELECT proposal::text FROM pending_maintenance_reviews "
+                 "WHERE id=:'rid'::bigint AND state='pending'")
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError("review item not found or already handled")
+    prop = json.loads(proc.stdout.strip())
+    if prop.get("kind") != "doc-open-questions":
+        raise ValueError("not a document review item")
+    doc_type = prop["doc_type"]; title = prop["title"]
+    prior = prop.get("draft_path", ""); nxt = int(prop.get("round", 1)) + 1
+    answers = (answers or "").strip()
+    if not finalize and not answers:
+        raise ValueError("enter answers, or click Finalize to skip remaining questions")
+    # Close-then-enqueue, and let the CLOSE be the concurrency guard: the UPDATE flips exactly one
+    # pending->reviewed and RETURNs its id, so a double-click (or a second refine on the same row)
+    # finds nothing to close and does NOT enqueue a duplicate round. Only after we own the close do
+    # we enqueue the next action; if that enqueue is capped/suppressed we surface it (the row stays
+    # closed, so the queue never accretes, and the operator can resubmit from the Documents form).
+    proc = _psql(["-v", f"rid={review_id}"],
+                 "UPDATE pending_maintenance_reviews SET state='reviewed', reviewed_at=now() "
+                 "WHERE id=:'rid'::bigint AND state='pending' RETURNING id")
+    if proc.returncode != 0 or proc.stdout.strip() != str(review_id):
+        raise RuntimeError("review item already handled (nothing to refine)")
+    dk = f"doc:{doc_type}:{_slug(title)}@round-{nxt}-{int(time.time())}"
+    result = _doc_enqueue({"doc_type": doc_type, "title": title, "requirements": "",
+                           "round": nxt, "prior_draft": prior, "answers": answers,
+                           "finalize": bool(finalize)}, dk)
+    if not result.startswith("enqueued"):
+        # closed but not enqueued (cap/suppressed): tell the operator plainly, no silent drop.
+        return f"answers recorded but next round NOT queued — {result}. Resubmit from Documents."
+    return ("finalizing document (council + write)" if finalize else f"refining (round {nxt})")
+
+
 def swe_implement_handoff(handoff_path: str) -> str:
     """Enqueue a swe-implement task from a handoff path (as shown in the human-review queue). The
     path is validated to be a non-empty .md under HANDOFF_ROOT; the server re-derives everything."""
@@ -345,11 +427,46 @@ def findings_html(raw: str) -> str:
     return "<ul>" + "".join(items) + "</ul>"
 
 
+def _doc_review_row(review_id, summary, open_questions_raw, draft_path, created) -> str:
+    """Render one doc-open-questions queue item: the agent's open questions + an answers box with
+    Refine / Finalize / Dismiss. Refine re-runs the writer with the answers; Finalize skips remaining
+    questions and goes straight to council + write to private-docs."""
+    try:
+        questions = json.loads(open_questions_raw) if open_questions_raw else []
+    except (ValueError, TypeError):
+        questions = []
+    qlist = "".join(f"<li>{e(q)}</li>" for q in questions) or "<li>(review the draft directly)</li>"
+    rid = e(review_id)
+    answer_form = (
+        f'<form class=inline method=post action="/doc-reviews/{rid}/refine">'
+        f'<input type=hidden name=token value="{e(CSRF_TOKEN)}">'
+        f'<textarea name=answers rows=4 cols=48 placeholder="Answer the open questions here..."></textarea><br>'
+        f'<button type=submit>Refine</button></form>'
+        f'<form class=inline method=post action="/doc-reviews/{rid}/finalize" '
+        f'onsubmit="return confirm(\'Finalize now? Skips remaining questions, runs council, writes to private-docs.\')">'
+        f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Finalize</button></form>'
+        f'<form class=inline method=post action="/human-reviews/{rid}/dismissed">'
+        f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Dismiss</button></form>')
+    return ("<tr>"
+            f"<td>{rid}</td><td><span class=\"chip s-queued\">doc</span></td><td>{e(draft_path)}</td>"
+            f"<td>{e(summary)}<ul>{qlist}</ul></td><td></td><td>{answer_form}</td>"
+            f"<td>{e(created)}</td><td></td></tr>")
+
+
 def human_review_table(rows: list[list[str]]) -> str:
     if not rows:
         return "<section><h2>Human review queue (0)</h2><p class=empty>nothing needs review</p></section>"
     body = ""
-    for review_id, request_id, url, summary, findings, handoff, created, rtype in rows:
+    for row in rows:
+        # Tolerate the pre-doc 8-tuple and the doc-aware 10-tuple: doc fields default to empty.
+        review_id, request_id, url, summary, findings, handoff, created, rtype = row[:8]
+        open_questions = row[8] if len(row) > 8 else "[]"
+        draft_path = row[9] if len(row) > 9 else ""
+        # Document open-questions items get their own renderer: the draft's questions + an answers box
+        # and Refine/Finalize/Dismiss, instead of the maintenance Reviewed/Dismiss.
+        if rtype == "doc-open-questions":
+            body += _doc_review_row(review_id, summary, open_questions, draft_path, created)
+            continue
         type_chip = ('<span class="chip s-done">review-ready</span>' if rtype == "review-ready"
                      else '<span class="chip s-running">pr-safety</span>' if rtype == "pr-safety-review"
                      else '<span class="chip s-queued">maintenance</span>')
@@ -450,7 +567,10 @@ def render(flash: str = "", fragment: bool = False) -> str:
             "coalesce((d.proposal->'findings')::text,'[]') AS findings, "
             "coalesce(d.proposal->>'handoff_path','') AS handoff, "
             "to_char(d.created_at,'MM-DD HH24:MI') AS created, "
-            "CASE WHEN d.proposal->>'ready' = 'true' THEN 'review-ready' ELSE r.kind END AS rtype "
+            "CASE WHEN d.proposal->>'kind' = 'doc-open-questions' THEN 'doc-open-questions' "
+            "     WHEN d.proposal->>'ready' = 'true' THEN 'review-ready' ELSE r.kind END AS rtype, "
+            "coalesce((d.proposal->'open_questions')::text,'[]') AS open_questions, "
+            "coalesce(d.proposal->>'draft_path','') AS draft_path "
             "FROM pending_maintenance_reviews d JOIN requests r ON r.id = d.request_id "
             "WHERE d.state='pending' ORDER BY d.created_at DESC")
         pending = query(
@@ -475,9 +595,15 @@ def render(flash: str = "", fragment: bool = False) -> str:
             "coalesce(fail_response,'') AS detail, "
             "to_char(coalesce(finished_at,started_at,created_at),'MM-DD HH24:MI') AS updated "
             "FROM requests WHERE kind='swe-implement' ORDER BY id DESC LIMIT 20")
+        docs = query(
+            "SELECT id, status, payload->>'doc_type' AS type, payload->>'title' AS title, "
+            "coalesce(payload->>'round','1') AS round, coalesce(posted_ref,'') AS result, "
+            "coalesce(fail_response,'') AS detail, "
+            "to_char(coalesce(finished_at,started_at,created_at),'MM-DD HH24:MI') AS updated "
+            "FROM requests WHERE kind='doc-write' ORDER BY id DESC LIMIT 20")
         db_err = None
     except Exception as ex:
-        running = queued = recent = human_review = pending = today = capped = swe = []
+        running = queued = recent = human_review = pending = today = capped = swe = docs = []
         db_err = str(ex)
 
     banner = (f"<p class=err>DB unreachable: {e(db_err)}</p>" if db_err else "")
@@ -500,6 +626,7 @@ def render(flash: str = "", fragment: bool = False) -> str:
         f'{queued_html}'
         f'{human_review_table(human_review)}'
         f'{swe_implement_section(swe)}'
+        f'{doc_section(docs)}'
         f'{pending_decision_table(pending)}'
         f'{recent_table(recent)}'
         f'{table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}'
@@ -553,6 +680,45 @@ def render(flash: str = "", fragment: bool = False) -> str:
 <div id=live>{inner}</div>
 <script>{LIVE_JS}</script>
 </body></html>"""
+
+
+def _doc_ref(result: str) -> str:
+    """A finished doc's result is a private-docs file path; show its basename (not a link — it is a
+    host file, not served). An in-progress result is a short status string."""
+    if result.startswith("/") and result.endswith(".md"):
+        return f"<code>{e(os.path.basename(result))}</code>"
+    return e(result)
+
+
+def doc_section(rows: list[list[str]]) -> str:
+    """Documents form (PRD/DD writer) + a table of doc-write requests. Open questions are answered
+    from the human-review queue above; finished docs land in private-docs/inbox."""
+    if rows:
+        body = "".join(
+            "<tr>"
+            f"<td>{e(r[0])}</td><td>{chip(r[1])}</td><td>{e(r[2])}</td><td>{e(r[3])}</td>"
+            f"<td>{e(r[4])}</td><td>{_doc_ref(r[5])}</td><td>{e(r[6])}</td><td>{e(r[7])}</td></tr>"
+            for r in rows)
+        tbl = ("<table><thead><tr><th>id</th><th>status</th><th>type</th><th>title</th><th>round</th>"
+               f"<th>result</th><th>detail</th><th>updated</th></tr></thead><tbody>{body}</tbody></table>")
+    else:
+        tbl = "<p class=empty>no document requests yet</p>"
+    return ("<section><h2>Documents <span class=sub>PRD / Design Doc writer (Rokt)</span></h2>"
+            "<p class=hint>Draft a Rokt PRD (SEPRD / MLPRD / Launchpad) or a Design Doc. The writer drafts, "
+            "then sends its <b>open questions</b> to the human-review queue above — answer them and <b>Refine</b>, "
+            "or <b>Finalize</b> to run council and write the doc into <code>~/private-docs/inbox</code>.</p>"
+            "<form class=toolbar method=post action=/doc-write "
+            "onsubmit=\"return confirm('Draft this document?')\">"
+            f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\">"
+            "<select name=doc_type>"
+            "<option value=seprd>SEPRD (software)</option>"
+            "<option value=mlprd>MLPRD (ML)</option>"
+            "<option value=launchpad>Launchpad</option>"
+            "<option value=dd>Design Doc</option></select>"
+            "<input name=title placeholder=\"document title\" size=32 required>"
+            "<input name=requirements placeholder=\"goals & requirements\" size=48 required>"
+            "<button type=submit>draft document</button></form>"
+            f"{tbl}</section>")
 
 
 def swe_implement_section(rows: list[list[str]]) -> str:
@@ -713,10 +879,19 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/swe-implement/prompt":
                 result = swe_implement_prompt(params.get("repo", [""])[0].strip(),
                                               params.get("prompt", [""])[0].strip())
+            elif self.path == "/doc-write":
+                result = doc_write(params.get("doc_type", [""])[0],
+                                   params.get("title", [""])[0],
+                                   params.get("requirements", [""])[0])
             else:
                 review_match = re.fullmatch(r"/human-reviews/(\d+)/(reviewed|dismissed)", self.path)
                 decision_match = re.fullmatch(r"/pending-decisions/(\d+)/(approve|retry|reject)", self.path)
-                if review_match:
+                doc_review_match = re.fullmatch(r"/doc-reviews/(\d+)/(refine|finalize)", self.path)
+                if doc_review_match:
+                    result = doc_refine(int(doc_review_match.group(1)),
+                                        params.get("answers", [""])[0],
+                                        doc_review_match.group(2) == "finalize")
+                elif review_match:
                     result = update_human_review_state(int(review_match.group(1)), review_match.group(2))
                 elif decision_match:
                     decision_id, action = int(decision_match.group(1)), decision_match.group(2)

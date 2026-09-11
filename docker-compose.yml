@@ -407,6 +407,40 @@ services:
       schema-migrate:
         condition: service_completed_successfully
 
+  # --- doc-writer: PRD / Design Doc writer for the 'doc-write' queue kind ---
+  # Runs the PRD/DD persona (with the bundled Rokt handbook) via mewritecode. Drafts, then routes open
+  # questions to the human-review queue; on finalize runs council and writes the doc to the WRITABLE
+  # private-docs inbox mount (only inbox is writable — not the whole brain). No GitHub token.
+  doc-writer-server:
+    profiles: ["doc-writer"]
+    image: agent-fleet/doc-writer:${DOC_WRITER_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.doc-writer
+    container_name: fleet-doc-writer-server
+    restart: unless-stopped
+    env_file: .env                      # OPENAI_API_KEY, REQUESTS_DB_PASSWORD
+    environment:
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_PORT: "5432"
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      DOC_WRITER_MODEL: ${DOC_WRITER_MODEL:-openai/gpt-5.6-sol}
+      DOC_WRITER_STAGE_DIR: /work/stage
+      DOC_WRITER_INBOX_DIR: /inbox
+      HOME: /work
+    volumes:
+      - doc_writer_work:/work                                 # mewritecode HOME + draft staging
+      # ONLY the private-docs inbox, WRITABLE. Finished docs land here for the human to file. The rest
+      # of the brain is never mounted here (the curator reads it elsewhere, read-only).
+      - ${DOC_WRITER_INBOX_HOST:-/var/empty}:/inbox
+    depends_on:
+      db-requests:
+        condition: service_healthy
+      schema-migrate:
+        condition: service_completed_successfully
+
   # --- memory-curator: scheduled writer for the shared Hindsight bank ---
   # fleet-shared is read-only over MCP (agents can't self-retain junk); this is the ONE writer, over
   # REST. Ruminates mounted source material (private-docs + agent-fleet transcripts) on an interval
@@ -579,3 +613,4 @@ volumes:
   swe_implement_work:
   memory_curator_state:
   memory_curator_work:
+  doc_writer_work:

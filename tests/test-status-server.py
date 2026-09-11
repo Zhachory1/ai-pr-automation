@@ -21,12 +21,13 @@ loader.exec_module(status_server)
 
 class StatusServerTest(unittest.TestCase):
     def test_render_shows_escaped_pr_safety_human_queue_item(self):
+        # query order: running, queued, recent, human_review, pending, today, capped, swe, docs
         rows = [
             [], [], [],
             [["17", "42", "https://github.com/ROKT/repo/pull/7", "Needs <review>",
               '[{"file":"x.py","line":12,"severity":"major","claim":"Fix <this>","risk":"break","recommended_remediation":"test"}]',
-              "/private/handoff.md", "09-03 20:43", "pr-safety-review"]],
-            [], [], [],
+              "/private/handoff.md", "09-03 20:43", "pr-safety-review", "[]", ""]],
+            [], [], [], [], [],
         ]
         with patch.object(status_server, "query", side_effect=rows):
             page = status_server.render()
@@ -48,7 +49,7 @@ class StatusServerTest(unittest.TestCase):
             [], [], [], [],
             [["19", "42", "pr-review", "https://github.com/ROKT/repo/pull/7", proposal, provenance,
               "pending", "09-04 12:00", "", ""]],
-            [], [],
+            [], [], [], [],
         ]
         with patch.object(status_server, "query", side_effect=rows) as query:
             page = status_server.render()
@@ -68,7 +69,7 @@ class StatusServerTest(unittest.TestCase):
             [], [], [], [],
             [["19", "42", "pr-review", "https://github.com/ROKT/repo/pull/7", "{}", "{}",
               "publishing", "09-04 12:00", "09-04 12:01", "Hindsight unavailable"]],
-            [], [],
+            [], [], [], [],
         ]
         with patch.object(status_server, "query", side_effect=rows):
             page = status_server.render()
@@ -251,6 +252,61 @@ class StatusServerTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS = old_hosts, old_origins
+
+    # --- doc-writer: enqueue cap + refine close-on-cap (MAJOR-1 / M1) ---
+
+    def _cp(self, rc=0, out=""):
+        return SimpleNamespace(returncode=rc, stdout=out, stderr="")
+
+    def test_doc_write_rejects_bad_type_and_empty(self):
+        with self.assertRaises(ValueError):
+            status_server.doc_write("bogus", "t", "r")
+        with self.assertRaises(ValueError):
+            status_server.doc_write("seprd", "", "r")
+        with self.assertRaises(ValueError):
+            status_server.doc_write("seprd", "t", "")
+
+    def test_doc_write_cap_reached_reports_not_enqueued(self):
+        # _doc_enqueue: INSERT ... RETURNING returns empty when the daily cap predicate fails.
+        with patch.object(status_server, "_psql", return_value=self._cp(0, "")):
+            msg = status_server.doc_write("seprd", "My Doc", "reqs")
+        self.assertIn("not enqueued", msg)
+        self.assertIn("cap", msg)
+
+    def test_doc_refine_closes_row_only_once(self):
+        # A pending doc item; the close UPDATE ... RETURNING id succeeds once, then the enqueue works.
+        proposal = json.dumps({"kind": "doc-open-questions", "doc_type": "seprd",
+                               "title": "My Doc", "draft_path": "/stage/x.md", "round": 1})
+        calls = [self._cp(0, proposal),      # SELECT proposal
+                 self._cp(0, "7"),           # UPDATE ... RETURNING id -> owns the close
+                 self._cp(0, "1")]           # _doc_enqueue INSERT ... RETURNING 1
+        with patch.object(status_server, "_psql", side_effect=calls):
+            msg = status_server.doc_refine(7, "here are answers", finalize=False)
+        self.assertIn("refining (round 2)", msg)
+
+    def test_doc_refine_double_click_does_not_double_enqueue(self):
+        # Second refine on an already-closed row: the close UPDATE returns nothing -> raise, no enqueue.
+        proposal = json.dumps({"kind": "doc-open-questions", "doc_type": "seprd",
+                               "title": "My Doc", "draft_path": "/stage/x.md", "round": 1})
+        calls = [self._cp(0, proposal),      # SELECT proposal (still readable)
+                 self._cp(0, "")]            # UPDATE ... RETURNING id -> empty (already handled)
+        with patch.object(status_server, "_psql", side_effect=calls) as m:
+            with self.assertRaises(RuntimeError):
+                status_server.doc_refine(7, "answers", finalize=False)
+        # only SELECT + the losing UPDATE ran; no enqueue INSERT.
+        self.assertEqual(m.call_count, 2)
+
+    def test_doc_refine_closed_but_capped_reports_not_queued(self):
+        # Row closes (we own it) but the next-round enqueue is capped: must NOT silently drop.
+        proposal = json.dumps({"kind": "doc-open-questions", "doc_type": "seprd",
+                               "title": "My Doc", "draft_path": "/stage/x.md", "round": 1})
+        calls = [self._cp(0, proposal),      # SELECT
+                 self._cp(0, "7"),           # UPDATE close -> owned
+                 self._cp(0, "")]            # enqueue INSERT -> empty (cap reached)
+        with patch.object(status_server, "_psql", side_effect=calls):
+            msg = status_server.doc_refine(7, "answers", finalize=False)
+        self.assertIn("NOT queued", msg)
+        self.assertIn("Resubmit", msg)
 
 
 if __name__ == "__main__":

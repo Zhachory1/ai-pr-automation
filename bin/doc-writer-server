@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# doc-writer-server — serial queue-draining worker for the 'doc-write' kind.
+#
+# Claims one doc-write request at a time and runs bin/doc-writer (the harness) to draft a Rokt PRD
+# or Design Doc. Mirrors bin/agent-server's concurrency machinery (renewable DB lease + nonce
+# fencing; reclaim; FOR UPDATE SKIP LOCKED claim; heartbeat self-exit) via lib/queue.sh. No GitHub
+# token — documents are local; the only side effect is writing to ~/private-docs/inbox.
+#
+# Request payload (requests.kind = 'doc-write'):
+#   { "doc_type": "seprd"|"mlprd"|"launchpad"|"dd",
+#     "title": "<title>", "requirements": "<goals & requirements>",
+#     "round": N,                            # refine round (1 = first draft)
+#     "prior_draft": "<stage path>",         # round>1: the prior draft to revise
+#     "answers": "<human answers>",          # round>1: answers to the open questions
+#     "finalize": true|false }               # skip remaining questions -> council + write
+# The harness routes: open questions -> human-review queue (answer loop); finalize/no-questions ->
+# council review + write the doc to the inbox, with requests.posted_ref = the written file path.
+set -euo pipefail
+umask 077
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/queue.sh
+. "$HERE/lib/queue.sh"
+
+KIND=doc-write
+POLL_INTERVAL="${DOC_WRITER_POLL_INTERVAL:-15}"
+PER_REQUEST_TIMEOUT="${DOC_WRITER_PER_REQUEST_TIMEOUT:-1800}"   # 25m ceiling (agent draft + council)
+LOOP_HEARTBEAT_MAX="${DOC_WRITER_LOOP_HEARTBEAT_MAX:-7200}"
+HARNESS="${DOC_WRITER_HARNESS:-$HERE/bin/doc-writer}"
+# Renewable DB lease + nonce fencing (same model as agent-server since #58). A background heartbeat
+# renews the lease while the long-running harness works; reclaim only requeues expired leases.
+LEASE_SECONDS="${DOC_WRITER_LEASE_SECONDS:-120}"
+LEASE_HEARTBEAT="${DOC_WRITER_LEASE_HEARTBEAT:-30}"
+LEASE_DB_TIMEOUT="${DOC_WRITER_LEASE_DB_TIMEOUT:-10}"
+[[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_HEARTBEAT" =~ ^[1-9][0-9]*$ && "$LEASE_DB_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
+  || { echo "lease seconds, heartbeat, and DB timeout must be positive integers" >&2; exit 2; }
+(( LEASE_HEARTBEAT * 3 <= LEASE_SECONDS && 2 * (LEASE_HEARTBEAT + LEASE_DB_TIMEOUT) + 2 <= LEASE_SECONDS )) \
+  || { echo "lease must cover two heartbeat+DB-timeout windows with safety margin" >&2; exit 2; }
+
+ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+log() { echo "$(ts) doc-writer-server $*"; }
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need psql; need jq; need python3
+[[ -x "$HARNESS" ]] || { echo "missing harness: $HARNESS" >&2; exit 2; }
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+[[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
+db_up() { _psql <<<"SELECT 1;" >/dev/null 2>&1; }
+
+# --- renewable lease heartbeat (mirrors agent-server) ---
+WORKER_PID="$$"
+ACTIVE_CHILD=""
+LEASE_HEARTBEAT_PID=""
+SHUTDOWN_REQUESTED=false
+request_shutdown() { SHUTDOWN_REQUESTED=true; log "shutdown requested; draining active request"; }
+abort_lost_lease() {
+  log "worker lost its lease; aborting active request"
+  stop_lease_heartbeat
+  if [[ -n "$ACTIVE_CHILD" ]]; then
+    kill -TERM "$ACTIVE_CHILD" 2>/dev/null || true; sleep 2
+    kill -KILL "$ACTIVE_CHILD" 2>/dev/null || true; wait "$ACTIVE_CHILD" 2>/dev/null || true
+  fi
+  exit 143
+}
+trap request_shutdown TERM INT
+trap abort_lost_lease USR1
+start_lease_heartbeat() {
+  local id="$1" nonce="$2"
+  (
+    failures=0
+    while sleep "$LEASE_HEARTBEAT"; do
+      state="$("$TIMEOUT_BIN" --kill-after=2s "${LEASE_DB_TIMEOUT}s" bash -c \
+        '. "$1"; queue_renew_lease "$2" "$3" "$4"' _ "$HERE/lib/queue.sh" "$id" "$nonce" "$LEASE_SECONDS" \
+        2>/dev/null)" || state=error
+      case "$state" in
+        renewed) failures=0 ;;
+        finished) exit 0 ;;
+        lost) log "FATAL: lease lost for request $id; stopping worker"; kill -USR1 "$WORKER_PID"; exit 1 ;;
+        *) failures=$((failures + 1)); (( failures < 2 )) && continue
+           log "FATAL: lease renewal failed twice for request $id; stopping worker"; kill -USR1 "$WORKER_PID"; exit 1 ;;
+      esac
+    done
+  ) &
+  LEASE_HEARTBEAT_PID="$!"
+}
+stop_lease_heartbeat() {
+  [[ -n "$LEASE_HEARTBEAT_PID" ]] || return 0
+  kill "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$LEASE_HEARTBEAT_PID" 2>/dev/null || true
+  LEASE_HEARTBEAT_PID=""
+}
+
+# Insert a doc-open-questions item into the human-review queue so the operator can answer and refine.
+queue_doc_review() {
+  local id="$1" nonce="$2" doc_type="$3" title="$4" draft_path="$5" oq_json="$6" round="$7"
+  local n; n="$(printf '%s' "$oq_json" | jq 'length')"
+  local proposal prov
+  proposal="$(jq -cn --arg dt "$doc_type" --arg t "$title" --arg dp "$draft_path" \
+    --argjson oq "$oq_json" --argjson r "$round" --arg s "$n open question(s) on '$title' ($doc_type), round $round" \
+    '{kind:"doc-open-questions", doc_type:$dt, title:$t, draft_path:$dp, open_questions:$oq, round:$r, summary:$s}')"
+  prov="$(jq -cn --arg rid "$id" --argjson r "$round" '{request_id:$rid, round:$r}')"
+  pending_maintenance_review_insert "$id" "$proposal" "$prov" "$nonce"
+}
+
+process_one() {
+  local id="$1" payload="$2" run_id="$3" nonce="$4"
+  local doc_type title round; doc_type="$(jq -r '.doc_type // empty' <<<"$payload")"
+  title="$(jq -r '.title // empty' <<<"$payload")"; round="$(jq -r '.round // 1' <<<"$payload")"
+  if [[ -z "$doc_type" || -z "$title" ]]; then
+    queue_mark_failed "$id" "invalid doc-write payload (need doc_type,title)" "$nonce" >/dev/null; return 0
+  fi
+
+  # Writing to private-docs is a side effect: fence it before the long run.
+  queue_mark_side_effect "$id" "$nonce" >/dev/null 2>&1 || true
+
+  local outfile; outfile="$(mktemp)"; local rc=0
+  "$TIMEOUT_BIN" --kill-after=15s "${PER_REQUEST_TIMEOUT}s" "$HARNESS" --payload "$payload" >"$outfile" 2>>/dev/stderr &
+  ACTIVE_CHILD="$!"
+  wait "$ACTIVE_CHILD" || rc=$?
+  ACTIVE_CHILD=""
+
+  # The harness prints exactly one machine-JSON result line on stdout; logs went to stderr.
+  local result; result="$(grep -E '^\{"status":' "$outfile" | tail -1)"
+  rm -f "$outfile"
+  if (( rc != 0 )) || [[ -z "$result" ]]; then
+    queue_mark_failed "$id" "doc-writer harness rc=$rc" "$nonce" >/dev/null
+    log "request $id failed (rc=$rc)"; return 0
+  fi
+
+  local status; status="$(jq -r '.status' <<<"$result")"
+  case "$status" in
+    open_questions)
+      local draft_path oq_json
+      draft_path="$(jq -r '.draft_path' <<<"$result")"
+      oq_json="$(jq -c '.open_questions' <<<"$result")"
+      if queue_doc_review "$id" "$nonce" "$doc_type" "$title" "$draft_path" "$oq_json" "$round"; then
+        queue_mark_done "$id" "queued: awaiting answers (round $round)" "$nonce" >/dev/null
+        log "request $id queued for human answers (round $round)"
+      else
+        queue_mark_reconcile "$id" "draft staged but human-review insert failed" "$nonce" >/dev/null
+        log "request $id reconcile (review insert failed)"
+      fi ;;
+    written)
+      local doc_path council
+      doc_path="$(jq -r '.doc_path' <<<"$result")"; council="$(jq -r '.council' <<<"$result")"
+      queue_mark_done "$id" "$doc_path" "$nonce" >/dev/null
+      log "request $id done: wrote $doc_path (council=$council)" ;;
+    *)
+      queue_mark_failed "$id" "doc-writer returned status=$status" "$nonce" >/dev/null
+      log "request $id failed (status=$status)" ;;
+  esac
+  return 0
+}
+
+log "doc-writer-server up (leased, kind=$KIND); poll ${POLL_INTERVAL}s, lease ${LEASE_SECONDS}s/${LEASE_HEARTBEAT}s heartbeat"
+last_progress="$(date +%s)"
+
+while true; do
+  [[ "$SHUTDOWN_REQUESTED" == true ]] && { stop_lease_heartbeat; exit 0; }
+  now="$(date +%s)"
+  if (( now - last_progress > LOOP_HEARTBEAT_MAX )); then
+    log "FATAL: no loop progress in ${LOOP_HEARTBEAT_MAX}s; self-exiting for restart"; exit 3
+  fi
+  if ! db_up; then log "db unreachable; backing off"; sleep "$POLL_INTERVAL"; continue; fi
+
+  nonce="$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  run_id="$(date '+%Y%m%d-%H%M%S')-${HOSTNAME:-worker}-${nonce:0:8}"
+  if ! claim="$(queue_claim_one "$KIND" "$run_id" "$nonce" "$LEASE_SECONDS")"; then
+    log "claim failed; backing off"; sleep "$POLL_INTERVAL"; continue
+  fi
+  if [[ -z "$claim" || "$claim" == "null" ]]; then sleep "$POLL_INTERVAL"; continue; fi
+
+  id="$(jq -r '.id' <<<"$claim")"
+  payload="$(jq -c '.payload' <<<"$claim")"
+  dedupe_key="$(jq -r '.dedupe_key' <<<"$claim")"
+  log "claimed request $id ($dedupe_key)"
+  start_lease_heartbeat "$id" "$nonce"
+  process_one "$id" "$payload" "$run_id" "$nonce" || log "process_one error for $id"
+  stop_lease_heartbeat
+  last_progress="$(date +%s)"
+  [[ "$SHUTDOWN_REQUESTED" == true ]] && exit 0
+done
