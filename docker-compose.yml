@@ -39,7 +39,11 @@ services:
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
     volumes:
       - ./docker/initdb:/migrations:ro
-    command: ["sh", "-ec", "psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f /migrations/02-agent-server.sql -f /migrations/03-human-review-queue.sql -f /migrations/04-pending-decision-approval.sql -f /migrations/04-pr-safety-review.sql -f /migrations/05-pr-safety-merged-pr-producer.sql"]
+    # Re-apply ALL migrations (glob, sorted) on every up so fresh-volume initdb and existing DBs can't
+    # drift by a hand-forgotten -f. Every /migrations/*.sql is idempotent (IF [NOT] EXISTS / DROP..IF),
+    # including 01-schema.sql, so re-running the base schema on an existing DB is a no-op.
+    # $$f is escaped so the shell (not compose) expands the loop var; ${REQUESTS_DB_*} stay for compose.
+    command: ["sh", "-ec", "for f in /migrations/0[0-9]-*.sql; do echo \"applying $$f\"; psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f \"$$f\"; done"]
     depends_on:
       db-requests:
         condition: service_healthy
