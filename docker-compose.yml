@@ -30,8 +30,7 @@ services:
       timeout: 3s
       retries: 10
 
-  # Re-runs additive migrations for existing database volumes. New volumes receive these files
-  # through Postgres initdb before this service verifies the same schema idempotently.
+  # Re-runs additive upgrade migrations for existing database volumes.
   schema-migrate:
     image: postgres:16
     restart: "no"
@@ -39,11 +38,9 @@ services:
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
     volumes:
       - ./docker/initdb:/migrations:ro
-    # Re-apply ALL migrations (glob, sorted) on every up so fresh-volume initdb and existing DBs can't
-    # drift by a hand-forgotten -f. Every /migrations/*.sql is idempotent (IF [NOT] EXISTS / DROP..IF),
-    # including 01-schema.sql, so re-running the base schema on an existing DB is a no-op.
+    # 01-schema.sql is the immutable fresh-install baseline; existing volumes receive upgrades only.
     # $$f is escaped so the shell (not compose) expands the loop var; ${REQUESTS_DB_*} stay for compose.
-    command: ["sh", "-ec", "for f in /migrations/0[0-9]-*.sql; do echo \"applying $$f\"; psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f \"$$f\"; done"]
+    command: ["sh", "-ec", "for f in /migrations/0[2-9]-*.sql; do echo \"applying $$f\"; psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f \"$$f\"; done"]
     depends_on:
       db-requests:
         condition: service_healthy

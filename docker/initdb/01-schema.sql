@@ -1,8 +1,7 @@
--- Agent fleet request tracking. Loaded on first Postgres boot via
--- /docker-entrypoint-initdb.d/, AND re-run idempotently by the schema-migrate service on every up
--- (so an existing DB never drifts from a fresh one). Every statement here must be idempotent.
+-- Agent fleet request tracking. Loaded once on first Postgres boot via
+-- /docker-entrypoint-initdb.d/. One schema version; no migration tool yet (M0).
 
-CREATE TABLE IF NOT EXISTS requests (
+CREATE TABLE requests (
   id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   kind          TEXT NOT NULL,                       -- 'pr-review', 'comment-handler', ...
   payload       JSONB NOT NULL,                      -- identifiers only, never secrets
@@ -16,13 +15,13 @@ CREATE TABLE IF NOT EXISTS requests (
 );
 
 -- A cron producer re-enqueuing the same work while it is still queued or running is a no-op.
-CREATE UNIQUE INDEX IF NOT EXISTS requests_dedupe_active
+CREATE UNIQUE INDEX requests_dedupe_active
   ON requests (kind, dedupe_key)
   WHERE status IN ('queued','running');
 
 -- Decision-shaped writes wait here for the daily human batch before entering shared memory.
 -- Operational facts do NOT pass through this table; they auto-write in M1.
-CREATE TABLE IF NOT EXISTS pending_decisions (
+CREATE TABLE pending_decisions (
   id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   request_id  BIGINT NOT NULL REFERENCES requests(id),
   kind        TEXT NOT NULL,
@@ -34,4 +33,4 @@ CREATE TABLE IF NOT EXISTS pending_decisions (
   decided_at  TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS pending_decisions_open ON pending_decisions (state) WHERE state = 'pending';
+CREATE INDEX pending_decisions_open ON pending_decisions (state) WHERE state = 'pending';
