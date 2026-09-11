@@ -50,9 +50,48 @@ def extract_outermost_object(text: str) -> str | None:
     return None
 
 
+def _string_positions(text: str) -> list[bool]:
+    """Per-character mask: True where the char is INSIDE a JSON string literal (escape-aware, same
+    scan as extract_outermost_object). Lets repairs tell a structural key position from text that
+    merely lives inside a string VALUE."""
+    mask = [False] * len(text)
+    in_str = False
+    esc = False
+    for i, c in enumerate(text):
+        if in_str:
+            mask[i] = True
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+            mask[i] = True
+    return mask
+
+
+# A duplicated key TOKEN at a KEY position: `{`/`,` (+ ws), then `"key":` repeated. The luna artifact
+# is e.g. `{"operation_id":"operation_id":"..."`. Anchoring on `{`/`,` before the first key ensures we
+# only touch object-key positions, never `"x":"x"` sitting inside a string value.
+_DUP_KEY = re.compile(r'([{,]\s*)("[A-Za-z0-9_]+"\s*:)\s*\2')
+
+
 def repair(text: str) -> str:
-    # Drop a duplicated key token: `"key":"key":` -> `"key":` (seen from luna).
-    text = re.sub(r'("[A-Za-z0-9_]+"\s*:)\s*\1', r"\1", text)
+    # Collapse a duplicated key token, but only when the leading `{`/`,` and both `"key"` tokens are
+    # NOT inside a string literal (so a value like "...{\"x\":\"x\":...}..." is left untouched).
+    mask = _string_positions(text)
+
+    def _collapse(m: re.Match) -> str:
+        # m.start() is the anchoring `{`/`,`. If THAT char is inside a string literal, the whole match
+        # sits inside a value (e.g. "...{\"x\":\"x\":...") and must be left alone. If it's real object
+        # structure, the key tokens are keys (quoted, as always) and the duplicate is the artifact.
+        if mask[m.start()]:
+            return m.group(0)
+        return m.group(1) + m.group(2)
+
+    text = _DUP_KEY.sub(_collapse, text)
     # Reduce to the outermost balanced object (strips code fences / prose / trailing junk).
     obj = extract_outermost_object(text)
     return obj if obj is not None else text
