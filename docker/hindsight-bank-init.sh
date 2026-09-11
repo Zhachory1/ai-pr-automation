@@ -35,17 +35,35 @@ patch_config() {
 }
 
 log "locking bank '$BANK' to read-only MCP tools"
-code="$(patch_config)"
-# On the current image, PATCH on an absent bank auto-creates it (verified). If a future image 404s
-# instead, create the bank explicitly and retry once, so a cold hindsight volume never deadlocks the
-# agents that depend on this one-shot completing.
-if [ "$code" = "404" ]; then
-  log "bank '$BANK' absent; creating then retrying"
-  curl -sS -o /dev/null -X POST "$HS/v1/default/banks" -H 'content-type: application/json' \
-    -d "{\"bank_id\":\"$BANK\"}" || true
-  code="$(patch_config)"
-fi
-[ "$code" = "200" ] || { log "FATAL: config PATCH returned $code: $(cat /tmp/hs-init.out)"; exit 1; }
+max_attempts=5
+retry_delay="${HINDSIGHT_CONFIG_RETRY_DELAY_SECONDS:-2}"
+attempt=1
+created=0
+while :; do
+  delay="$retry_delay"
+  if code="$(patch_config)"; then
+    [ "$code" = "200" ] && break
+    error="$code: $(cat /tmp/hs-init.out)"
+    # On the current image, PATCH on an absent bank auto-creates it (verified). If a future image
+    # 404s instead, create the bank explicitly before the next attempt.
+    if [ "$code" = "404" ] && [ "$created" -eq 0 ]; then
+      log "bank '$BANK' absent; creating then retrying"
+      curl -sS -o /dev/null -X POST "$HS/v1/default/banks" -H 'content-type: application/json' \
+        -d "{\"bank_id\":\"$BANK\"}" || true
+      created=1
+      delay=0
+    fi
+  else
+    error="request failed: $(cat /tmp/hs-init.out 2>/dev/null || true)"
+  fi
+  [ "$attempt" -lt "$max_attempts" ] || {
+    log "FATAL: config PATCH failed after $max_attempts attempts: $error"
+    exit 1
+  }
+  log "config PATCH attempt $attempt/$max_attempts failed ($error); retrying"
+  attempt=$((attempt + 1))
+  sleep "$delay"
+done
 
 # Verify POSITIVELY that the allowlist was applied: the echoed config must actually carry
 # mcp_enabled_tools with recall present and retain/sync_retain absent. A response that silently
