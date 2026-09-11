@@ -601,6 +601,7 @@ services:
       PR_PRODUCER_REPOSITORIES: ${PR_PRODUCER_REPOSITORIES:-}
       PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
       PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
+      DOC_WRITE_DAILY_CAP: ${DOC_WRITE_DAILY_CAP:-30}
       HINDSIGHT_URL: http://hindsight:8888
       HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against PR-safety server paths
       STATUS_BIND: 0.0.0.0

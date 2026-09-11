@@ -16,7 +16,8 @@ jq -e '
   (.services["pr-producer-review"].environment.PR_PRODUCER_INTERVAL_SECONDS == "900") and
   (.services["pr-producer-review"].environment | has("OPENAI_API_KEY") | not) and
   (.services["pr-producer-maintain"].environment | has("OPENAI_API_KEY") | not) and
-  (.services["agent-server-maintain"].deploy.replicas == 3)
+  (.services["agent-server-maintain"].deploy.replicas == 3) and
+  (.services.status.environment.DOC_WRITE_DAILY_CAP == "30")
 ' "$TMP/config.json" >/dev/null
 
-echo "PASS: Compose config includes scoped producers and configurable maintain replicas"
+echo "PASS: Compose config includes scoped producers, configurable maintain replicas, and status doc-write cap"
