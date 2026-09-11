@@ -54,6 +54,14 @@ ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
 # The harness defaults to ~/.mewrite/agents; in-container the persona is vendored here.
 ENV SWE_IMPLEMENTER_AGENT=/app/agent-config/agents/swe-implementer.md
 
+# Drop root: run as a non-root user (#92). Writes only to the /work named volume; reads the mounted
+# handoff dir read-only. Pre-create /work owned by fleet so Docker copies that ownership onto a FRESH
+# empty named volume (otherwise the mount lands root-owned and unwritable). No host code-root mount.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin fleet \
+ && mkdir -p /work \
+ && chown -R fleet:fleet /app /work
+USER fleet
+
 # Serial worker for kind=swe-implement. gh/push use GH_TOKEN; mewritecode uses OPENAI_API_KEY.
 # No creds baked in; all via env (compose env_file: .env).
 ENTRYPOINT ["bin/swe-implement-server"]

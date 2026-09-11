@@ -46,4 +46,9 @@ ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config
 # gh uses GH_TOKEN; mewritecode uses OPENAI_API_KEY; buildkite MCP uses BUILDKITE_API_TOKEN.
 # Coderag, SwarmVault, and Hindsight MCP bridges use only internal Compose DNS.
 # All injected via env (compose env_file: .env). No creds baked into the image.
+#
+# NOTE: this image intentionally does NOT bake a non-root USER. The maintain worker writes into the
+# host code-root bind mount (${CODE_ROOT}:${CODE_ROOT}:rw), so it must run as the uid that OWNS that
+# host directory. That uid is host-specific, so it is set at runtime via compose `user:` (FLEET_UID,
+# default 501 = the human host owner) rather than hardcoded here. See docker-compose.yml + #92.
 ENTRYPOINT ["bin/agent-server"]
