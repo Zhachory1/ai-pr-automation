@@ -311,6 +311,10 @@ services:
       HOME: /home/agent                   # writable HOME (tmpfs) — running non-root, / is not writable
     tmpfs:
       - /home/agent:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
+      # mewritecode writes sessions under MEWRITE_CODING_AGENT_DIR (/app/agent-config), which is
+      # root-owned in the image; running non-root (#92) that mkdir gets EACCES and every job fails.
+      # A writable tmpfs here (like pr-safety's sessions) fixes it without chowning the image.
+      - /app/agent-config/sessions:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
     volumes:
       - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw          # same path in-container so worktrees resolve
       - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
@@ -356,6 +360,8 @@ services:
       HOME: /home/agent                   # writable HOME (tmpfs) — running non-root, / is not writable
     tmpfs:
       - /home/agent:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
+      # Writable sessions dir (see agent-server-review) — non-root can't write the root-owned image dir.
+      - /app/agent-config/sessions:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
     volumes:
       - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw
       - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
