@@ -14,6 +14,8 @@ This directory contains the unified Rokt Engineering Handbook, combining Rokt-wi
 | [onboarding.md](onboarding.md) | First week checklist, day 1-2 setup, finding work in Jira/Cortex/GitHub, your first change end-to-end, common new-hire FAQ |
 | [quick-reference.md](quick-reference.md) | Links to all essential tools and resources (Jira, Cortex, Datadog, GitHub, etc.), key GChat channels |
 | [business-context.md](business-context.md) | Company OKRs (FY2027), core business metrics (APT, CoPI, VPT, YER), advertiser metrics, product descriptions, architecture boundary map |
+| [template-sedd.md](template-sedd.md) | Software Engineering Design Document template for services, APIs, infrastructure, pipelines, SDKs, and UIs |
+| [template-mldd.md](template-mldd.md) | Machine Learning Design Document template for data/features, model design, evaluation, serving, and operations |
 | [architecture-principles.md](architecture-principles.md) | Radical encapsulation, System of Record (SoR), supporting principles (data isolation, event-driven, low latency), anti-patterns |
 | [boundaries-and-engagement.md](boundaries-and-engagement.md) | Service boundary rules, no implicit sharing, architecture team engagement process and contact (#eng-architecture) |
 | [standards-paved-road.md](standards-paved-road.md) | Paved road philosophy, CI/CD via DeployKit, observability baseline, security/privacy baselines, waivers, compliance, mParticle exceptions, open source policy |
