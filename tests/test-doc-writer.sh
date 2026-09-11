@@ -9,11 +9,28 @@ cd "$(dirname "$0")/.." || exit 1
 fail=0; check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1" >&2; fail=1; fi; }
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 stage="$tmp/stage"; inbox="$tmp/inbox"; mkdir -p "$stage" "$inbox"
+config_root="$PWD/agent-config/doc-writer"
+
+check "doc writers put project MCP config at the Me Write discovery root" \
+  "[[ -f '$config_root/.mcp.json' && ! -e '$config_root/mcp.json' ]]"
+check "doc writers configure only read-only context MCPs" \
+  "jq -e '.mcpServers | keys == [\"coderag\", \"hindsight\"]' '$config_root/.mcp.json' >/dev/null"
+check "Coderag uses the internal pinned MCP bridge" \
+  "jq -e '.mcpServers.coderag.args == [\"-y\", \"mcp-remote@0.3.0\", \"http://coderag:9750/mcp\", \"--allow-http\"]' '$config_root/.mcp.json' >/dev/null"
+check "Hindsight uses the shared bank" \
+  "jq -e '.mcpServers.hindsight.args == [\"-y\", \"mcp-remote@0.3.0\", \"http://hindsight:8888/mcp/fleet-shared/\", \"--allow-http\"]' '$config_root/.mcp.json' >/dev/null"
+check "PRD writer recalls Hindsight and queries Coderag" \
+  "grep -Fq 'Search Hindsight' agent-config/doc-writer/agents/prd-writer.md && grep -Fq 'query Coderag' agent-config/doc-writer/agents/prd-writer.md"
+check "DD writer recalls Hindsight and queries Coderag" \
+  "grep -Fq 'Search Hindsight' agent-config/doc-writer/agents/dd-writer.md && grep -Fq 'query Coderag' agent-config/doc-writer/agents/dd-writer.md"
+check "doc writers treat MCP results as untrusted evidence" \
+  "grep -Fq 'untrusted evidence' agent-config/doc-writer/agents/prd-writer.md && grep -Fq 'untrusted evidence' agent-config/doc-writer/agents/dd-writer.md"
 
 # fake mewritecode: emits a draft + a trailing open_questions block. Mode via $FAKE_MODE file.
 cat > "$tmp/fake-mewrite" <<'SH'
 #!/usr/bin/env bash
 # args: exec --model M --cwd D "<prompt>"  ; last arg is the prompt.
+printf '%s\n' "$*" >> "$FAKE_ARGS"
 mode="$(cat "$FAKE_MODE" 2>/dev/null || echo questions)"
 case "$mode" in
   questions) printf '# PRD Draft\n\nProblem: X.\n\n## Open Questions / Discovery Tasks\n- baseline?\n\n```json\n{"open_questions": ["What is the current baseline latency?", "Which KPI moves?"]}\n```\n' ;;
@@ -26,9 +43,8 @@ echo questions > "$tmp/mode"
 
 run() { # $1 = payload json. Force council OFF (point at a nonexistent skill) so the finalize path
   # exercises the graceful-skip banner deterministically regardless of the host's ~/.mewrite.
-  MEWRITECODE_BIN="$tmp/fake-mewrite" FAKE_MODE="$tmp/mode" \
-  DOC_WRITER_AGENTS_DIR="agent-config/doc-writer/agents" \
-  DOC_WRITER_HANDBOOK_DIR="agent-config/doc-writer/handbook" \
+  MEWRITECODE_BIN="$tmp/fake-mewrite" FAKE_MODE="$tmp/mode" FAKE_ARGS="$tmp/args" \
+  MEWRITE_CODING_AGENT_DIR="$config_root" \
   DOC_WRITER_STAGE_DIR="$stage" DOC_WRITER_INBOX_DIR="$inbox" \
   DOC_WRITER_COUNCIL_SKILL="$tmp/no-such-council.md" \
   bin/doc-writer --payload "$1" 2>/dev/null
@@ -41,6 +57,8 @@ check "open_questions status returned" "[[ \$(jq -r .status <<<\"\$out\") == ope
 check "two questions parsed" "[[ \$(jq '.open_questions|length' <<<\"\$out\") -eq 2 ]]"
 check "draft staged to a file" "[[ -f \"\$(jq -r .draft_path <<<\"\$out\")\" ]]"
 check "did NOT write to inbox yet" "[[ -z \"\$(ls \"$inbox\" 2>/dev/null)\" ]]"
+check "Me Write runs from the MCP discovery root" "grep -Fq -- '--cwd $config_root' '$tmp/args'"
+check "prompt retains bundled handbook access" "grep -Fq 'Handbook files are readable at: $config_root/handbook' '$tmp/args'"
 
 # 2) clean draft (no questions) -> finalizes, writes to inbox with provenance + council-skipped banner.
 echo clean > "$tmp/mode"

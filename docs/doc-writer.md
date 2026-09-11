@@ -31,6 +31,9 @@ doc-writer-server: run the persona (PRD or DD) + bundled Rokt handbook → draft
 ## Safety / boundaries
 - **Private-docs write is narrow**: only `~/private-docs/inbox` is mounted WRITABLE (`DOC_WRITER_INBOX_HOST`).
   The rest of the brain is never writable here. Finished docs land in inbox for the human to file.
+- **Shared context is read-only**: PRD and DD writers recall prior decisions from Hindsight's
+  `fleet-shared` bank and query Coderag for named repositories, Systems, and Components. They cannot
+  retain shared memories or modify indexed code.
 - Every written doc carries frontmatter `written_by: doc-writer-agent`, `human_reviewed: false`,
   `council_reviewed: <bool>`. Nothing is auto-committed.
 - **Council degrades gracefully**: if the council skill/infra is unavailable in the container, the doc
