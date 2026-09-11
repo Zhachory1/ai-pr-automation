@@ -43,15 +43,17 @@ command -v git >/dev/null || die "missing git"
 [[ -f "$AGENT_DEF" ]] || die "missing agent definition: $AGENT_DEF"
 [[ "$mode" ]] || die "one of --handoff / --issue / --prompt is required"
 
-# --- normalize input to: repo, base_ref (optional), task_text -------------------------------------
+# --- normalize input to: repo, task_text -----------------------------------------------------------
 # source_ref is provenance for the PR body. The agent's commit subject/body become PR metadata.
-base_ref="" task_text="" source_ref="" fallback_title=""
+# NOTE: the handoff's original base_sha is deliberately NOT used to gate work here. The clone is
+# shallow (--depth=50), so a merge-base ancestry check would be unreliable; staleness is instead
+# handled by the swe-implementer re-verifying each finding against the CURRENT default-branch tree.
+task_text="" source_ref="" fallback_title=""
 case "$mode" in
   handoff)
     [[ -f "$src" && ! -L "$src" ]] || die "handoff not a regular file: $src"
-    # identity block: <!-- pr-safety identity ... repo: X ... base_sha: Y ... -->
+    # identity block: <!-- pr-safety identity ... repo: X ... -->
     repo="$(sed -n 's/^repo:[[:space:]]*//p' "$src" | head -1)"
-    base_ref="$(sed -n 's/^base_sha:[[:space:]]*//p' "$src" | head -1)"
     local_pr="$(sed -n 's/^pr:[[:space:]]*//p' "$src" | head -1)"
     [[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || die "handoff has no valid repo identity"
     source_ref="handoff $(basename "$src") ($repo#${local_pr:-?})"
@@ -187,7 +189,9 @@ commit_oid="$(jq -cn \
   || { drop_remote_branch; die "createCommitOnBranch failed: ${commit_oid:-no oid}"; }
 log "signed commit $commit_oid on $branch"
 title="${commit_title:-${fallback_title:-swe-implement: ${source_ref}}}"
-title="${title:0:72}"
+# Character-based truncation (cut -c), not a bash byte-slice: ${title:0:72} can split a multi-byte
+# UTF-8 sequence mid-character, producing an invalid title for gh pr create.
+title="$(printf '%s' "$title" | cut -c1-72)"
 if [[ -n "$commit_body" ]]; then summary="${commit_body:0:8000}"; else summary="${task_text:0:4000}"; fi
 body="$(printf '## Summary\n\n%s\n\n## Diff\n\n```text\n%s\n```\n\n## Source\n\n- Task: %s\n- Base: `%s@%s`\n- Agent: `swe-implementer` (`%s`)\n\nDraft generated from a fresh default-branch clone. Human review and merge are required.\n' "$summary" "$diff_stat" "$source_ref" "$default_branch" "${base_sha:0:10}" "$MODEL")"
 # Capture gh's stdout ONLY (the PR URL); keep stderr separate so any gh warning (rate-limit,

@@ -68,6 +68,14 @@ round="$(get '.round')"; [[ "$round" =~ ^[0-9]+$ ]] || round=1
 prior_draft="$(get '.prior_draft')"; answers="$(get '.answers')"; finalize="$(get '.finalize')"
 [[ -n "$title" ]] || die "payload missing title"
 [[ -n "$requirements" || -n "$prior_draft" ]] || die "payload needs requirements or prior_draft"
+# Defense-in-depth: prior_draft is only ever the harness's own staged draft path (round-tripped by
+# status-server), but assert it resolves INSIDE $STAGE_DIR before we read it into the prompt, so a
+# future direct-enqueue path or a bug can't make the harness slurp an arbitrary file.
+if [[ -n "$prior_draft" ]]; then
+  rp_stage="$(cd "$STAGE_DIR" 2>/dev/null && pwd -P || true)"
+  rp_draft="$(cd "$(dirname "$prior_draft")" 2>/dev/null && pwd -P || true)/$(basename "$prior_draft")"
+  [[ -n "$rp_stage" && "$rp_draft" == "$rp_stage"/* ]] || die "prior_draft must be inside $STAGE_DIR: $prior_draft"
+fi
 
 case "$doc_type" in
   seprd|mlprd|launchpad) persona_file="$AGENTS_DIR/prd-writer.md"; kind_label="PRD" ;;
