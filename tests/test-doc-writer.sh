@@ -10,6 +10,19 @@ fail=0; check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1" >&2; 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 stage="$tmp/stage"; inbox="$tmp/inbox"; mkdir -p "$stage" "$inbox"
 
+check "doc writers configure only read-only context MCPs" \
+  "jq -e '.mcpServers | keys == [\"coderag\", \"hindsight\"]' agent-config/doc-writer/mcp.json >/dev/null"
+check "Coderag uses the internal pinned MCP bridge" \
+  "jq -e '.mcpServers.coderag.args == [\"-y\", \"mcp-remote@0.3.0\", \"http://coderag:9750/mcp\", \"--allow-http\"]' agent-config/doc-writer/mcp.json >/dev/null"
+check "Hindsight uses the shared bank" \
+  "jq -e '.mcpServers.hindsight.args == [\"-y\", \"mcp-remote@0.3.0\", \"http://hindsight:8888/mcp/fleet-shared/\", \"--allow-http\"]' agent-config/doc-writer/mcp.json >/dev/null"
+check "PRD writer recalls Hindsight and queries Coderag" \
+  "grep -Fq 'Search Hindsight' agent-config/doc-writer/agents/prd-writer.md && grep -Fq 'query Coderag' agent-config/doc-writer/agents/prd-writer.md"
+check "DD writer recalls Hindsight and queries Coderag" \
+  "grep -Fq 'Search Hindsight' agent-config/doc-writer/agents/dd-writer.md && grep -Fq 'query Coderag' agent-config/doc-writer/agents/dd-writer.md"
+check "doc writers treat MCP results as untrusted evidence" \
+  "grep -Fq 'untrusted evidence' agent-config/doc-writer/agents/prd-writer.md && grep -Fq 'untrusted evidence' agent-config/doc-writer/agents/dd-writer.md"
+
 # fake mewritecode: emits a draft + a trailing open_questions block. Mode via $FAKE_MODE file.
 cat > "$tmp/fake-mewrite" <<'SH'
 #!/usr/bin/env bash

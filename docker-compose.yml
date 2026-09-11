@@ -419,8 +419,8 @@ services:
       dockerfile: Dockerfile.doc-writer
     container_name: fleet-doc-writer-server
     restart: unless-stopped
-    env_file: .env                      # OPENAI_API_KEY, REQUESTS_DB_PASSWORD
     environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
       REQUESTS_DB_HOST: db-requests
       REQUESTS_DB_PORT: "5432"
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
@@ -439,6 +439,12 @@ services:
       db-requests:
         condition: service_healthy
       schema-migrate:
+        condition: service_completed_successfully
+      hindsight:
+        condition: service_healthy
+      coderag:
+        condition: service_healthy
+      hindsight-bank-init:
         condition: service_completed_successfully
 
   # --- memory-curator: scheduled writer for the shared Hindsight bank ---
