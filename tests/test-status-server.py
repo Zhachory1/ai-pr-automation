@@ -21,12 +21,13 @@ loader.exec_module(status_server)
 
 class StatusServerTest(unittest.TestCase):
     def test_render_shows_escaped_pr_safety_human_queue_item(self):
+        # query order: running, queued, recent, human_review, pending, today, capped, swe, docs
         rows = [
             [], [], [],
             [["17", "42", "https://github.com/ROKT/repo/pull/7", "Needs <review>",
               '[{"file":"x.py","line":12,"severity":"major","claim":"Fix <this>","risk":"break","recommended_remediation":"test"}]',
-              "/private/handoff.md", "09-03 20:43", "pr-safety-review"]],
-            [], [], [],
+              "/private/handoff.md", "09-03 20:43", "pr-safety-review", "[]", ""]],
+            [], [], [], [], [],
         ]
         with patch.object(status_server, "query", side_effect=rows):
             page = status_server.render()
@@ -48,7 +49,7 @@ class StatusServerTest(unittest.TestCase):
             [], [], [], [],
             [["19", "42", "pr-review", "https://github.com/ROKT/repo/pull/7", proposal, provenance,
               "pending", "09-04 12:00", "", ""]],
-            [], [],
+            [], [], [], [],
         ]
         with patch.object(status_server, "query", side_effect=rows) as query:
             page = status_server.render()
@@ -68,7 +69,7 @@ class StatusServerTest(unittest.TestCase):
             [], [], [], [],
             [["19", "42", "pr-review", "https://github.com/ROKT/repo/pull/7", "{}", "{}",
               "publishing", "09-04 12:00", "09-04 12:01", "Hindsight unavailable"]],
-            [], [],
+            [], [], [], [],
         ]
         with patch.object(status_server, "query", side_effect=rows):
             page = status_server.render()

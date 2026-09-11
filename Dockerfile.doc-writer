@@ -1,0 +1,33 @@
+# doc-writer-server image: drains the 'doc-write' queue and runs the PRD/DD writer persona (with the
+# bundled Rokt handbook) via mewritecode, then routes to the human-review answer loop or writes the
+# finished doc to ~/private-docs/inbox. Needs bash + jq + psql + python3 + node/mewritecode. No
+# git/gh (docs are local). See docs/doc-writer.md.
+# Build: docker build -f Dockerfile.doc-writer -t agent-fleet/doc-writer .
+FROM debian:bookworm-slim
+
+# python3/make/g++ for mewritecode's native better-sqlite3 build; psql for the queue.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash curl ca-certificates coreutils jq python3 make g++ gnupg postgresql-client \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @zhachory1/mewrite-code
+
+WORKDIR /app
+COPY bin/doc-writer ./bin/doc-writer
+COPY bin/doc-writer-server ./bin/doc-writer-server
+COPY lib/ ./lib/
+COPY agent-config/doc-writer/ ./agent-config/doc-writer/
+RUN chmod +x bin/doc-writer bin/doc-writer-server
+
+ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config/doc-writer
+ENV DOC_WRITER_AGENTS_DIR=/app/agent-config/doc-writer/agents
+ENV DOC_WRITER_HANDBOOK_DIR=/app/agent-config/doc-writer/handbook
+# mewritecode session/home must be writable.
+ENV HOME=/work
+
+# Serial worker for kind=doc-write. mewritecode uses OPENAI_API_KEY; no GitHub token (docs are local).
+ENTRYPOINT ["bin/doc-writer-server"]

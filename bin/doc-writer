@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# doc-writer harness: run a Rokt PRD/DD persona (with the bundled handbook) over a request payload,
+# parse the draft + machine-readable open_questions, and either (a) hand the draft + questions back to
+# the server for the human-review answer loop, or (b) on finalize/no-questions, run council and write
+# the finished doc to ~/private-docs/inbox.
+#
+# Contract: reads one JSON payload via --payload '<json>'. Emits ONE result JSON to stdout:
+#   staged  : {"status":"open_questions","draft_path":..,"open_questions":[..],"round":N}
+#   final   : {"status":"written","doc_path":..,"council":"reviewed|skipped"}
+#   error   : nonzero exit + {"status":"error","reason":..}
+# All human-facing artifacts are files; stdout is machine JSON only (logs go to stderr).
+set -euo pipefail
+umask 077
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+MEWRITE="${MEWRITECODE_BIN:-mewritecode}"
+MODEL="${DOC_WRITER_MODEL:-openai/gpt-5.6-sol}"
+AGENTS_DIR="${DOC_WRITER_AGENTS_DIR:-$HERE/agent-config/doc-writer/agents}"
+HANDBOOK_DIR="${DOC_WRITER_HANDBOOK_DIR:-$HERE/agent-config/doc-writer/handbook}"
+STAGE_DIR="${DOC_WRITER_STAGE_DIR:-$HOME/.local/share/ai-pr-automation/doc-writer}"
+INBOX_DIR="${DOC_WRITER_INBOX_DIR:-$HOME/private-docs/inbox}"
+ROUND_CAP="${DOC_WRITER_ROUND_CAP:-4}"
+RUN_TIMEOUT="${DOC_WRITER_TIMEOUT:-1200}"
+COUNCIL_SKILL="${DOC_WRITER_COUNCIL_SKILL:-}"   # optional path to the council skill; empty = try default
+
+log() { printf '%s doc-writer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
+emit() { printf '%s\n' "$1"; }                 # the one machine-JSON line on stdout
+die() { log "FATAL: $*"; jq -cn --arg r "$*" '{status:"error",reason:$r}'; exit 2; }
+
+# Run the council skill over a draft, writing the review to $2. Degrades gracefully (M3): returns
+# nonzero if council infra is unavailable so the caller writes the NOT-REVIEWED banner instead of
+# passing off an un-reviewed doc as reviewed.
+run_council() {
+  local draft="$1" out="$2"
+  local skill="$COUNCIL_SKILL"
+  [[ -z "$skill" && -f "$HOME/.mewrite/agent/skills/council/SKILL.md" ]] && skill="$HOME/.mewrite/agent/skills/council/SKILL.md"
+  [[ -n "$skill" && -f "$skill" ]] || { log "council skill not found; skipping review"; return 1; }
+  local prompt; prompt="$(cat "$skill")"$'\n\n---\n\nRun a single-lens council review of the DRAFT DOCUMENT below. Output a concise verdict with named dissents and the top issues. DRAFT:\n\n'"$(head -c 60000 "$draft")"
+  local rev; rev="$("$TIMEOUT_BIN" "${RUN_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" "$prompt" 2>/dev/null)" || return 1
+  [[ -n "$rev" ]] || return 1
+  printf '%s\n' "$rev" > "$out"; return 0
+}
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "doc-writer: missing dependency: $1" >&2; exit 2; }; }
+need jq; need python3
+command -v "$MEWRITE" >/dev/null || die "missing mewritecode ($MEWRITE)"
+[[ -d "$HANDBOOK_DIR" ]] || die "missing handbook dir: $HANDBOOK_DIR"
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+[[ -n "$TIMEOUT_BIN" ]] || die "GNU timeout required"
+
+PAYLOAD=""
+while [[ $# -gt 0 ]]; do case "$1" in --payload) PAYLOAD="${2:?}"; shift 2;; *) die "unknown arg: $1";; esac; done
+[[ -n "$PAYLOAD" ]] || die "missing --payload"
+echo "$PAYLOAD" | jq -e . >/dev/null 2>&1 || die "payload is not valid JSON"
+
+get() { printf '%s' "$PAYLOAD" | jq -r "$1 // empty"; }
+doc_type="$(get '.doc_type')"; title="$(get '.title')"; requirements="$(get '.requirements')"
+round="$(get '.round')"; [[ "$round" =~ ^[0-9]+$ ]] || round=1
+prior_draft="$(get '.prior_draft')"; answers="$(get '.answers')"; finalize="$(get '.finalize')"
+[[ -n "$title" ]] || die "payload missing title"
+[[ -n "$requirements" || -n "$prior_draft" ]] || die "payload needs requirements or prior_draft"
+
+case "$doc_type" in
+  seprd|mlprd|launchpad) persona_file="$AGENTS_DIR/prd-writer.md"; kind_label="PRD" ;;
+  dd)                    persona_file="$AGENTS_DIR/dd-writer.md";  kind_label="DD"  ;;
+  *) die "unknown doc_type: $doc_type (want seprd|mlprd|launchpad|dd)" ;;
+esac
+[[ -f "$persona_file" ]] || die "missing persona: $persona_file"
+
+# slug: lowercase, [a-z0-9-] only, collapse dashes, cap length. Prevents path tricks + clobber-by-title.
+slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' \
+        | sed 's/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-48)"
+slug="${slug:-untitled}"
+
+mkdir -p "$STAGE_DIR"
+work="$(mktemp -d "${TMPDIR:-/tmp}/doc-writer.XXXXXX")"; trap 'rm -rf "$work"' EXIT
+persona="$(awk 'BEGIN{fm=0} /^---$/{fm++;next} fm>=2{print}' "$persona_file")"
+
+# --- build the prompt: persona + handbook path + this request/round ------------------------------
+promptfile="$work/prompt.md"
+{
+  printf '%s\n\n---\n\n# This request\n\n' "$persona"
+  printf 'Handbook files are readable at: %s  (Read the relevant ones before drafting.)\n\n' "$HANDBOOK_DIR"
+  printf -- '- doc_type: %s\n- title: %s\n- round: %s\n\n' "$doc_type" "$title" "$round"
+  if [[ -n "$prior_draft" && -f "$prior_draft" ]]; then
+    printf '## Prior draft (revise this)\n\n```\n'; head -c 60000 "$prior_draft"; printf '\n```\n\n'
+    printf '## Human answers to your Open Questions\n\n%s\n\n' "$answers"
+    printf 'Fold these answers in, remove resolved Open Questions, keep the rest.\n\n'
+  else
+    printf '## Requirements\n\n%s\n\n' "$requirements"
+  fi
+  printf 'Produce the document per your template, then the final open_questions JSON block.\n'
+} > "$promptfile"
+
+log "running $kind_label persona ($MODEL) round $round for '$title'"
+raw="$("$TIMEOUT_BIN" "${RUN_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" --cwd "$HANDBOOK_DIR" \
+       "$(<"$promptfile")" 2>"$work/agent.err" </dev/null)" || { die "agent run failed/timed out: $(tail -c 300 "$work/agent.err")"; }
+
+# --- split the draft from the trailing open_questions JSON block ----------------------------------
+# The agent emits the doc, then exactly one fenced JSON. Parse defensively: absent/malformed => treat
+# as "needs human" (never silently finalize), pick the LAST valid {"open_questions":...} object.
+oq="$(printf '%s' "$raw" | python3 -c '
+import sys, re, json
+s = sys.stdin.read()
+blocks = re.findall(r"\{[^{}]*\"open_questions\"[^{}]*\}", s, re.S)
+picked = None
+for b in blocks[::-1]:
+    try:
+        d = json.loads(b)
+        if isinstance(d.get("open_questions"), list):
+            picked = d["open_questions"]; break
+    except Exception:
+        continue
+if picked is None:
+    print("__NEEDS_HUMAN__")
+else:
+    print(json.dumps([str(q) for q in picked][:20]))
+')"
+# draft = the raw output with the trailing JSON block stripped.
+draft="$(printf '%s' "$raw" | python3 -c '
+import sys, re
+s = sys.stdin.read()
+s = re.sub(r"```(?:json)?\s*\{[^{}]*\"open_questions\"[^{}]*\}\s*```\s*$", "", s.strip(), flags=re.S)
+s = re.sub(r"\{[^{}]*\"open_questions\"[^{}]*\}\s*$", "", s.strip(), flags=re.S)
+print(s.strip())
+')"
+[[ -n "$draft" ]] || die "agent produced no draft"
+
+if [[ "$oq" == "__NEEDS_HUMAN__" ]]; then
+  log "no parseable open_questions block; treating as needs-human (safe default)"
+  oq='["The generated draft did not include a machine-readable questions block; please review it directly and refine or finalize."]'
+fi
+oq_count="$(printf '%s' "$oq" | jq 'length')"
+
+# --- route: queue for answers, or finalize (council + write) -------------------------------------
+draftfile="$STAGE_DIR/${doc_type}-${slug}-r${round}.md"
+printf '%s\n' "$draft" > "$draftfile"
+
+# finalize when: caller forced it, OR no open questions, OR round cap reached.
+force_final=0
+[[ "$finalize" == "true" ]] && force_final=1
+(( oq_count == 0 )) && force_final=1
+(( round >= ROUND_CAP )) && { force_final=1; log "round cap $ROUND_CAP reached; finalizing"; }
+
+if (( ! force_final )); then
+  log "round $round: $oq_count open question(s); handing back for human answers"
+  emit "$(jq -cn --arg p "$draftfile" --argjson oq "$oq" --argjson r "$round" \
+    '{status:"open_questions", draft_path:$p, open_questions:$oq, round:$r}')"
+  exit 0
+fi
+
+# --- finalize: council review, then write to private-docs inbox -----------------------------------
+council_state="skipped"; council_note="council skipped: infra unavailable in this environment"
+council_out="$work/council.md"
+if run_council "$draftfile" "$council_out"; then
+  council_state="reviewed"; council_note="$(cat "$council_out")"
+fi
+
+mkdir -p "$INBOX_DIR"
+date_str="$(date +%Y-%m-%d)"
+out="$INBOX_DIR/${doc_type}-${date_str}-${slug}.md"
+# never clobber an existing brain file: suffix -2, -3, ...
+if [[ -e "$out" ]]; then n=2; while [[ -e "$INBOX_DIR/${doc_type}-${date_str}-${slug}-${n}.md" ]]; do n=$((n+1)); done
+  out="$INBOX_DIR/${doc_type}-${date_str}-${slug}-${n}.md"; fi
+
+{
+  # Provenance frontmatter: this is machine-generated and NOT human-reviewed until curated.
+  printf -- '---\n'
+  printf 'written_by: doc-writer-agent\n'
+  printf 'human_reviewed: false\n'
+  printf 'council_reviewed: %s\n' "$([[ "$council_state" == reviewed ]] && echo true || echo false)"
+  printf 'doc_type: %s\n' "$doc_type"
+  printf 'generated: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')"
+  printf -- '---\n\n'
+  if [[ "$council_state" != reviewed ]]; then
+    printf '> \342\232\240 COUNCIL SKIPPED \342\200\224 NOT REVIEWED. %s\n\n' "$council_note"
+  fi
+  printf '%s\n\n' "$draft"
+  printf -- '---\n\n## Council Review\n\n%s\n' "$council_note"
+} > "$out"
+
+log "wrote $out (council=$council_state)"
+emit "$(jq -cn --arg p "$out" --arg c "$council_state" '{status:"written", doc_path:$p, council:$c}')"
