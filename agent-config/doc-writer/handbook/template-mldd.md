@@ -135,9 +135,13 @@ Define and version output with contract-first design.
 
 ## Ownership
 
+- **End-to-end outcome DRI:** *[Person accountable for design, implementation, rollout, measured impact, and green SLOs]*
+- **Owning team / on-call rotation:** *[Team responsible for production health, incident response, and runbooks]*
 - **Model code and training pipeline:** *[ML Modeling Team and DRI]*
 - **Deployment infrastructure and scaling:** *[ML Ops owner]*
 - **Feature Store endpoint and freshness:** *[Feature/Storage owner]*
+
+Supporting teams own their component contracts and operations. Their involvement does not transfer end-to-end outcome accountability away from the DRI and owning team.
 
 ## Monitoring
 
