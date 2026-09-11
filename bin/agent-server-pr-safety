@@ -171,7 +171,9 @@ valid_handoff() {
   # authenticated content of record).
   local draft="$1" op="$2" repo="$3" pr="$4" head="$5" base="$6" diff="$7" policy="$8" status="${9:-}"
   [[ -f "$draft" && ! -L "$draft" && -s "$draft" && $(wc -c < "$draft") -le 1048576 ]] || return 1
-  grep -Fq -- "$op" "$draft" && grep -Fq -- "$repo" "$draft" && grep -Fq -- "$pr" "$draft" &&
+  # Match $pr against its stamped identity line (`pr: <n>`), not a bare int: a bare grep for "7"
+  # false-positives on any unrelated 7 (a line number, a count, another PR mentioned in prose).
+  grep -Fq -- "$op" "$draft" && grep -Fq -- "$repo" "$draft" && grep -Eq "^pr: ${pr}[[:space:]]*\$" "$draft" &&
     grep -Fq -- "$head" "$draft" && grep -Fq -- "$base" "$draft" && grep -Fq -- "$diff" "$draft" && grep -Fq -- "$policy" "$draft" || return 1
   if [[ -n "$status" ]]; then
     local breakage_line decisions_line

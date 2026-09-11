@@ -44,7 +44,10 @@ mkdir -p "$STATE_DIR"
 # Single instance: don't let overlapping schedules double-write. mkdir is atomic and portable
 # (macOS has no flock). Stale locks older than 2h are reclaimed.
 LOCK="$STATE_DIR/.lock"
-mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }  # GNU then BSD
+mtime_of() {  # GNU then BSD stat; log (don't silently return 0) if both fail so a file isn't dropped quietly.
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null \
+    || { log "WARN: could not stat mtime of $1; treating as epoch 0"; echo 0; }
+}
 if [[ -d "$LOCK" ]]; then
   lock_age=$(( $(date +%s) - $(mtime_of "$LOCK") ))
   (( lock_age > 7200 )) && rmdir "$LOCK" 2>/dev/null || true

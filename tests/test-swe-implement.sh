@@ -51,7 +51,7 @@ expect_out "handoff without repo identity is rejected" 'no valid repo identity' 
 if grep -q 'commit_title="$(git log -1' "$H" \
    && grep -q 'commit_body="$(git log -1' "$H" \
    && grep -q 'title="${commit_title:-' "$H" \
-   && grep -q 'title="${title:0:72}"' "$H" \
+   && grep -q "title=.\$(printf '%s' .\$title. | cut -c1-72)" "$H" \
    && grep -q 'summary="${commit_body:0:8000}"' "$H"; then
   echo 'PASS: PR title and summary come from agent commit metadata'
 else
