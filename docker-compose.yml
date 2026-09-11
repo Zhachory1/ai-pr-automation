@@ -284,6 +284,10 @@ services:
   agent-server-review:
     image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
     stop_grace_period: ${AGENT_SERVER_STOP_GRACE_PERIOD:-35m}
+    # Non-root (#92): run as the uid that owns the host code-root bind mount (default 501 = host owner;
+    # set FLEET_UID/FLEET_GID in .env on Linux to your `id -u`/`id -g`). Drops root without breaking
+    # worktree writes under ${CODE_ROOT}.
+    user: "${FLEET_UID:-501}:${FLEET_GID:-501}"
     build:
       context: .
       dockerfile: Dockerfile.agent-server
@@ -300,6 +304,9 @@ services:
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
       REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      HOME: /home/agent                   # writable HOME (tmpfs) — running non-root, / is not writable
+    tmpfs:
+      - /home/agent:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
     volumes:
       - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw          # same path in-container so worktrees resolve
       - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
@@ -322,6 +329,8 @@ services:
   agent-server-maintain:
     image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
     stop_grace_period: ${AGENT_SERVER_STOP_GRACE_PERIOD:-35m}
+    # Non-root (#92): run as the uid that owns the host code-root bind mount. See agent-server-review.
+    user: "${FLEET_UID:-501}:${FLEET_GID:-501}"
     deploy:
       replicas: ${AGENT_SERVER_MAINTAIN_REPLICAS:-1}
     build:
@@ -340,6 +349,9 @@ services:
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
       REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      HOME: /home/agent                   # writable HOME (tmpfs) — running non-root, / is not writable
+    tmpfs:
+      - /home/agent:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
     volumes:
       - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw
       - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
@@ -494,6 +506,9 @@ services:
     profiles: ["pr-safety"]
     image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
     stop_grace_period: ${PR_SAFETY_SERVER_STOP_GRACE_PERIOD:-35m}
+    # Non-root (#92): already read_only+cap_drop; also drop root. Owns its snapshot/handoff host
+    # mounts as the host uid (default 501).
+    user: "${FLEET_UID:-501}:${FLEET_GID:-501}"
     build:
       context: .
       dockerfile: Dockerfile.agent-server

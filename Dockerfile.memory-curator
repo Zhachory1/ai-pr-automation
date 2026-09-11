@@ -28,5 +28,13 @@ ENV MEMORY_CURATOR_AGENT=/app/agent-config/agents/memory-curator.md
 # mewritecode session/home dir must be writable.
 ENV HOME=/work
 
+# Drop root: run as a non-root user (#92). Writes only to the /work and /state named volumes; reads
+# /sources/* read-only. Pre-create the volume mountpoints owned by fleet so Docker copies that
+# ownership onto a FRESH empty named volume (otherwise the mount lands root-owned and unwritable).
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin fleet \
+ && mkdir -p /work /state \
+ && chown -R fleet:fleet /app /work /state
+USER fleet
+
 # Runs the curator on an interval (compose has no cron). All bounds/paths come from env (compose).
 ENTRYPOINT ["bin/memory-curator-loop"]
