@@ -20,23 +20,32 @@ HANDBOOK_DIR="${DOC_WRITER_HANDBOOK_DIR:-$HERE/agent-config/doc-writer/handbook}
 STAGE_DIR="${DOC_WRITER_STAGE_DIR:-$HOME/.local/share/ai-pr-automation/doc-writer}"
 INBOX_DIR="${DOC_WRITER_INBOX_DIR:-$HOME/private-docs/inbox}"
 ROUND_CAP="${DOC_WRITER_ROUND_CAP:-4}"
-RUN_TIMEOUT="${DOC_WRITER_TIMEOUT:-1200}"
+# Agent + council budgets must SUM to under the worker's PER_REQUEST_TIMEOUT (1800s) so the worker
+# never SIGKILLs the harness mid-council and loses an otherwise-finished draft.
+RUN_TIMEOUT="${DOC_WRITER_TIMEOUT:-1000}"           # agent draft budget
+COUNCIL_TIMEOUT="${DOC_WRITER_COUNCIL_TIMEOUT:-500}"  # council review budget (only on finalize)
 COUNCIL_SKILL="${DOC_WRITER_COUNCIL_SKILL:-}"   # optional path to the council skill; empty = try default
 
 log() { printf '%s doc-writer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
 emit() { printf '%s\n' "$1"; }                 # the one machine-JSON line on stdout
 die() { log "FATAL: $*"; jq -cn --arg r "$*" '{status:"error",reason:$r}'; exit 2; }
 
-# Run the council skill over a draft, writing the review to $2. Degrades gracefully (M3): returns
-# nonzero if council infra is unavailable so the caller writes the NOT-REVIEWED banner instead of
-# passing off an un-reviewed doc as reviewed.
+# Council review of a finalized draft, written to $2. This is a SINGLE-LENS review (one adversarial
+# pass with named dissents) run via mewritecode in-container — not the full multi-persona council
+# orchestrator (which needs AGENT_FLEET_HOME + lib helpers not present here). A bundled review rubric
+# is used if present. Degrades gracefully (M3): returns nonzero on any failure so the caller writes
+# the NOT-REVIEWED banner rather than passing off an un-reviewed doc.
 run_council() {
   local draft="$1" out="$2"
-  local skill="$COUNCIL_SKILL"
-  [[ -z "$skill" && -f "$HOME/.mewrite/agent/skills/council/SKILL.md" ]] && skill="$HOME/.mewrite/agent/skills/council/SKILL.md"
-  [[ -n "$skill" && -f "$skill" ]] || { log "council skill not found; skipping review"; return 1; }
-  local prompt; prompt="$(cat "$skill")"$'\n\n---\n\nRun a single-lens council review of the DRAFT DOCUMENT below. Output a concise verdict with named dissents and the top issues. DRAFT:\n\n'"$(head -c 60000 "$draft")"
-  local rev; rev="$("$TIMEOUT_BIN" "${RUN_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" "$prompt" 2>/dev/null)" || return 1
+  [[ "${DOC_WRITER_COUNCIL:-on}" == on ]] || { log "council disabled (DOC_WRITER_COUNCIL=off); skipping"; return 1; }
+  # An explicit COUNCIL_SKILL that points at a missing file means "force skip" (used by tests).
+  [[ -n "$COUNCIL_SKILL" && ! -f "$COUNCIL_SKILL" ]] && { log "council skill path set but missing; skipping"; return 1; }
+  local rubric=""
+  local bundled="$AGENTS_DIR/../skills/council/SKILL.md"
+  [[ -f "$bundled" ]] && rubric="Review rubric (from the council skill):\n$(head -c 8000 "$bundled")\n\n"
+  local prompt
+  prompt="You are an adversarial single-lens reviewer. Critically review the DRAFT DOCUMENT below (a Rokt PRD or Design Doc). Give a concise verdict (accept / accept-with-nits / request-changes), the top issues (each: the problem, why it matters, smallest fix), the strongest counterargument, and any named dissent. Do not rewrite the doc. ${rubric}\n---\nDRAFT:\n\n$(head -c 60000 "$draft")"
+  local rev; rev="$("$TIMEOUT_BIN" "${COUNCIL_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" "$prompt" 2>/dev/null)" || return 1
   [[ -n "$rev" ]] || return 1
   printf '%s\n' "$rev" > "$out"; return 0
 }
@@ -97,33 +106,59 @@ raw="$("$TIMEOUT_BIN" "${RUN_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" --cwd "
        "$(<"$promptfile")" 2>"$work/agent.err" </dev/null)" || { die "agent run failed/timed out: $(tail -c 300 "$work/agent.err")"; }
 
 # --- split the draft from the trailing open_questions JSON block ----------------------------------
-# The agent emits the doc, then exactly one fenced JSON. Parse defensively: absent/malformed => treat
-# as "needs human" (never silently finalize), pick the LAST valid {"open_questions":...} object.
-oq="$(printf '%s' "$raw" | python3 -c '
-import sys, re, json
-s = sys.stdin.read()
-blocks = re.findall(r"\{[^{}]*\"open_questions\"[^{}]*\}", s, re.S)
-picked = None
-for b in blocks[::-1]:
+# Parse the LAST brace-balanced object that has an open_questions list (handles nested braces inside
+# a question, unlike a [^{}] class), strip that exact object (and any fence) from the draft, and
+# default to "needs human" on absent/malformed (never a silent finalize). One pass writes oq + draft.
+printf '%s' "$raw" > "$work/raw.txt"
+python3 - "$work/raw.txt" "$work/oq.json" "$work/draft.md" <<'PY'
+import sys, json
+raw = open(sys.argv[1]).read()
+
+def balanced_objects(s):
+    # yield (start, end) index spans of every top-level-ish brace-balanced {...} object.
+    depth = 0; start = None; instr = False; esc = False
+    for i, c in enumerate(s):
+        if instr:
+            if esc: esc = False
+            elif c == "\\": esc = True
+            elif c == '"': instr = False
+            continue
+        if c == '"': instr = True
+        elif c == '{':
+            if depth == 0: start = i
+            depth += 1
+        elif c == '}':
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    yield (start, i + 1)
+
+picked = None; span = None
+for a, b in balanced_objects(raw):
+    frag = raw[a:b]
     try:
-        d = json.loads(b)
-        if isinstance(d.get("open_questions"), list):
-            picked = d["open_questions"]; break
+        d = json.loads(frag)
     except Exception:
         continue
+    if isinstance(d, dict) and isinstance(d.get("open_questions"), list):
+        picked = [str(q) for q in d["open_questions"]][:20]; span = (a, b)
+
 if picked is None:
-    print("__NEEDS_HUMAN__")
+    open(sys.argv[2], "w").write("__NEEDS_HUMAN__")
+    open(sys.argv[3], "w").write(raw.strip())
 else:
-    print(json.dumps([str(q) for q in picked][:20]))
-')"
-# draft = the raw output with the trailing JSON block stripped.
-draft="$(printf '%s' "$raw" | python3 -c '
-import sys, re
-s = sys.stdin.read()
-s = re.sub(r"```(?:json)?\s*\{[^{}]*\"open_questions\"[^{}]*\}\s*```\s*$", "", s.strip(), flags=re.S)
-s = re.sub(r"\{[^{}]*\"open_questions\"[^{}]*\}\s*$", "", s.strip(), flags=re.S)
-print(s.strip())
-')"
+    open(sys.argv[2], "w").write(json.dumps(picked))
+    a, b = span
+    draft = raw[:a]
+    # also drop an immediately-preceding ```json fence and a trailing ``` after the object.
+    import re
+    draft = re.sub(r"```(?:json)?\s*$", "", draft.rstrip(), flags=re.S)
+    tail = raw[b:]
+    tail = re.sub(r"^\s*```", "", tail.lstrip(), flags=re.S)
+    open(sys.argv[3], "w").write((draft + tail).strip())
+PY
+oq="$(cat "$work/oq.json")"
+draft="$(cat "$work/draft.md")"
 [[ -n "$draft" ]] || die "agent produced no draft"
 
 if [[ "$oq" == "__NEEDS_HUMAN__" ]]; then

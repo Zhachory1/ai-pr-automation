@@ -231,15 +231,24 @@ def doc_refine(review_id: int, answers: str, finalize: bool) -> str:
     answers = (answers or "").strip()
     if not finalize and not answers:
         raise ValueError("enter answers, or click Finalize to skip remaining questions")
+    # Close-then-enqueue, and let the CLOSE be the concurrency guard: the UPDATE flips exactly one
+    # pending->reviewed and RETURNs its id, so a double-click (or a second refine on the same row)
+    # finds nothing to close and does NOT enqueue a duplicate round. Only after we own the close do
+    # we enqueue the next action; if that enqueue is capped/suppressed we surface it (the row stays
+    # closed, so the queue never accretes, and the operator can resubmit from the Documents form).
+    proc = _psql(["-v", f"rid={review_id}"],
+                 "UPDATE pending_maintenance_reviews SET state='reviewed', reviewed_at=now() "
+                 "WHERE id=:'rid'::bigint AND state='pending' RETURNING id")
+    if proc.returncode != 0 or proc.stdout.strip() != str(review_id):
+        raise RuntimeError("review item already handled (nothing to refine)")
     dk = f"doc:{doc_type}:{_slug(title)}@round-{nxt}-{int(time.time())}"
     result = _doc_enqueue({"doc_type": doc_type, "title": title, "requirements": "",
                            "round": nxt, "prior_draft": prior, "answers": answers,
                            "finalize": bool(finalize)}, dk)
-    # close the current queue row (superseded by the new round) so the list doesn't accrete.
-    _psql(["-v", f"rid={review_id}"],
-          "UPDATE pending_maintenance_reviews SET state='reviewed', reviewed_at=now() "
-          "WHERE id=:'rid'::bigint AND state='pending'")
-    return ("finalizing document (council + write)" if finalize else f"refining (round {nxt}): {result}")
+    if not result.startswith("enqueued"):
+        # closed but not enqueued (cap/suppressed): tell the operator plainly, no silent drop.
+        return f"answers recorded but next round NOT queued — {result}. Resubmit from Documents."
+    return ("finalizing document (council + write)" if finalize else f"refining (round {nxt})")
 
 
 def swe_implement_handoff(handoff_path: str) -> str:

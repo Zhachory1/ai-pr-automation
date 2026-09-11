@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# doc-writer-server — serial queue-draining worker for the 'swe-implement' kind.
+# doc-writer-server — serial queue-draining worker for the 'doc-write' kind.
 #
-# Claims one swe-implement request at a time and runs bin/swe-implement (the harness) to turn
-# an approved task into a DRAFT corrective PR. Mirrors bin/agent-server's concurrency machinery
-# (per-kind single-instance advisory lock held for process life; reclaim; FOR UPDATE SKIP LOCKED
-# claim; heartbeat self-exit) via lib/queue.sh, but the per-request work is the harness, not the
-# PR-review runner.
+# Claims one doc-write request at a time and runs bin/doc-writer (the harness) to draft a Rokt PRD
+# or Design Doc. Mirrors bin/agent-server's concurrency machinery (renewable DB lease + nonce
+# fencing; reclaim; FOR UPDATE SKIP LOCKED claim; heartbeat self-exit) via lib/queue.sh. No GitHub
+# token — documents are local; the only side effect is writing to ~/private-docs/inbox.
 #
-# Request payload (requests.kind = 'swe-implement'):
-#   { "source": "handoff" | "issue" | "prompt",
-#     "handoff_path": "<abs path>",          # source=handoff
-#     "issue": "owner/repo#N",               # source=issue
-#     "prompt": "<text>", "repo": "owner/repo",  # source=prompt
-#     "no_pr": true|false }                  # optional; default false (opens a draft PR)
-# The harness owns all safety (fresh clone, evidence re-verify, draft-only, fail-closed). On success
-# the draft PR is queued for pr-review, then its URL is stored in requests.posted_ref.
+# Request payload (requests.kind = 'doc-write'):
+#   { "doc_type": "seprd"|"mlprd"|"launchpad"|"dd",
+#     "title": "<title>", "requirements": "<goals & requirements>",
+#     "round": N,                            # refine round (1 = first draft)
+#     "prior_draft": "<stage path>",         # round>1: the prior draft to revise
+#     "answers": "<human answers>",          # round>1: answers to the open questions
+#     "finalize": true|false }               # skip remaining questions -> council + write
+# The harness routes: open questions -> human-review queue (answer loop); finalize/no-questions ->
+# council review + write the doc to the inbox, with requests.posted_ref = the written file path.
 set -euo pipefail
 umask 077
 
