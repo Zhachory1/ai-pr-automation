@@ -21,8 +21,10 @@ doc-writer-server: run the persona (PRD or DD) + bundled Rokt handbook → draft
 - `agent-config/doc-writer/agents/prd-writer.md` — Rokt Principal PM / Staff Eng. Picks the template
   (SEPRD / MLPRD / Launchpad), enforces North Star metrics + Builder DNA, surfaces unknowns as Open
   Questions instead of chatting.
-- `agent-config/doc-writer/agents/dd-writer.md` — Rokt Staff Eng / Architect. ≥2 options + trade-offs,
-  architecture, API/data, SLOs, ADRs, from the handbook's DD spec.
+- `agent-config/doc-writer/agents/dd-writer.md` — Rokt Staff Eng / Architect. Selects SEDD or MLDD,
+  mentors through ≥2 options + trade-offs, and enforces E2E ownership, Brain/Suite boundaries,
+  paved-road technology, SoR discipline, SLOs, testing, toil reduction, and ADRs.
+- `agent-config/doc-writer/handbook/template-sedd.md` and `template-mldd.md` — DD base templates.
 - `agent-config/doc-writer/handbook/*` — the Rokt engineering handbook (glossary, standards, templates,
   business context, architecture principles), read-only. Source: go/dev-handbook.
 
