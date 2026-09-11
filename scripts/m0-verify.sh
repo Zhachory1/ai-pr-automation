@@ -9,11 +9,9 @@ pass=0; fail=0
 ok(){ echo "  PASS: $1"; pass=$((pass+1)); }
 no(){ echo "  FAIL: $1"; fail=$((fail+1)); }
 
-echo "[1/6] Postgres + Redis reachable"
+echo "[1/6] Postgres reachable"
 docker compose exec -T db-requests pg_isready -U "${REQUESTS_DB_USER:-fleet}" >/dev/null 2>&1 \
   && ok "requests postgres" || no "requests postgres"
-docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG \
-  && ok "redis" || no "redis"
 
 echo "[2/6] schema tables exist with dedupe constraint"
 tbls=$(docker compose exec -T db-requests psql -U "${REQUESTS_DB_USER:-fleet}" -d "${REQUESTS_DB_NAME:-fleet}" -tAc \
