@@ -70,8 +70,11 @@ services:
     container_name: fleet-hindsight
     restart: unless-stopped
     ports:
-      - "8888:8888"
-      - "9999:9999"
+      # localhost-only (#94): hindsight has no auth in front of it; the whole shared fleet memory
+      # must not be reachable from the LAN. In-fleet services reach it via the `hindsight` service
+      # DNS on the compose network, not the host port — this only scopes host access to the operator.
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:9999:9999"
     environment:
       # hindsight needs a keyed LLM provider for fact extraction. Keyless subscription providers
       # (claude-code) do not work headless in a container. Set HINDSIGHT_API_LLM_API_KEY in .env.
