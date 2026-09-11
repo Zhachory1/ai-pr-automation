@@ -62,7 +62,6 @@ across agents** — the transport differs but none is spawned-fresh-per-agent-wi
 | Service | Shared how | In compose? |
 |---|---|---|
 | db-requests (our Postgres) | TCP 5432 | yes, `up` |
-| redis | TCP 6379 | yes, `up` |
 | hindsight (+ hindsight-db) | network service, HTTP :8888 / UI :9999 | yes, `up` |
 | coderag (codebase-memory-mcp) | **shared coordination daemon** + per-agent thin stdio frontend | yes, `up` (daemon) |
 | swarmvault | **shared vault volume + `watch` daemon**; internal HTTP MCP bridge | yes, `up` |
