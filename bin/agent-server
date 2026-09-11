@@ -386,11 +386,16 @@ setup_maintain_worktree() {
   local clone; clone="$(find_local_clone "$repo")" || { log "maintain: no local clone for $repo under $CODE_ROOT" >&2; return 1; }
   log "maintain: using clone $clone for $repo#$pr" >&2
   rm -rf "$wt"
-  # Fetch the PR head over a TOKEN-authed https URL (the clone's own remote is often ssh, and the
-  # container has no ssh key). Same-repo authored PRs only — forks are out of scope.
-  local auth_url="https://x-access-token:${GH_TOKEN}@github.com/${repo}.git"
-  git_with_repo_lock "$clone" fetch "$auth_url" "pull/$pr/head" >/dev/null 2>&1 \
-    || git_with_repo_lock "$clone" fetch "$auth_url" >/dev/null 2>&1 || { log "maintain: fetch failed" >&2; return 1; }
+  # Fetch the PR head over an https URL (the clone's own remote is often ssh, and the container has
+  # no ssh key). Auth via git's insteadOf config, injected through GIT_CONFIG_* ENV — the token lives
+  # only in the git process env, never in argv (ps-visible) and never on disk. Same form swe-implement
+  # uses. Scoped to this function via `local -x`. Same-repo authored PRs only — forks out of scope.
+  local https_url="https://github.com/${repo}.git"
+  local -x GIT_CONFIG_COUNT=1
+  local -x GIT_CONFIG_KEY_0="url.https://x-access-token:${GH_TOKEN}@github.com/.insteadOf"
+  local -x GIT_CONFIG_VALUE_0="https://github.com/"
+  git_with_repo_lock "$clone" fetch "$https_url" "pull/$pr/head" >/dev/null 2>&1 \
+    || git_with_repo_lock "$clone" fetch "$https_url" >/dev/null 2>&1 || { log "maintain: fetch failed" >&2; return 1; }
   if ! git -C "$clone" rev-parse --verify "${head_sha}^{commit}" >/dev/null 2>&1; then
     log "maintain: claim-time head $head_sha not in clone after fetch" >&2; return 1
   fi
@@ -398,7 +403,7 @@ setup_maintain_worktree() {
   # rebase onto it without hitting the clone's ssh remote. Base from the API (never assume master).
   local base; base="$("$TIMEOUT_BIN" --kill-after=5s 60s gh pr view "$pr" -R "$repo" --json baseRefName --jq .baseRefName 2>/dev/null || true)"
   if [[ -n "$base" ]]; then
-    git_with_repo_lock "$clone" fetch "$auth_url" "+refs/heads/${base}:refs/remotes/origin/${base}" >/dev/null 2>&1 || log "maintain: base fetch ($base) failed; rebase may be unavailable" >&2
+    git_with_repo_lock "$clone" fetch "$https_url" "+refs/heads/${base}:refs/remotes/origin/${base}" >/dev/null 2>&1 || log "maintain: base fetch ($base) failed; rebase may be unavailable" >&2
   fi
   git_with_repo_lock "$clone" worktree add --detach "$wt" "$head_sha" >/dev/null 2>&1 || { log "maintain: worktree add failed" >&2; return 1; }
   # NOTE: a git worktree SHARES the clone's config, so we must NOT `remote set-url` (it would leak
@@ -416,7 +421,7 @@ setup_maintain_worktree() {
   setup_github_lease_shim "$shim_dir" "$request_id" "$nonce" >/dev/null || return 1
   cat > "$shim_dir/git" <<SHIM
 #!/usr/bin/env bash
-REAL="$real_git"; CHECK="$shim_dir/lease-check"; EXPECTED_HEAD="$head_sha"; AUTH_URL="https://x-access-token:\${GH_TOKEN}@github.com/${repo}.git"
+REAL="$real_git"; CHECK="$shim_dir/lease-check"; EXPECTED_HEAD="$head_sha"; HTTPS_URL="https://github.com/${repo}.git"
 # Find the git SUBCOMMAND: skip leading global opts. -C/-c/--git-dir/--work-tree take a value.
 args=("\$@"); sub=""; i=0
 while (( i < \${#args[@]} )); do
@@ -428,9 +433,14 @@ while (( i < \${#args[@]} )); do
   esac
 done
 if [[ "\$sub" == push || "\$sub" == fetch || "\$sub" == pull ]]; then
-  # Rewrite the 'origin' arg to the token URL at call time (origin stays ssh on disk; token never persists).
-  newargs=(); for a in "\$@"; do [[ "\$a" == origin ]] && newargs+=("\$AUTH_URL") || newargs+=("\$a"); done
+  # Rewrite 'origin' (which may be ssh on disk) to the PLAIN https URL — NO token in argv — and let
+  # git's insteadOf config (injected via GIT_CONFIG_* env below, from GH_TOKEN in this shim's env)
+  # add auth. The token never appears in argv (ps-visible) and never persists on disk.
+  newargs=(); for a in "\$@"; do [[ "\$a" == origin ]] && newargs+=("\$HTTPS_URL") || newargs+=("\$a"); done
   set -- "\${newargs[@]}"
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0="url.https://x-access-token:\${GH_TOKEN}@github.com/.insteadOf"
+  export GIT_CONFIG_VALUE_0="https://github.com/"
 fi
 if [[ "\$sub" == push ]]; then
   "\$CHECK" || { echo "git-shim: request lease lost; push blocked" >&2; exit 3; }
