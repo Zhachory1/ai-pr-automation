@@ -44,12 +44,19 @@ LIVE_JS = (
     "var s=window.getSelection&&window.getSelection();"
     "if(s&&String(s).length)return true;"
     "return false;}"
+    "function curTab(){var t=location.hash.replace('#tab-','')||'review';"
+    "return document.querySelector('.tabpanel[data-tab=\"'+t+'\"]')?t:'review';}"
+    "function applyTab(){var t=curTab();"
+    "document.querySelectorAll('.tabpanel').forEach(function(p){p.classList.toggle('active',p.dataset.tab===t);});"
+    "document.querySelectorAll('.navlink').forEach(function(a){a.classList.toggle('active',a.dataset.tab===t);});}"
     "async function refresh(){"
     "try{var r=await fetch('/fragment',{cache:'no-store'});"
     "if(!r.ok)return;var h=await r.text();"
-    "document.getElementById('live').innerHTML=h;}catch(e){}}"
+    "document.getElementById('live').innerHTML=h;applyTab();}catch(e){}}"
     "async function tick(){if(document.hidden||busy())return;await refresh();}"
     "setInterval(tick,ms);"
+    "window.addEventListener('hashchange',applyTab);"
+    "applyTab();"
     "function flash(msg,ok){var f=document.getElementById('flash');"
     "if(!f){f=document.createElement('p');f.id='flash';document.querySelector('h1').after(f);}"
     "f.textContent=msg;f.className=ok?'flash':'err';"
@@ -619,18 +626,42 @@ def render(flash: str = "", fragment: bool = False) -> str:
     else:
         queued_html = "<section><h2>Queued</h2><p class=empty>queue empty</p></section>"
 
-    # The live-updating region: every data section. Polled by the client and swapped into #live
-    # without a full page reload, so scroll position and in-progress form input are preserved.
-    inner = (
-        f'{table("Running now", ["id","kind","dedupe_key","elapsed"], running, "nothing running")}'
-        f'{queued_html}'
-        f'{human_review_table(human_review)}'
-        f'{swe_implement_section(swe)}'
-        f'{doc_section(docs)}'
-        f'{pending_decision_table(pending)}'
-        f'{recent_table(recent)}'
-        f'{table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}'
-        f'{table("Today by kind", ["kind","status","count"], today, "nothing today")}')
+    # Force-inject form (was in the page shell; now a tab so everything lives in one navigable region).
+    inject_html = (
+        "<section><h2>Force-inject a PR <span class=sub>re-run even if already done</span></h2>"
+        "<form class=toolbar method=post action=/inject onsubmit=\"return confirm('Inject this PR into the queue?')\">"
+        f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\">"
+        "<select name=kind><option value=pr-review>pr-review</option><option value=pr-maintain>pr-maintain</option></select>"
+        "<input name=repo placeholder=\"ORG/repo\" size=24 required>"
+        "<input name=pr placeholder=\"PR #\" size=6 required pattern=\"[1-9][0-9]*\">"
+        "<button type=submit>inject</button></form></section>")
+
+    # The live-updating region, organized into TABS. One tab is visible at a time (CSS), the active
+    # tab is remembered in the URL hash so it survives the live-refresh swap of #live. Counts in the
+    # nav give an at-a-glance badge without opening each tab.
+    need_review = len(human_review) + len(pending)
+    tabs = [
+        ("review", f"Review" + (f" ({need_review})" if need_review else ""),
+         f'{human_review_table(human_review)}{pending_decision_table(pending)}'),
+        ("queue", f"Queue" + (f" ({len(running)+len(queued)})" if (running or queued) else ""),
+         f'{table("Running now", ["id","kind","dedupe_key","elapsed"], running, "nothing running")}'
+         f'{queued_html}'
+         f'{recent_table(recent)}'
+         f'{table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}'
+         f'{table("Today by kind", ["kind","status","count"], today, "nothing today")}'),
+        ("documents", "Documents", doc_section(docs)),
+        ("swe", "swe-implement", swe_implement_section(swe)),
+        ("inject", "Inject", inject_html),
+    ]
+    # Mark the first tab active server-side so the page is never blank before JS runs; JS then
+    # honors the URL hash. Default landing = Review (things that need you).
+    nav = "".join(
+        f'<a class="navlink{" active" if i == 0 else ""}" data-tab="{tid}" href="#tab-{tid}">{e(label)}</a>'
+        for i, (tid, label, _) in enumerate(tabs))
+    panels = "".join(
+        f'<div class="tabpanel{" active" if i == 0 else ""}" data-tab="{tid}">{content}</div>'
+        for i, (tid, _, content) in enumerate(tabs))
+    inner = f'<nav class="tabnav">{nav}</nav>{panels}'
     if fragment:
         return inner
 
@@ -666,17 +697,16 @@ def render(flash: str = "", fragment: bool = False) -> str:
  .toolbar input,.toolbar select{{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:.3rem .5rem}}
  .toolbar button{{background:#12324f;color:#5ab0ff;border-color:#1d4a72}}
  .toolbar button:hover{{background:#1d4a72}}
+ .tabnav{{display:flex;gap:.25rem;flex-wrap:wrap;position:sticky;top:0;background:var(--bg);
+   padding:.5rem 0;margin-bottom:.5rem;border-bottom:1px solid var(--line);z-index:5}}
+ .navlink{{text-decoration:none;color:var(--mut);font-weight:600;font-size:.85rem;
+   padding:.35rem .8rem;border-radius:8px;border:1px solid transparent}}
+ .navlink:hover{{color:var(--fg);background:var(--card)}}
+ .navlink.active{{color:var(--fg);background:var(--card);border-color:var(--line)}}
+ .tabpanel{{display:none}} .tabpanel.active{{display:block}}
 </style></head><body>
 <h1><span style="color:var(--acc)">◉</span> agent-fleet <span class=sub>live · updates {REFRESH_SECONDS}s</span></h1>
 {banner}{flash_html}
-<section><h2>Force-inject a PR <span class=sub>re-run even if already done</span></h2>
-<form class=toolbar method=post action=/inject onsubmit="return confirm('Inject this PR into the queue?')">
-<input type=hidden name=token value="{e(CSRF_TOKEN)}">
-<select name=kind><option value=pr-review>pr-review</option><option value=pr-maintain>pr-maintain</option></select>
-<input name=repo placeholder="ORG/repo" size=24 required>
-<input name=pr placeholder="PR #" size=6 required pattern="[1-9][0-9]*">
-<button type=submit>inject</button>
-</form></section>
 <div id=live>{inner}</div>
 <script>{LIVE_JS}</script>
 </body></html>"""
