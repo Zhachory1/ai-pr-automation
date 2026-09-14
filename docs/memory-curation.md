@@ -1,4 +1,4 @@
-# Fleet memory: read-only agents + a single curator
+# Fleet memory: read-only agents + trusted server writers
 
 ## Who writes shared memory
 
@@ -7,8 +7,15 @@ swe-implement agents (enforced by `hindsight-bank-init`, issue #75). They can `r
 `retain` — this stopped them writing review-completion noise ("PR X reviewed with verdict Y") that
 prompt rules alone never prevented.
 
-The **only writer** is the `memory-curator` (`bin/memory-curator`), a scheduled job that writes over
-the Hindsight **REST** `POST /memories` path, which the MCP read-only lock does not gate.
+Two trusted server paths can write over Hindsight REST, which the MCP read-only lock does not gate:
+
+- `memory-curator` (`bin/memory-curator`) is the only **automated** shared-memory writer. Its
+  deterministic wrapper filters, corroborates, deduplicates, and tags proposed memories.
+- `status-server` publishes exact stored content only after a human approves a pending decision. It
+  uses stable document IDs and synchronous replacement so failed or ambiguous delivery stays
+  retryable without creating another memory.
+
+Agents hold neither write path.
 
 ## What the curator does
 
