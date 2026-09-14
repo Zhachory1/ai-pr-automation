@@ -1,6 +1,6 @@
 # Hermes Migration
 
-Status: M0 implementation in review. M1/M2 activation blocked.
+Status: M0 merged and validated. M2a foundation planned. M2b live activation and M1 blocked.
 
 ## Artifacts
 
@@ -11,21 +11,26 @@ Status: M0 implementation in review. M1/M2 activation blocked.
 - [Council decision](council-m0-m2.md)
 - [Parity matrix](parity-matrix.md)
 - [M0 plan](plan-m0-evidence-scaffold.md)
+- [M2 grounding](grounding-m2-doc-runtime.md)
+- [M2 PRD](PRD-m2-doc-runtime.md)
+- [M2 design](DD-m2-doc-runtime.md)
+- [M2 council](council-m2-doc-runtime.md)
+- [M2a plan](plan-m2a-doc-foundation.md)
 
 ## M0 Pull Requests
 
 | Work | PR | State |
 | --- | --- | --- |
-| Intent, parity, and plan | [#117](https://github.com/Zhachory1/ai-pr-automation/pull/117) | open |
-| Pinned disabled Compose service | [#118](https://github.com/Zhachory1/ai-pr-automation/pull/118) | open |
-| Baseline metrics | [#119](https://github.com/Zhachory1/ai-pr-automation/pull/119) | open |
-| Isolated state-volume round trip | [#120](https://github.com/Zhachory1/ai-pr-automation/pull/120) | open |
+| Intent, parity, and plan | [#117](https://github.com/Zhachory1/ai-pr-automation/pull/117) | merged |
+| Pinned disabled Compose service | [#118](https://github.com/Zhachory1/ai-pr-automation/pull/118) | merged |
+| Baseline metrics | [#119](https://github.com/Zhachory1/ai-pr-automation/pull/119) | merged |
+| Isolated state-volume round trip | [#120](https://github.com/Zhachory1/ai-pr-automation/pull/120) | merged |
 
-PRs are independent and based on `main`. Merge docs first when practical. No PR activates Hermes.
+M0 focused validation passed after merge. No M0 PR activates Hermes.
 
 ## Static Compose Check
 
-After #118 merges:
+Static validation only:
 
 ```bash
 scripts/compose.sh --profile hermes-m0 config --quiet
@@ -35,7 +40,7 @@ This renders opt-in service shape. Do not run `up` yet. M0 does not provide mode
 
 ## Baseline
 
-After #119 merges, load request-DB settings, then collect near current time.
+Load request-DB settings, then collect near current time.
 
 macOS:
 
@@ -91,4 +96,4 @@ M0 does not prove:
 - document-effect recovery;
 - scheduler slot accounting or route fencing.
 
-Start M2 child plan-to-launch only after M0 PRs merge and focused validation passes. M1 follows M2 evidence.
+Execute M2a non-routing plan next. M2b paid shadow/live pilot needs separate plan-to-launch and human approval. M1 follows M2 evidence.
