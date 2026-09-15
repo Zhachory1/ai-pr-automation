@@ -89,7 +89,7 @@ proposal='{"kind":"doc-publication-approval"}'
 provenance='{"request_id":"6"}'
 [[ "$(doc_publication_stage "$request6" 'dd-2026-09-14-six.md' "$hex_a" "legacy:$hex_b" "$proposal" "$provenance" owner6)" == 1 ]]
 [[ "$(doc_publication_approve "$request6")" == "$request6" ]]
-[[ "$(sql "SELECT status||'/'||(payload->>'publication_only') FROM requests WHERE id=$request6;")" == queued/true ]]
+[[ "$(sql "SELECT status||'/'||(payload->>'publication_only')||'/'||split_part(dedupe_key,'@',1) FROM requests WHERE id=$request6;")" == "queued/true/doc-publish:$request6" ]]
 sql "UPDATE requests SET status='running',run_nonce='owner6b',lease_expires_at=now()+interval '5 minutes' WHERE id=$request6;" >/dev/null
 [[ -z "$(doc_publication_prepare "$request6" 'dd-2026-09-14-six.md' "$hex_a" "legacy:$hex_b" wrong)" ]]
 [[ "$(doc_publication_prepare "$request6" 'dd-2026-09-14-six.md' "$hex_a" "legacy:$hex_b" owner6b)" == "$request6" ]]

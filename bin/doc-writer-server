@@ -118,9 +118,19 @@ process_publication() {
     queue_mark_reconcile "$id" "publication prepare lost queue ownership" "$nonce" >/dev/null 2>&1 || true
     return
   fi
-  result="$($PUBLICATION_BIN publish --stage-root "$STAGE_DIR" --inbox-root "$INBOX_DIR" \
-    --staged-path "$staged" --target-path "$target" --digest "$digest")" || {
-      log "request $id reconcile (publication helper failed)"; return; }
+  local outfile rc=0
+  outfile="$(mktemp)"
+  "$PUBLICATION_BIN" publish --stage-root "$STAGE_DIR" --inbox-root "$INBOX_DIR" \
+    --staged-path "$staged" --target-path "$target" --digest "$digest" >"$outfile" &
+  ACTIVE_CHILD="$!"
+  wait "$ACTIVE_CHILD" || rc=$?
+  ACTIVE_CHILD=""
+  result="$(cat "$outfile")"
+  rm -f "$outfile"
+  if (( rc != 0 )); then
+    log "request $id reconcile (publication helper failed)"
+    return
+  fi
   status="$(jq -r '.status // empty' <<<"$result")"
   if [[ "$status" == published || "$status" == matching ]]; then
     if [[ -n "$(doc_publication_mark_published "$id" "$target" "$digest" "$generation")" ]]; then

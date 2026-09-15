@@ -286,6 +286,20 @@ def _publication_bytes(staged_path: str, expected_digest: str) -> bytes:
     return data
 
 
+def _invalidate_doc_publication(review_id: int, error: str) -> None:
+    proc = _psql(["-v", f"rid={review_id}", "-v", f"error={error[:200]}"],
+                 "WITH eligible AS (SELECT p.request_id FROM pending_maintenance_reviews h "
+                 "JOIN doc_publications p ON p.request_id=h.request_id "
+                 "WHERE h.id=:'rid'::bigint AND h.state='pending' AND p.state='awaiting_approval' "
+                 "FOR UPDATE OF h,p), publication AS (UPDATE doc_publications p SET state='invalid',"
+                 "error=:'error',updated_at=clock_timestamp() FROM eligible e "
+                 "WHERE p.request_id=e.request_id RETURNING p.request_id) "
+                 "UPDATE pending_maintenance_reviews h SET state='dismissed',reviewed_at=clock_timestamp() "
+                 "FROM publication p WHERE h.id=:'rid'::bigint AND h.request_id=p.request_id RETURNING h.id")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "publication invalidation failed")
+
+
 def doc_publication_decide(review_id: int, action: str) -> str:
     if action not in ("publish", "dismiss"):
         raise ValueError("bad publication action")
@@ -299,7 +313,11 @@ def doc_publication_decide(review_id: int, action: str) -> str:
         if not lookup.stdout.strip():
             return f"publication review #{review_id} is not pending"
         publication = json.loads(lookup.stdout)
-        _publication_bytes(publication["staged_path"], publication["content_digest"])
+        try:
+            _publication_bytes(publication["staged_path"], publication["content_digest"])
+        except ValueError as error:
+            _invalidate_doc_publication(review_id, str(error))
+            raise
     if action == "dismiss":
         sql = (
             "WITH eligible AS (SELECT p.request_id FROM pending_maintenance_reviews h "
@@ -321,8 +339,10 @@ def doc_publication_decide(review_id: int, action: str) -> str:
             "review AS (UPDATE pending_maintenance_reviews h SET state='reviewed',reviewed_at=clock_timestamp() "
             "FROM publication p WHERE h.id=:'rid'::bigint AND h.request_id=p.request_id RETURNING h.request_id), "
             "queued AS (UPDATE requests r SET status='queued',started_at=NULL,finished_at=NULL,posted_ref=NULL,"
-            "run_id=NULL,run_nonce=NULL,lease_expires_at=NULL,payload=jsonb_set(r.payload,'{publication_only}',"
-            "'true'::jsonb,true) FROM review h WHERE r.id=h.request_id RETURNING r.id) SELECT id FROM queued")
+            "run_id=NULL,run_nonce=NULL,lease_expires_at=NULL,dedupe_key='doc-publish:'||r.id||'@'||p.content_digest,"
+            "payload=jsonb_set(r.payload,'{publication_only}','true'::jsonb,true) FROM review h "
+            "JOIN doc_publications p ON p.request_id=h.request_id WHERE r.id=h.request_id RETURNING r.id) "
+            "SELECT id FROM queued")
     proc = _psql(["-v", f"rid={review_id}"], sql)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "publication decision failed")
@@ -986,7 +1006,7 @@ class Handler(BaseHTTPRequestHandler):
         if host not in ALLOWED_HOSTS:
             return False
         origin = self.headers.get("Origin")
-        if origin is not None and origin not in ALLOWED_ORIGINS:
+        if origin not in ALLOWED_ORIGINS:
             return False
         return secrets.compare_digest(params.get("token", [""])[0], CSRF_TOKEN)
 

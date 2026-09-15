@@ -363,6 +363,7 @@ class StatusServerTest(unittest.TestCase):
         sql = psql.call_args_list[1].args[1]
         self.assertIn("p.state='awaiting_approval'", sql)
         self.assertIn("payload=jsonb_set", sql)
+        self.assertIn("dedupe_key='doc-publish:'", sql)
         self.assertNotIn("target_path=:", sql)
         with patch.object(status_server, "_psql", return_value=self._cp(0, "42\n")) as psql:
             self.assertEqual(status_server.doc_publication_decide(17, "dismiss"),
@@ -371,11 +372,14 @@ class StatusServerTest(unittest.TestCase):
 
     def test_publication_approval_rejects_changed_stage_before_update(self):
         lookup = json.dumps({"staged_path": "requests/42/publish.md", "content_digest": "a" * 64})
-        with patch.object(status_server, "_psql", return_value=self._cp(0, lookup)) as psql, \
+        with patch.object(status_server, "_psql", side_effect=[self._cp(0, lookup), self._cp(0, "17\n")]) as psql, \
                 patch.object(status_server, "_publication_bytes", side_effect=ValueError("digest mismatch")):
             with self.assertRaises(ValueError):
                 status_server.doc_publication_decide(17, "publish")
-        self.assertEqual(psql.call_count, 1)
+        self.assertEqual(psql.call_count, 2)
+        invalidation = psql.call_args_list[1].args[1]
+        self.assertIn("state='invalid'", invalidation)
+        self.assertIn("state='dismissed'", invalidation)
 
     def test_publication_post_is_csrf_guarded(self):
         server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
@@ -398,6 +402,13 @@ class StatusServerTest(unittest.TestCase):
             with patch.object(status_server, "doc_publication_decide") as decide:
                 with self.assertRaises(urllib.error.HTTPError) as response:
                     urllib.request.urlopen(bad)
+                self.assertEqual(response.exception.code, 403)
+                response.exception.close()
+                decide.assert_not_called()
+            missing_origin = urllib.request.Request(url, data=body, method="POST")
+            with patch.object(status_server, "doc_publication_decide") as decide:
+                with self.assertRaises(urllib.error.HTTPError) as response:
+                    urllib.request.urlopen(missing_origin)
                 self.assertEqual(response.exception.code, 403)
                 response.exception.close()
                 decide.assert_not_called()

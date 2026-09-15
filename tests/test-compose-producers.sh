@@ -19,7 +19,13 @@ jq -e '
   (.services["agent-server-maintain"].deploy.replicas == 3) and
   (.services.status.environment.DOC_WRITE_DAILY_CAP == "30") and
   (.services.status.environment.DOC_WRITER_STAGE_DIR == "/work/stage") and
-  ([.services.status.volumes[] | select(.source == "doc_writer_work" and .target == "/work" and .read_only == true)] | length == 1)
+  ([.services.status.volumes[] | select(.source == "doc_writer_work" and .target == "/work" and .read_only == true)] | length == 1) and
+  (.services.status.networks | keys == ["status-internal"]) and
+  (.services["db-requests"].networks | has("status-internal")) and
+  (.services.hindsight.networks | has("status-internal")) and
+  ((.services["agent-server-review"].networks // {}) | has("status-internal") | not) and
+  ((.services["agent-server-maintain"].networks // {}) | has("status-internal") | not) and
+  (.networks["status-internal"].internal == true)
 ' "$TMP/config.json" >/dev/null
 
 echo "PASS: Compose config includes scoped producers, configurable maintain replicas, and status doc-write cap"

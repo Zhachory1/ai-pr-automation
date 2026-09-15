@@ -24,6 +24,7 @@ services:
     networks:
       - default
       - pr-safety-analyst
+      - status-internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet}"]
       interval: 5s
@@ -88,6 +89,7 @@ services:
     networks:
       - default
       - pr-safety-analyst
+      - status-internal
     healthcheck:
       # /health returns 200; root (/) is 404. curl is present in the image (verified).
       test: ["CMD-SHELL", "curl -fsS http://localhost:8888/health >/dev/null || exit 1"]
@@ -636,6 +638,8 @@ services:
       STATUS_BIND: 0.0.0.0
     volumes:
       - doc_writer_work:/work:ro
+    networks:
+      - status-internal
     depends_on:
       db-requests:
         condition: service_healthy
@@ -644,6 +648,8 @@ services:
 
 networks:
   hermes-doc:
+  status-internal:
+    internal: true
   pr-safety-analyst:
     internal: true
     name: agent-fleet-pr-safety-analyst

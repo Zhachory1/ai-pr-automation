@@ -37,7 +37,7 @@ chmod +x "$tmp/fake-harness"
 cat > "$tmp/fake-publication" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$1" == publish ]]; shift
+command="$1"; shift
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage-root) stage="$2"; shift 2 ;;
@@ -48,8 +48,16 @@ while [[ $# -gt 0 ]]; do
     *) exit 2 ;;
   esac
 done
-cp "$stage/$staged" "$inbox/$target"
-jq -cn --arg t "$target" --arg d "$digest" '{status:"published",target_path:$t,content_digest:$d}'
+if [[ "$command" == inspect ]]; then
+  [[ -e "$inbox/$target" ]] || { jq -cn '{status:"absent"}'; exit; }
+  actual="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$inbox/$target")"
+  jq -cn --arg s "$([[ "$actual" == "$digest" ]] && echo matching || echo mismatch)" '{status:$s}'
+elif [[ "$command" == publish ]]; then
+  cp "$stage/$staged" "$inbox/$target"
+  jq -cn --arg t "$target" --arg d "$digest" '{status:"published",target_path:$t,content_digest:$d}'
+else
+  exit 2
+fi
 SH
 chmod +x "$tmp/fake-publication"
 
@@ -71,10 +79,35 @@ env "${common[@]}" bin/doc-writer-server >/dev/null
 [[ "$(wc -l < "$tmp/harness-calls" | tr -d ' ')" == 1 ]]
 
 [[ "$(doc_publication_approve "$request_id")" == "$request_id" ]]
-[[ "$(q "SELECT status||'/'||(payload->>'publication_only') FROM requests WHERE id=$request_id;")" == queued/true ]]
+[[ "$(q "SELECT status||'/'||(payload->>'publication_only')||'/'||split_part(dedupe_key,'@',1) FROM requests WHERE id=$request_id;")" == "queued/true/doc-publish:$request_id" ]]
 env "${common[@]}" bin/doc-writer-server >/dev/null
 [[ "$(q "SELECT r.status||'/'||p.state||'/'||r.posted_ref FROM requests r
   JOIN doc_publications p ON p.request_id=r.id WHERE r.id=$request_id;")" == done/published/dd-2026-09-15-approved.md ]]
 [[ -f "$inbox/dd-2026-09-15-approved.md" ]]
 [[ "$(wc -l < "$tmp/harness-calls" | tr -d ' ')" == 1 ]]
-echo "PASS: doc controller stages approval, skips model on publish, and settles exact target"
+
+prepare_reconcile() {
+  local key="$1" target="$2" id dir digest
+  id="$(q "INSERT INTO requests(kind,payload,dedupe_key,status,run_nonce,lease_expires_at)
+    VALUES('doc-write','{}','doc:$key','running','owner',now()+interval '5 minutes') RETURNING id;")"
+  dir="$stage/requests/$id"; mkdir -p "$dir"; printf 'reconcile-%s\n' "$key" > "$dir/publish.md"
+  digest="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$dir/publish.md")"
+  doc_publication_stage "$id" "$target" "$digest" "legacy:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+    '{"kind":"doc-publication-approval"}' '{}' owner >/dev/null
+  doc_publication_approve "$id" >/dev/null
+  q "UPDATE requests SET status='running',run_nonce='publisher',lease_expires_at=now()+interval '5 minutes' WHERE id=$id;" >/dev/null
+  doc_publication_prepare "$id" "$target" "$digest" "legacy:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" publisher >/dev/null
+  printf '%s\t%s\t%s\n' "$id" "$digest" "$dir/publish.md"
+}
+
+IFS=$'\t' read -r matching_id _ matching_stage < <(prepare_reconcile matching dd-2026-09-15-matching.md)
+cp "$matching_stage" "$inbox/dd-2026-09-15-matching.md"
+env "${common[@]}" bin/doc-writer-reconcile "$matching_id" --complete-matching >/dev/null
+[[ "$(q "SELECT r.status||'/'||p.state FROM requests r JOIN doc_publications p ON p.request_id=r.id WHERE r.id=$matching_id;")" == done/published ]]
+
+IFS=$'\t' read -r absent_id _ _ < <(prepare_reconcile absent dd-2026-09-15-absent.md)
+env "${common[@]}" bin/doc-writer-reconcile "$absent_id" --publish-absent >/dev/null
+[[ -f "$inbox/dd-2026-09-15-absent.md" ]]
+[[ "$(q "SELECT r.status||'/'||p.state FROM requests r JOIN doc_publications p ON p.request_id=r.id WHERE r.id=$absent_id;")" == done/published ]]
+
+echo "PASS: doc controller stages approval, skips model on publish, and reconciles exact targets"

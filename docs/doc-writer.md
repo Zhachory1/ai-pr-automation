@@ -45,8 +45,14 @@ doc-writer-server: run the persona (PRD or DD) + bundled Rokt handbook → draft
   `council_reviewed: false`. (v1 images do not bundle the council skill; docs are marked accordingly.)
 - **Spend cap**: the UI is credential-free (enqueue only); `DOC_WRITE_DAILY_CAP` (default 30) bounds
   doc-write requests per day. The round cap (default 4) bounds the refine loop.
-- Slugs are `[a-z0-9-]` truncated. Target name is fixed before approval. Publication uses
-  `renameat2(RENAME_NOREPLACE)` and never clobbers or picks a new suffix after approval.
+- Slugs are `[a-z0-9-]` truncated. Approval moves work onto request-specific `doc-publish:<id>`
+  lineage, so a newer same-title draft cannot supersede approved bytes. Target name is fixed before
+  approval. Publication uses `renameat2(RENAME_NOREPLACE)` and never clobbers or picks a new suffix.
+- Status runs on an internal network shared only with request Postgres and Hindsight; agent workers
+  cannot fetch its CSRF token or invoke Publish. Mutation requests require an allowed Origin.
+- A crash after publication preparation stays in `reconcile`. Inspect or finish the exact approved
+  target in the doc-writer container with `bin/doc-writer-reconcile <request-id> --inspect`,
+  `--complete-matching`, or `--publish-absent`. Recovery never reruns the model or changes target.
 - An absent/malformed open-questions block is treated as "needs human", never a silent finalize.
 
 ## Run it
