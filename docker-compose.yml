@@ -425,6 +425,14 @@ services:
       API_SERVER_KEY: ${HERMES_DOC_API_KEY:-}
     command: ["sh", "-ec", "test $${#API_SERVER_KEY} -ge 16"]
 
+  hermes-oauth-preflight:
+    profiles: ["hermes-oauth"]
+    image: busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+    network_mode: none
+    environment:
+      API_SERVER_KEY: ${HERMES_DOC_API_KEY:-}
+    command: ["sh", "-ec", "test $${#API_SERVER_KEY} -ge 16"]
+
   hermes-openai-oauth-egress:
     profiles: ["hermes-oauth"]
     image: agent-fleet/hermes-doc-egress:m2a
@@ -475,6 +483,8 @@ services:
     mem_limit: 2g
     cpus: 1
     depends_on:
+      hermes-oauth-preflight:
+        condition: service_completed_successfully
       hermes-openai-oauth-egress:
         condition: service_healthy
 

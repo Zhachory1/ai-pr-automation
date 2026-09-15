@@ -1,7 +1,7 @@
 # DD: Hermes OAuth Login
 
 - Owner: Zhach
-- Status: approved; provider slices ship separately
+- Status: OpenAI OAuth validated; Anthropic slice pending
 - PRD: [`PRD-oauth-login.md`](PRD-oauth-login.md)
 - Deadline: 2026-09-15
 
@@ -56,12 +56,12 @@ What matters:
 Operator uses one wrapper:
 
 ```bash
-scripts/hermes-oauth.sh login anthropic
-scripts/hermes-oauth.sh status anthropic
-scripts/hermes-oauth.sh logout anthropic
+scripts/hermes-oauth.sh login openai-codex
+scripts/hermes-oauth.sh status openai-codex
+scripts/hermes-oauth.sh logout openai-codex
 ```
 
-Replace `anthropic` with `openai-codex` for OpenAI account login. Wrapper accepts no other provider or action. Login/logout take lock and stop gateway. Status is read-only. Dead-owner lock is removed only after PID check.
+OpenAI slice accepts no other provider. Anthropic support comes in next PR. Login/logout take kernel lifecycle lock and stop gateway. Status is read-only. Kernel releases lock after process death; child inherits lock until auth work exits.
 
 ## Egress
 
@@ -126,4 +126,4 @@ Pinned OAuth facts:
 
 ## Next Gate
 
-Minimal council. Then task plan. Then `ship`.
+OpenAI PR review and merge. Then Anthropic implementation slice.

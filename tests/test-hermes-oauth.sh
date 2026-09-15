@@ -5,10 +5,12 @@ tmp="$(mktemp -d)"
 network="hermes-oauth-test-$$-$RANDOM"
 containers=()
 image="hermes-oauth-egress-test:$$-$RANDOM"
+state_volume="hermes-oauth-state-test-$$-$RANDOM"
 cleanup() {
   ((${#containers[@]} == 0)) || docker rm -f "${containers[@]}" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
   docker image rm "$image" >/dev/null 2>&1 || true
+  docker volume rm "$state_volume" >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -17,6 +19,7 @@ HERMES_DOC_API_KEY=0123456789abcdef docker compose --profile hermes-oauth config
 jq -e '
   .services["hermes-doc-auth"] as $a |
   .services["hermes-openai-oauth-egress"] as $e |
+  .services["hermes-oauth-preflight"] as $p |
   ($a.profiles == ["hermes-oauth"]) and
   ($a.image == "nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874") and
   ($a.networks | keys == ["hermes-oauth"]) and
@@ -27,7 +30,9 @@ jq -e '
   ($a.volumes | length == 2) and
   ([ $a.volumes[] | select(.type == "volume" and .source == "hermes_doc_state" and .target == "/opt/data") ] | length == 1) and
   ([ $a.volumes[] | select(.type == "bind" and .target == "/etc/hermes/oauth-openssl.cnf" and .read_only == true) ] | length == 1) and
+  ($a.depends_on["hermes-oauth-preflight"].condition == "service_completed_successfully") and
   ($a.depends_on["hermes-openai-oauth-egress"].condition == "service_healthy") and
+  ($p.network_mode == "none") and ($p.command[2] | contains("#API_SERVER_KEY")) and
   ($e.networks | keys == ["default","hermes-oauth"]) and
   ($e.read_only == true) and ($e.cap_drop == ["ALL"]) and
   ([.services | to_entries[] | select(.key != "hermes-doc-auth") |
@@ -42,6 +47,19 @@ if scripts/hermes-oauth.sh login anthropic >/dev/null 2>&1; then
 fi
 if scripts/hermes-oauth.sh unknown openai-codex >/dev/null 2>&1; then
   echo "FAIL: unsupported action accepted" >&2; exit 1
+fi
+if docker run --rm --network none -e API_SERVER_KEY=short \
+  busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 \
+  sh -ec 'test ${#API_SERVER_KEY} -ge 16'; then
+  echo "FAIL: OAuth preflight accepted short API key" >&2; exit 1
+fi
+
+docker volume create "$state_volume" >/dev/null
+orphan="$(docker run -d --read-only -v "$state_volume:/opt/data:ro" \
+  busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 sleep 30)"
+containers+=("$orphan")
+if HERMES_STATE_VOLUME="$state_volume" scripts/hermes-oauth.sh start >/dev/null 2>&1; then
+  echo "FAIL: gateway start accepted orphaned state mount" >&2; exit 1
 fi
 
 mkdir "$tmp/bin"

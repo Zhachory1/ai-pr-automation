@@ -74,6 +74,16 @@ Accept: smoke names `openai-codex`, returns expected text, and proxy log shows o
 
 Stop: provider terms rejected, refresh token missing, unexpected host, or ambiguous state write.
 
+OpenAI evidence, 2026-09-15:
+
+- fresh-helper status: `openai-codex: logged in`;
+- runtime API-key fallback: empty;
+- enabled toolsets: zero;
+- OAuth run `run_b3b808c750734fb99322dba171fd2927`: completed;
+- model: `gpt-5.6-sol`;
+- output: `oauth-ok`;
+- usage: 612 input, 6 output tokens.
+
 ### A1 — Anthropic OAuth Lifecycle
 
 Depends on: O1 merged. Separate branch and PR.

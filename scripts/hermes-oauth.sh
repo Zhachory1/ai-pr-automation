@@ -15,11 +15,19 @@ if [[ "$action" != status && "${HERMES_OAUTH_LOCK_HELD:-}" != 1 ]]; then
   exec python3 "$ROOT/scripts/hermes-lifecycle-lock.py" "$0" "$@"
 fi
 compose() { "$ROOT/scripts/compose.sh" "$@"; }
+state_volume="${HERMES_STATE_VOLUME:-agent-fleet_hermes_doc_state}"
+cleanup_proxy() { compose --profile hermes-oauth stop hermes-openai-oauth-egress >/dev/null 2>&1 || true; }
 trap 'exit 130' INT TERM
 
 case "$action" in
   start)
-    compose --profile hermes-m2a up -d hermes-doc
+    mounting="$(docker ps -q --filter "volume=$state_volume")"
+    gateway="$(compose --profile hermes-m2a ps -q hermes-doc)"
+    if [[ -n "$mounting" && "$mounting" != "$gateway" ]]; then
+      echo "another running container mounts Hermes state" >&2
+      exit 1
+    fi
+    [[ -n "$mounting" ]] || compose --profile hermes-m2a up -d hermes-doc
     ;;
   stop)
     compose --profile hermes-m2a stop hermes-doc
@@ -29,7 +37,6 @@ case "$action" in
     if [[ -n "$container" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$container")" == true ]]; then
       docker exec "$container" hermes auth status "$provider"
     else
-      cleanup_proxy() { compose --profile hermes-oauth stop hermes-openai-oauth-egress >/dev/null 2>&1 || true; }
       trap cleanup_proxy EXIT
       compose --profile hermes-oauth run --rm hermes-doc-auth auth status "$provider"
       trap - EXIT
@@ -38,11 +45,10 @@ case "$action" in
     ;;
   login|logout)
     compose --profile hermes-m2a stop hermes-doc
-    if [[ -n "$(docker ps -q --filter volume=agent-fleet_hermes_doc_state)" ]]; then
+    if [[ -n "$(docker ps -q --filter "volume=$state_volume")" ]]; then
       echo "another running container mounts Hermes state" >&2
       exit 1
     fi
-    cleanup_proxy() { compose --profile hermes-oauth stop hermes-openai-oauth-egress >/dev/null 2>&1 || true; }
     trap cleanup_proxy EXIT
     if [[ "$action" == login ]]; then
       compose --profile hermes-oauth run --rm hermes-doc-auth auth add "$provider" --type oauth --no-browser
