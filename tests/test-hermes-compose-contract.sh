@@ -10,6 +10,7 @@ GH_TOKEN=test-token
 CODE_ROOT=/tmp/code
 SWARMVAULT_VAULT=/tmp/vault
 HERMES_DOC_API_KEY=0123456789abcdef0123456789abcdef
+HERMES_DOC_OPENAI_API_KEY=fake-provider-key
 EOF
 mv "$tmp/.env.example" "$tmp/.env"
 
@@ -18,14 +19,19 @@ docker compose -f "$tmp/docker-compose.yml" --env-file "$tmp/.env" \
 
 jq -e '
   .services["hermes-doc"] as $h |
-  ($h.profiles == ["hermes-m0"]) and
+  ($h.profiles == ["hermes-m0", "hermes-m2a"]) and
   ($h.image == "nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874") and
   ($h.command == ["gateway", "run"]) and
   ($h.environment.API_SERVER_ENABLED == "true") and
   ($h.environment.API_SERVER_HOST == "0.0.0.0") and
   ($h.environment.API_SERVER_PORT == "8642") and
   ($h.environment.API_SERVER_KEY == "0123456789abcdef0123456789abcdef") and
-  ($h.environment | keys == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT"]) and
+  ($h.environment.OPENAI_API_KEY == "fake-provider-key") and
+  ($h.environment.OPENAI_BASE_URL == "https://api.openai.com/v1") and
+  ($h.environment.HERMES_SAFE_MODE == "1") and
+  ($h.environment.HERMES_IGNORE_RULES == "1") and
+  ($h.environment.HTTPS_PROXY == "http://hermes-doc-egress:3128") and
+  ($h.environment | keys == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) and
   (($h | has("ports")) | not) and
   (($h | has("env_file")) | not) and
   (($h | has("secrets")) | not) and
@@ -37,19 +43,24 @@ jq -e '
   ($h.pids_limit == 256) and
   ($h.mem_limit == "2147483648") and
   ($h.cpus == 1) and
-  ($h.volumes | length == 1) and
-  ($h.volumes[0].type == "volume") and
-  ($h.volumes[0].source == "hermes_doc_state") and
-  ($h.volumes[0].target == "/opt/data") and
+  ($h.volumes | length == 2) and
+  ([ $h.volumes[] | select(.type == "volume" and .source == "hermes_doc_state" and .target == "/opt/data") ] | length == 1) and
+  ([ $h.volumes[] | select(.type == "bind" and .target == "/opt/data/config.yaml" and .read_only == true) ] | length == 1) and
   ($h.healthcheck.test[1] | contains("/health/detailed")) and
   ($h.healthcheck.test[1] | contains("Authorization")) and
   ($h.healthcheck.test[1] | contains("Bearer ")) and
   ($h.healthcheck.test[1] | contains("json.load")) and
   ($h.healthcheck.test[1] | contains("get(\"status\")==\"ok\"")) and
   (.volumes | has("hermes_doc_state")) and
+  (.networks["hermes-doc"].internal == true) and
+  (.services["hermes-doc-egress"].profiles == ["hermes-m0", "hermes-m2a"]) and
+  (.services["hermes-doc-egress"].read_only == true) and
+  (.services["hermes-doc-egress"].cap_drop == ["ALL"]) and
+  (.services["hermes-doc-egress"].networks | keys == ["default", "hermes-doc"]) and
+  (.services["hermes-doc"].depends_on["hermes-doc-egress"].condition == "service_healthy") and
   ([.services | to_entries[] | select(.key != "hermes-doc") |
     ((.value.depends_on // {}) | has("hermes-doc"))] | any | not) and
-  ([.services | to_entries[] | select(.key != "hermes-doc") |
+  ([.services | to_entries[] | select(.key != "hermes-doc" and .key != "hermes-doc-egress") |
     ((.value.networks // {}) | has("hermes-doc"))] | any | not) and
   ([.services | to_entries[] | select(.key != "hermes-doc") |
     (.value.volumes // [])[]? | select(.source == "hermes_doc_state")] | length == 0)
@@ -78,4 +89,4 @@ if ! diff -u "$tmp/expected-services" "$tmp/default-services"; then
   exit 1
 fi
 
-echo "PASS: Hermes M0 service is pinned, profile-gated, isolated from current services, and not host-published"
+echo "PASS: Hermes doc runtime is pinned, zero-tool configured, egress-isolated, and not host-published"

@@ -1,0 +1,19 @@
+platform_toolsets:
+  api_server: [no_mcp]
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+  provider: ""
+  nudge_interval: 0
+auxiliary:
+  background_review:
+    enabled: false
+skills:
+  creation_nudge_interval: 0
+agent:
+  max_turns: 1
+  run_budget_seconds: 1000
+  api_max_retries: 0
+gateway:
+  api_server:
+    max_concurrent_runs: 1

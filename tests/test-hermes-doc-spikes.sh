@@ -28,27 +28,7 @@ state="$(docker volume create)"
 docker network create --internal "$network" >/dev/null
 network_created=true
 
-cat > "$tmp/config.yaml" <<'YAML'
-platform_toolsets:
-  api_server: [no_mcp]
-memory:
-  memory_enabled: false
-  user_profile_enabled: false
-  provider: ""
-  nudge_interval: 0
-auxiliary:
-  background_review:
-    enabled: false
-skills:
-  creation_nudge_interval: 0
-agent:
-  max_turns: 1
-  run_budget_seconds: 60
-  api_max_retries: 0
-gateway:
-  api_server:
-    max_concurrent_runs: 1
-YAML
+cp agent-config/hermes/doc-config.yaml "$tmp/config.yaml"
 
 # Actual configured inbox may be supplied by the operator; CI uses a disposable bind.
 inbox="${HERMES_SPIKE_INBOX:-}"
@@ -203,7 +183,14 @@ containers+=("$proxy")
 docker network connect --alias hermes-doc-egress "$network" "$proxy"
 for _ in $(seq 1 20); do docker exec "$proxy" squid -k parse >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$proxy" squid -k parse >/dev/null 2>&1
-client --max-time 10 -sS -x http://hermes-doc-egress:3128 https://api.openai.com/v1/models >/dev/null
+proxy_ready=false
+for _ in $(seq 1 20); do
+  if client --max-time 10 -sS -x http://hermes-doc-egress:3128 https://api.openai.com/v1/models >/dev/null 2>&1; then
+    proxy_ready=true; break
+  fi
+  sleep 1
+done
+[[ "$proxy_ready" == true ]]
 if client --max-time 10 -sS -x http://hermes-doc-egress:3128 https://example.com >/dev/null 2>&1; then
   echo "FAIL: doc egress proxy allowed off-list host" >&2
   exit 1

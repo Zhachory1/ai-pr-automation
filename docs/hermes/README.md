@@ -1,6 +1,6 @@
 # Hermes Migration
 
-Status: M0 merged and validated. M2a foundation planned. M2b live activation and M1 blocked.
+Status: M0 merged. M2a non-routing foundation in progress. M2b live activation and M1 blocked.
 
 ## Artifacts
 
@@ -28,6 +28,20 @@ Status: M0 merged and validated. M2a foundation planned. M2b live activation and
 
 M0 focused validation passed after merge. No M0 PR activates Hermes.
 
+## M2a Pull Requests
+
+| Work | PR | State |
+| --- | --- | --- |
+| Design and plan | [#121](https://github.com/Zhachory1/ai-pr-automation/pull/121) | merged |
+| Runtime/filesystem assumptions | [#122](https://github.com/Zhachory1/ai-pr-automation/pull/122) | merged |
+| Durable run/publication state | [#123](https://github.com/Zhachory1/ai-pr-automation/pull/123) | merged |
+| Atomic publication helper | [#124](https://github.com/Zhachory1/ai-pr-automation/pull/124) | merged |
+| Exact publication approval | [#125](https://github.com/Zhachory1/ai-pr-automation/pull/125) | merged |
+| Bounded Runs adapter | [#126](https://github.com/Zhachory1/ai-pr-automation/pull/126) | merged |
+| Immutable prompt renderer | [#127](https://github.com/Zhachory1/ai-pr-automation/pull/127) | open |
+
+No M2a PR routes a doc request through Hermes or makes a paid provider call.
+
 ## Static Compose Check
 
 Static validation only:
@@ -36,7 +50,16 @@ Static validation only:
 scripts/compose.sh --profile hermes-m0 config --quiet
 ```
 
-This renders opt-in service shape. Do not run `up` yet. M0 does not provide model credentials, doc mounts, runtime containment, or approved egress.
+This renders opt-in service shape. Do not run `up` with real provider credentials yet.
+
+M2a adds reviewed zero-tool config and a dedicated OpenAI-only egress proxy. Validate without a
+real provider key:
+
+```bash
+bash tests/test-hermes-compose-contract.sh
+bash tests/test-hermes-doc-egress.sh
+bash tests/test-hermes-doc-spikes.sh
+```
 
 ## Baseline
 
