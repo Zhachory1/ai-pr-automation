@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+import argparse
+import ctypes
+import errno
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path, PurePosixPath
+
+MAX_BYTES = 256 * 1024
+TARGET_RE = re.compile(r"^(seprd|mlprd|launchpad|dd)-\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:-\d+)?\.md$")
+
+
+def emit(**values):
+    print(json.dumps(values, sort_keys=True, separators=(",", ":")))
+
+
+def fail(message):
+    emit(status="error", error=message)
+    raise SystemExit(2)
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_bounded(stream):
+    data = stream.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        fail(f"content exceeds {MAX_BYTES} bytes")
+    return data
+
+
+def relative(value):
+    path = PurePosixPath(value)
+    if not value or path.is_absolute() or str(path) != value or any(part in {"", ".", ".."} for part in path.parts):
+        fail("path must be normalized and relative")
+    return path
+
+
+def root(path):
+    resolved = Path(path).resolve(strict=True)
+    if not resolved.is_dir():
+        fail("root is not a directory")
+    return resolved
+
+
+def beneath(base, rel):
+    path = base.joinpath(*rel.parts)
+    try:
+        path.parent.resolve(strict=True).relative_to(base)
+    except (FileNotFoundError, ValueError):
+        fail("path escapes configured root")
+    return path
+
+
+def regular_bytes(path):
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(mode) or path.is_symlink():
+        fail(f"not a regular file: {path.name}")
+    with path.open("rb") as source:
+        return read_bounded(source)
+
+
+def fsync_dir(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def rename_noreplace(source, target):
+    libc = ctypes.CDLL(None, use_errno=True)
+    function = getattr(libc, "renameat2", None)
+    if function is None:
+        fail("renameat2 is unavailable")
+    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    if function(-100, os.fsencode(source), -100, os.fsencode(target), 1) == 0:
+        return
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise FileExistsError(error, os.strerror(error), target)
+    fail(f"renameat2 failed: {os.strerror(error)}")
+
+
+def write_temp(path, data):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+    finally:
+        os.close(descriptor)
+
+
+def stage(args):
+    base = root(args.stage_root)
+    request_id = int(args.request_id)
+    if request_id < 1:
+        fail("request id must be positive")
+    data = read_bounded(sys.stdin.buffer)
+    expected = digest(data)
+    requests = base / "requests"
+    requests.mkdir(mode=0o700, exist_ok=True)
+    if requests.is_symlink() or requests.resolve(strict=True) != requests:
+        fail("requests directory escapes stage root")
+    directory = requests / str(request_id)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink() or directory.resolve(strict=True).parent != requests:
+        fail("request directory escapes stage root")
+    target = directory / "publish.md"
+    existing = regular_bytes(target)
+    if existing is not None:
+        if digest(existing) != expected:
+            fail("staged publication already exists with different digest")
+        emit(status="staged", staged_path=f"requests/{request_id}/publish.md", content_digest=expected)
+        return
+    temporary = directory / "publish.stage.tmp"
+    pending = regular_bytes(temporary)
+    if pending is None:
+        write_temp(temporary, data)
+    elif digest(pending) != expected:
+        fail("staged temporary file has different digest")
+    try:
+        rename_noreplace(temporary, target)
+    except FileExistsError:
+        existing = regular_bytes(target)
+        if existing is None or digest(existing) != expected:
+            fail("staged publication race produced different digest")
+        temporary.unlink(missing_ok=True)
+    fsync_dir(directory)
+    emit(status="staged", staged_path=f"requests/{request_id}/publish.md", content_digest=expected)
+
+
+def inspect(args):
+    base = root(args.inbox_root)
+    target_rel = relative(args.target_path)
+    if len(target_rel.parts) != 1 or not TARGET_RE.fullmatch(str(target_rel)):
+        fail("invalid publication target")
+    data = regular_bytes(beneath(base, target_rel))
+    if data is None:
+        emit(status="absent")
+    else:
+        emit(status="matching" if digest(data) == args.digest else "mismatch", content_digest=digest(data))
+
+
+def publish(args):
+    stage_base, inbox_base = root(args.stage_root), root(args.inbox_root)
+    stage_rel, target_rel = relative(args.staged_path), relative(args.target_path)
+    if len(target_rel.parts) != 1 or not TARGET_RE.fullmatch(str(target_rel)):
+        fail("invalid publication target")
+    match = re.fullmatch(r"requests/([1-9]\d*)/publish\.md", str(stage_rel))
+    if not match:
+        fail("invalid staged publication path")
+    source = regular_bytes(beneath(stage_base, stage_rel))
+    if source is None or digest(source) != args.digest:
+        fail("staged publication digest mismatch")
+    target = beneath(inbox_base, target_rel)
+    existing = regular_bytes(target)
+    if existing is not None:
+        if digest(existing) != args.digest:
+            fail("publication target already exists with different digest")
+        emit(status="matching", target_path=str(target_rel), content_digest=args.digest)
+        return
+
+    hidden = inbox_base / ".ai-pr-automation-staging"
+    hidden.mkdir(mode=0o700, exist_ok=True)
+    if hidden.is_symlink() or hidden.resolve(strict=True).parent != inbox_base:
+        fail("hidden staging directory escapes inbox")
+    temporary = hidden / f"request-{match.group(1)}-{args.digest}.tmp"
+    pending = regular_bytes(temporary)
+    if pending is None:
+        write_temp(temporary, source)
+    elif digest(pending) != args.digest:
+        fail("publication temporary file has different digest")
+    try:
+        rename_noreplace(temporary, target)
+    except FileExistsError:
+        existing = regular_bytes(target)
+        if existing is None or digest(existing) != args.digest:
+            fail("publication target race produced different digest")
+        temporary.unlink(missing_ok=True)
+    fsync_dir(hidden)
+    fsync_dir(inbox_base)
+    emit(status="published", target_path=str(target_rel), content_digest=args.digest)
+
+
+def parser():
+    result = argparse.ArgumentParser()
+    commands = result.add_subparsers(dest="command", required=True)
+    stage_parser = commands.add_parser("stage")
+    stage_parser.add_argument("--stage-root", required=True)
+    stage_parser.add_argument("--request-id", required=True)
+    inspect_parser = commands.add_parser("inspect")
+    inspect_parser.add_argument("--inbox-root", required=True)
+    inspect_parser.add_argument("--target-path", required=True)
+    inspect_parser.add_argument("--digest", required=True)
+    publish_parser = commands.add_parser("publish")
+    publish_parser.add_argument("--stage-root", required=True)
+    publish_parser.add_argument("--inbox-root", required=True)
+    publish_parser.add_argument("--staged-path", required=True)
+    publish_parser.add_argument("--target-path", required=True)
+    publish_parser.add_argument("--digest", required=True)
+    return result
+
+
+if __name__ == "__main__":
+    arguments = parser().parse_args()
+    if getattr(arguments, "digest", None) and not re.fullmatch(r"[0-9a-f]{64}", arguments.digest):
+        fail("digest must be lowercase SHA-256")
+    {"stage": stage, "inspect": inspect, "publish": publish}[arguments.command](arguments)
