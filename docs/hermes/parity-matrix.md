@@ -1,8 +1,8 @@
 # Hermes Migration Parity Matrix
 
-Status: M0 baseline
+Status: M2a non-routing evidence gate
 
-Date: 2026-09-14
+Date: 2026-09-15
 
 Rule: `retained` means Hermes does not replace guarantee in current milestone.
 
@@ -118,10 +118,10 @@ Rule: `retained` means Hermes does not replace guarantee in current milestone.
 | council synthesis | [`council-m0-m2.md`](council-m0-m2.md) | complete |
 | M1/M2 activation authorization | child plan-to-launch runs | blocked |
 
-## Known Gaps
+## M2a Evidence Status
 
-- Current repo images still contain mutable dependency installs. M0 Hermes pin does not fix unrelated images.
-- Current doc-write effect recovery can duplicate suffixed files after crash. M2 remains blocked.
-- Baseline DB cannot prove missed eligible PRs or target-side duplicate effects alone. Later pilot audit must join GitHub/file target inventory.
-- M0 static Compose shape does not prove no-tools execution, provider-only egress, or persisted-state safety.
-- Hermes run status and state compatibility are pinned but not yet covered by local conformance tests.
+- Pinned zero-tool Hermes runtime and doc-only proxy pass fake-provider conformance.
+- Exact-byte publication, durable Runs identity, and rollback quarantine remain controller-owned.
+- Machine-gate evidence authorizes neither routing nor paid calls.
+- Baseline DB still cannot prove missed eligible PRs or target-side duplicate effects alone; M2b pilot audit must join target inventory.
+- M2b remains blocked pending separate plan-to-launch and human approval.

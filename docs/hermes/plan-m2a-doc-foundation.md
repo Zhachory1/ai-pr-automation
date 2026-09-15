@@ -56,6 +56,8 @@ Stop and return to DD/council if:
 | 5. Quarantine/evidence/docs | 0.5 day | partial |
 | **Total** | **10.0 days** | |
 
+Actual elapsed implementation: 2 calendar days (2026-09-14 through 2026-09-15), within the 10-day cap.
+
 Rescope before total forecast exceeds 10 days. Do not borrow from M2b.
 
 ## Execution

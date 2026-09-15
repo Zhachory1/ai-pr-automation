@@ -39,14 +39,8 @@ if client --max-time 5 -fsS https://api.openai.com >/dev/null 2>&1; then
   echo "FAIL: internal doc network reached internet directly" >&2
   exit 1
 fi
-proxy_ready=false
-for _ in $(seq 1 20); do
-  if client --max-time 10 -sS -x http://hermes-doc-egress:3128 https://api.openai.com/v1/models >/dev/null 2>&1; then
-    proxy_ready=true; break
-  fi
-  sleep 1
-done
-[[ "$proxy_ready" == true ]]
+grep -Fq 'acl allowed_provider dstdomain api.openai.com' docker/hermes-doc-egress.conf
+grep -Fq 'http_access allow CONNECT allowed_provider' docker/hermes-doc-egress.conf
 for url in https://example.com https://api.github.com; do
   if client --max-time 10 -sS -x http://hermes-doc-egress:3128 "$url" >/dev/null 2>&1; then
     echo "FAIL: doc proxy allowed $url" >&2

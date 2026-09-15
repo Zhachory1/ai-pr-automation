@@ -6,7 +6,7 @@
 - reviewers: architecture, reliability, security, cost
 - grounding: [`grounding-m2-doc-runtime.md`](grounding-m2-doc-runtime.md)
 - parent roadmap: [`../hermes-migration-roadmap.md`](../hermes-migration-roadmap.md)
-- next gate: M2a Task 0 cheap-failure spikes
+- next gate: human review of M2a machine-gate evidence
 
 ## Problem
 
