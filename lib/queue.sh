@@ -40,6 +40,13 @@ UPDATE requests
    AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
    AND posted_ref IS NULL AND side_effect_at IS NOT NULL;
 
+UPDATE requests
+   SET status = 'reconcile', finished_at = clock_timestamp(), lease_expires_at = NULL,
+       fail_response = 'lease expired after doc side-effect intent; reconcile before retry'
+ WHERE status = 'running' AND kind = 'doc-write'
+   AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
+   AND posted_ref IS NULL AND side_effect_at IS NOT NULL;
+
 UPDATE requests r
    SET status = 'superseded', finished_at = clock_timestamp(), lease_expires_at = NULL,
        fail_response = 'expired lease superseded by newer queued head'
@@ -311,6 +318,239 @@ WITH request AS (
   RETURNING 1
 )
 SELECT CASE WHEN EXISTS (SELECT 1 FROM request) THEN '1' ELSE '' END;
+SQL
+}
+
+hermes_doc_run_begin() {
+  local id="$1" phase="$2" request_digest="$3" generation="$4" replay_seconds="$5" nonce="$6"
+  _psql -v id="$id" -v phase="$phase" -v digest="$request_digest" -v generation="$generation" \
+    -v replay="$replay_seconds" -v nonce="$nonce" <<'SQL'
+WITH eligible AS (
+  SELECT 1 FROM requests
+   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
+     AND lease_expires_at>clock_timestamp()
+   FOR UPDATE
+), inserted AS (
+  INSERT INTO hermes_doc_runs(request_id,phase,request_digest,runtime_generation,state,replay_until)
+  SELECT :'id', :'phase', :'digest', :'generation', 'submitting',
+         clock_timestamp()+make_interval(secs=>:'replay'::int)
+    FROM eligible
+  ON CONFLICT (request_id,phase) DO NOTHING
+  RETURNING json_build_object('state',state,'request_digest',request_digest,
+            'runtime_generation',runtime_generation,'submit_count',submit_count,
+            'hermes_run_id',hermes_run_id,'replay_until',replay_until)::text AS value
+), existing AS (
+  SELECT json_build_object('state',h.state,'request_digest',h.request_digest,
+         'runtime_generation',h.runtime_generation,'submit_count',h.submit_count,
+         'hermes_run_id',h.hermes_run_id,'replay_until',h.replay_until)::text AS value
+    FROM hermes_doc_runs h, eligible
+   WHERE h.request_id=:'id' AND h.phase=:'phase'
+)
+SELECT value FROM inserted
+UNION ALL
+SELECT value FROM existing WHERE NOT EXISTS (SELECT 1 FROM inserted);
+SQL
+}
+
+hermes_doc_run_reserve_submit() {
+  local id="$1" phase="$2" nonce="$3"
+  _psql -v id="$id" -v phase="$phase" -v nonce="$nonce" <<'SQL'
+WITH eligible AS (
+  SELECT 1 FROM requests
+   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
+     AND lease_expires_at>clock_timestamp()
+   FOR UPDATE
+)
+UPDATE hermes_doc_runs h
+   SET submit_count=submit_count+1, updated_at=clock_timestamp()
+  FROM eligible
+ WHERE h.request_id=:'id' AND h.phase=:'phase' AND h.state='submitting'
+   AND h.submit_count<2 AND h.replay_until>clock_timestamp()
+RETURNING h.submit_count;
+SQL
+}
+
+hermes_doc_run_finish() {
+  local id="$1" phase="$2" state="$3" run_id="$4" raw_status="$5" output_digest="$6" usage="$7" error="$8" nonce="$9"
+  case "$state" in completed|failed|reconcile) ;; *) return 2 ;; esac
+  _psql -v id="$id" -v phase="$phase" -v state="$state" -v run_id="$run_id" \
+    -v raw_status="$raw_status" -v output_digest="$output_digest" -v usage="$usage" \
+    -v error="$error" -v nonce="$nonce" <<'SQL'
+WITH eligible AS (
+  SELECT 1 FROM requests
+   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
+     AND lease_expires_at>clock_timestamp()
+   FOR UPDATE
+)
+UPDATE hermes_doc_runs h
+   SET state=:'state', hermes_run_id=NULLIF(:'run_id',''), raw_status=NULLIF(:'raw_status',''),
+       output_digest=NULLIF(:'output_digest',''), usage=NULLIF(:'usage','')::jsonb,
+       error=NULLIF(:'error',''), updated_at=clock_timestamp()
+  FROM eligible
+ WHERE h.request_id=:'id' AND h.phase=:'phase' AND h.state='submitting'
+RETURNING 1;
+SQL
+}
+
+pending_doc_review_finish() {
+  local id="$1" proposal="$2" provenance="$3" posted_ref="$4" nonce="$5"
+  _psql -v id="$id" -v proposal="$proposal" -v provenance="$provenance" -v ref="$posted_ref" -v nonce="$nonce" <<'SQL'
+WITH eligible AS (
+  SELECT 1 FROM requests
+   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
+     AND lease_expires_at>clock_timestamp()
+   FOR UPDATE
+), inserted AS (
+  INSERT INTO pending_maintenance_reviews(request_id,proposal,provenance)
+  SELECT :'id', :'proposal'::jsonb, :'provenance'::jsonb FROM eligible
+  ON CONFLICT (request_id) DO NOTHING
+  RETURNING 1
+), finished AS (
+  UPDATE requests SET status='done', finished_at=clock_timestamp(), posted_ref=:'ref', lease_expires_at=NULL
+   WHERE id=:'id' AND EXISTS (SELECT 1 FROM inserted)
+  RETURNING 1
+)
+SELECT 1 FROM finished;
+SQL
+}
+
+doc_publication_stage() {
+  local id="$1" target="$2" digest="$3" generation="$4" proposal="$5" provenance="$6" nonce="$7"
+  _psql -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" \
+    -v proposal="$proposal" -v provenance="$provenance" -v nonce="$nonce" <<'SQL'
+WITH eligible AS (
+  SELECT 1 FROM requests
+   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
+     AND lease_expires_at>clock_timestamp()
+   FOR UPDATE
+), publication AS (
+  INSERT INTO doc_publications(request_id,state,staged_path,target_path,content_digest,document_generation)
+  SELECT :'id', 'awaiting_approval', 'requests/'||:'id'||'/publish.md', :'target', :'digest', :'generation'
+    FROM eligible
+  ON CONFLICT DO NOTHING
+  RETURNING 1
+), review AS (
+  INSERT INTO pending_maintenance_reviews(request_id,proposal,provenance)
+  SELECT :'id', :'proposal'::jsonb, :'provenance'::jsonb FROM publication
+  RETURNING 1
+), finished AS (
+  UPDATE requests SET status='done', finished_at=clock_timestamp(),
+         posted_ref='queued: awaiting exact publication approval', lease_expires_at=NULL
+   WHERE id=:'id' AND EXISTS (SELECT 1 FROM review)
+  RETURNING 1
+)
+SELECT 1 FROM finished;
+SQL
+}
+
+doc_publication_approve() {
+  local id="$1"
+  _psql -v id="$id" <<'SQL'
+WITH eligible AS (
+  SELECT p.request_id
+    FROM doc_publications p
+    JOIN requests r ON r.id=p.request_id
+    JOIN pending_maintenance_reviews h ON h.request_id=p.request_id
+   WHERE p.request_id=:'id' AND p.state='awaiting_approval' AND r.status='done' AND h.state='pending'
+   FOR UPDATE OF p,r,h
+), publication AS (
+  UPDATE doc_publications p SET state='approved', approved_at=clock_timestamp(), updated_at=clock_timestamp()
+   FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
+), review AS (
+  UPDATE pending_maintenance_reviews h SET state='reviewed', reviewed_at=clock_timestamp()
+   FROM publication p WHERE h.request_id=p.request_id RETURNING h.request_id
+), queued AS (
+  UPDATE requests r SET status='queued', started_at=NULL, finished_at=NULL, posted_ref=NULL,
+         run_id=NULL, run_nonce=NULL, lease_expires_at=NULL,
+         payload=jsonb_set(r.payload,'{publication_only}','true'::jsonb,true)
+   FROM review h WHERE r.id=h.request_id RETURNING r.id
+)
+SELECT id FROM queued;
+SQL
+}
+
+doc_publication_dismiss() {
+  local id="$1"
+  _psql -v id="$id" <<'SQL'
+WITH eligible AS (
+  SELECT p.request_id FROM doc_publications p
+  JOIN pending_maintenance_reviews h ON h.request_id=p.request_id
+  WHERE p.request_id=:'id' AND p.state='awaiting_approval' AND h.state='pending'
+  FOR UPDATE OF p,h
+), publication AS (
+  UPDATE doc_publications p SET state='dismissed', updated_at=clock_timestamp()
+   FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
+), review AS (
+  UPDATE pending_maintenance_reviews h SET state='dismissed', reviewed_at=clock_timestamp()
+   FROM publication p WHERE h.request_id=p.request_id RETURNING h.request_id
+)
+SELECT request_id FROM review;
+SQL
+}
+
+doc_publication_prepare() {
+  local id="$1" target="$2" digest="$3" generation="$4" nonce="$5"
+  _psql -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" -v nonce="$nonce" <<'SQL'
+WITH eligible AS (
+  SELECT p.request_id
+    FROM doc_publications p JOIN requests r ON r.id=p.request_id
+   WHERE p.request_id=:'id' AND p.state='approved' AND p.approved_at IS NOT NULL
+     AND p.target_path=:'target' AND p.content_digest=:'digest' AND p.document_generation=:'generation'
+     AND r.status='running' AND r.run_nonce=:'nonce' AND r.lease_expires_at>clock_timestamp()
+   FOR UPDATE OF p,r
+), publication AS (
+  UPDATE doc_publications p SET state='prepared', updated_at=clock_timestamp()
+   FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
+), quarantined AS (
+  UPDATE requests r SET status='reconcile', side_effect_at=clock_timestamp(), finished_at=clock_timestamp(),
+         fail_response='doc publication prepared; reconcile until exact target is verified', lease_expires_at=NULL
+   FROM publication p WHERE r.id=p.request_id RETURNING r.id
+)
+SELECT id FROM quarantined;
+SQL
+}
+
+doc_publication_mark_published() {
+  local id="$1" target="$2" digest="$3" generation="$4"
+  _psql -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" <<'SQL'
+WITH eligible AS (
+  SELECT p.request_id FROM doc_publications p JOIN requests r ON r.id=p.request_id
+   WHERE p.request_id=:'id' AND p.state='prepared' AND p.approved_at IS NOT NULL
+     AND p.target_path=:'target' AND p.content_digest=:'digest' AND p.document_generation=:'generation'
+     AND r.status='reconcile'
+   FOR UPDATE OF p,r
+), publication AS (
+  UPDATE doc_publications p SET state='published', published_at=clock_timestamp(), updated_at=clock_timestamp()
+   FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
+), finished AS (
+  UPDATE requests r SET status='done', posted_ref=:'target', finished_at=clock_timestamp(), fail_response=NULL
+   FROM publication p WHERE r.id=p.request_id RETURNING r.id
+)
+SELECT id FROM finished;
+SQL
+}
+
+hermes_doc_quarantine() {
+  _psql <<'SQL'
+BEGIN;
+WITH attempts AS (
+  UPDATE hermes_doc_runs SET state='reconcile', error='runtime rollback quarantine', updated_at=clock_timestamp()
+   WHERE state='submitting' RETURNING request_id
+)
+UPDATE requests r SET status='reconcile', finished_at=clock_timestamp(), lease_expires_at=NULL,
+       fail_response='Hermes doc runtime quarantined for rollback'
+ WHERE r.kind='doc-write' AND r.status IN ('queued','running')
+   AND EXISTS (SELECT 1 FROM attempts a WHERE a.request_id=r.id);
+
+WITH publications AS (
+  UPDATE doc_publications SET state='reconcile', error='runtime rollback quarantine', updated_at=clock_timestamp()
+   WHERE state='prepared' RETURNING request_id
+)
+UPDATE requests r SET status='reconcile', finished_at=clock_timestamp(), lease_expires_at=NULL,
+       fail_response='prepared doc publication quarantined for rollback'
+ WHERE r.status IN ('queued','running','reconcile')
+   AND EXISTS (SELECT 1 FROM publications p WHERE p.request_id=r.id);
+COMMIT;
 SQL
 }
 
