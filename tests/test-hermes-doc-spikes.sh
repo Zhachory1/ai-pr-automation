@@ -91,6 +91,18 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 [[ "$(jq '[.data[] | select(.enabled==true)] | length' "$tmp/tools.json")" == 0 ]]
+[[ "$(client -sS -o /dev/null -w '%{http_code}' http://hermes-doc:8642/v1/toolsets)" == 401 ]]
+[[ "$(client -sS -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong-wrong-wrong' http://hermes-doc:8642/v1/toolsets)" == 401 ]]
+docker top "$hermes" -eo pid,user,args | grep 'hermes gateway run' | grep -vq '[[:space:]]root[[:space:]]'
+docker exec -u hermes "$hermes" sh -ec '
+  if touch /opt/hermes/.m2-write-test 2>/dev/null; then exit 1; fi
+  if touch /.m2-write-test 2>/dev/null; then exit 1; fi
+'
+state_snapshot() {
+  docker exec "$hermes" sh -ec 'for d in /opt/data/memories /opt/data/skills; do
+    [ ! -d "$d" ] || find "$d" -type f -print0 | sort -z | xargs -0 -r sha256sum; done'
+}
+memory_before="$(state_snapshot)"
 
 body='{"input":"Return exactly spike-ok","instructions":"Text only.","model":"gpt-4o-mini","provider":"openai-api"}'
 post() {
@@ -109,6 +121,7 @@ for _ in $(seq 1 60); do
 done
 jq -e '.status=="completed" and .output=="spike-ok"' <<<"$status" >/dev/null
 jq -e '.path=="/v1/responses" and ((.body.tools // []) | length==0)' "$tmp/request.json" >/dev/null
+[[ "$(state_snapshot)" == "$memory_before" ]]
 
 replay="$(post "$body")"
 jq -e --arg id "$run_id" '.replayed==true and .run_id==$id' <(printf '%s\n' "$replay" | sed '$d') >/dev/null
@@ -126,74 +139,128 @@ done
 restarted="$(post "$body")"
 jq -e --arg id "$run_id" '.replayed==true and .run_id==$id' <(printf '%s\n' "$restarted" | sed '$d') >/dev/null
 
-# Trace tooling spike: attach to the exact container PID namespace and follow all current descendants.
+# Trace tooling spike: attach to the non-root gateway process and follow its descendants.
 cat > "$tmp/Tracerfile" <<EOF
 FROM $DEBIAN_IMAGE
 RUN apt-get update && apt-get install -y --no-install-recommends strace procps && rm -rf /var/lib/apt/lists/*
 EOF
 tracer_image="$(docker build -q -f "$tmp/Tracerfile" "$tmp")"
 images+=("$tracer_image")
-pids="$(docker run --rm --pid="container:$hermes" "$tracer_image" ps -e -o pid= | xargs)"
-trace_args=(); for pid in $pids; do trace_args+=( -p "$pid" ); done
+gateway_pid="$(docker run --rm --pid="container:$hermes" "$tracer_image" \
+  ps -e -o pid=,uid=,comm= | awk '$2 == 10000 && ($3 == "hermes" || $3 == "python3") { print $1; exit }')"
 tracer="$(docker run -d --pid="container:$hermes" --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
-  -v "$tmp:/trace" "$tracer_image" strace -ff -e trace=process,file,network -o /trace/trace "${trace_args[@]}")"
+  -v "$tmp:/trace" "$tracer_image" strace -ff -f -e trace=process,file,network -o /trace/trace -p "$gateway_pid")"
 containers+=("$tracer")
 sleep 2
 slow_body='{"input":"slow return spike-ok","instructions":"Text only.","model":"gpt-4o-mini","provider":"openai-api"}'
 slow="$(client -sS -X POST -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: trace-key' --data "$slow_body" http://hermes-doc:8642/v1/runs)"
 slow_id="$(jq -r .run_id <<<"$slow")"
+second_code="$(client -sS -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $API_KEY" \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: trace-key-2' --data "$slow_body" \
+  http://hermes-doc:8642/v1/runs)"
+[[ "$second_code" == 429 ]]
 for _ in $(seq 1 30); do
   slow_status="$(client -fsS -H "Authorization: Bearer $API_KEY" "http://hermes-doc:8642/v1/runs/$slow_id" | jq -r .status)"
   case "$slow_status" in completed|failed|cancelled|interrupted) break;; esac
   sleep 1
 done
 docker stop "$tracer" >/dev/null || true
+trace_log="$(docker logs "$tracer" 2>&1 || true)"
+[[ "$trace_log" != *"attach:"* && "$trace_log" != *"Operation not permitted"* ]]
 grep -hEq 'connect\(|openat\(|execve\(' "$tmp"/trace*
+unexpected_exec="$(grep -hE 'execve\(.* = 0$' "$tmp"/trace* \
+  | grep -Ev '"/usr/bin/uname"|"/opt/hermes/\.venv/bin/python(3)?"' || true)"
+[[ -z "$unexpected_exec" ]]
+unexpected_write="$(grep -hE 'openat\(.*O_(WRONLY|RDWR|CREAT).* = [0-9]+$' "$tmp"/trace* \
+  | grep -E 'openat\([^,]+, "/' | grep -Ev '"/(opt/data|tmp|run|dev)(/|")' || true)"
+[[ -z "$unexpected_write" ]]
+unexpected_socket="$(grep -hE 'connect\(.*( = 0|EINPROGRESS)' "$tmp"/trace* \
+  | grep -Ev 'AF_UNIX|htons\((53|8000)\)' || true)"
+[[ -z "$unexpected_socket" ]]
 inspect_id="$(docker inspect -f '{{.Id}}' "$hermes")"
-[[ -n "$inspect_id" && -n "$pids" && "$slow_status" == completed ]]
+[[ -n "$inspect_id" && -n "$gateway_pid" && "$slow_status" == completed ]]
 
 # Egress topology spike: internal-network clients have no direct external route.
 if client --max-time 5 -fsS https://api.openai.com >/dev/null 2>&1; then
   echo "FAIL: internal doc network reached internet directly" >&2
   exit 1
 fi
-cat > "$tmp/doc-egress.conf" <<'CONF'
-http_port 3128
-cache_effective_user proxy
-acl allowed_provider dstdomain api.openai.com
-acl SSL_ports port 443
-acl CONNECT method CONNECT
-http_access deny !CONNECT
-http_access deny CONNECT !SSL_ports
-http_access allow CONNECT allowed_provider
-http_access deny all
-cache deny all
-access_log daemon:/var/log/squid/access.log
-cache_log /var/log/squid/cache.log
-CONF
-proxy_image="$(docker build -q -f docker/Dockerfile.pr-safety-egress .)"
+# Run Hermes through production proxy topology to a local TLS provider with controlled DNS.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$tmp/ca.key" -out "$tmp/ca.crt" \
+  -subj '/CN=Hermes Test CA' -days 1 -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes -keyout "$tmp/server.key" -out "$tmp/server.csr" \
+  -subj '/CN=api.openai.com' >/dev/null 2>&1
+cat > "$tmp/server.ext" <<'CERT_EXT'
+subjectAltName=DNS:api.openai.com
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+CERT_EXT
+openssl x509 -req -in "$tmp/server.csr" -CA "$tmp/ca.crt" -CAkey "$tmp/ca.key" -CAcreateserial \
+  -out "$tmp/server.crt" -days 1 -extfile "$tmp/server.ext" >/dev/null 2>&1
+tls_provider="$(docker run -d --network "$network" \
+  -v "$PWD/tests/fake-hermes-provider.py:/app/server.py:ro" -v "$tmp:/capture" \
+  -e CAPTURE=/capture/tls-request.json -e PORT=443 \
+  -e TLS_CERT=/capture/server.crt -e TLS_KEY=/capture/server.key \
+  "$PYTHON_IMAGE" python /app/server.py)"
+containers+=("$tls_provider")
+tls_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$tls_provider")"
+proxy_image="$(docker build -q -f docker/Dockerfile.hermes-doc-egress .)"
 images+=("$proxy_image")
 proxy="$(docker run -d --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --add-host "api.openai.com:$tls_ip" \
   --tmpfs /run:rw,noexec,nosuid,nodev,mode=1777 \
   --tmpfs /var/log/squid:rw,noexec,nosuid,nodev,mode=1777 \
-  --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,mode=1777 \
-  -v "$tmp/doc-egress.conf:/etc/squid/squid.conf:ro" "$proxy_image")"
+  --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,mode=1777 "$proxy_image")"
 containers+=("$proxy")
 docker network connect --alias hermes-doc-egress "$network" "$proxy"
-for _ in $(seq 1 20); do docker exec "$proxy" squid -k parse >/dev/null 2>&1 && break; sleep 1; done
-docker exec "$proxy" squid -k parse >/dev/null 2>&1
-proxy_ready=false
 for _ in $(seq 1 20); do
-  if client --max-time 10 -sS -x http://hermes-doc-egress:3128 https://api.openai.com/v1/models >/dev/null 2>&1; then
-    proxy_ready=true; break
-  fi
+  docker exec "$proxy" sh -ec "test -s /run/squid.pid && kill -0 \$(cat /run/squid.pid)" >/dev/null 2>&1 && break
   sleep 1
 done
-[[ "$proxy_ready" == true ]]
+
+docker rm -f "$hermes" >/dev/null
+containers=("$fake" "$tls_provider" "$proxy" "$tracer")
+hermes="$(docker run -d --network "$network" --network-alias hermes-doc \
+  -e API_SERVER_ENABLED=true -e API_SERVER_HOST=0.0.0.0 -e API_SERVER_PORT=8642 -e API_SERVER_KEY="$API_KEY" \
+  -e OPENAI_API_KEY=test-key -e OPENAI_BASE_URL=https://api.openai.com/v1 \
+  -e HTTPS_PROXY=http://hermes-doc-egress:3128 -e HTTP_PROXY=http://hermes-doc-egress:3128 \
+  -e NO_PROXY=127.0.0.1,localhost \
+  -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+  -e REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+  -e HERMES_SAFE_MODE=1 -e HERMES_IGNORE_RULES=1 \
+  -v "$state:/opt/data" -v "$tmp/config.yaml:/opt/data/config.yaml:ro" \
+  -v "$tmp/ca.crt:/etc/ssl/certs/ca-certificates.crt:ro" \
+  -v "$tmp/ca.crt:/opt/hermes/.venv/lib/python3.13/site-packages/certifi/cacert.pem:ro" \
+  "$HERMES_IMAGE" gateway run)"
+containers+=("$hermes")
+for _ in $(seq 1 60); do
+  client -fsS -H "Authorization: Bearer $API_KEY" http://hermes-doc:8642/health >/dev/null 2>&1 && break
+  sleep 2
+done
+proxy_body='{"input":"Return exactly spike-ok","instructions":"Text only.","model":"gpt-4o-mini","provider":"openai-api"}'
+proxy_run="$(client -sS -X POST -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: proxy-key' --data "$proxy_body" http://hermes-doc:8642/v1/runs)"
+proxy_run_id="$(jq -r .run_id <<<"$proxy_run")"
+for _ in $(seq 1 60); do
+  proxy_status="$(client -fsS -H "Authorization: Bearer $API_KEY" "http://hermes-doc:8642/v1/runs/$proxy_run_id")"
+  proxy_state="$(jq -r .status <<<"$proxy_status")"
+  [[ "$proxy_state" == completed || "$proxy_state" == failed ]] && break
+  sleep 1
+done
+if ! jq -e '.status=="completed" and .output=="spike-ok"' <<<"$proxy_status" >/dev/null; then
+  docker logs "$hermes" >&2 || true
+  docker logs "$tls_provider" >&2 || true
+  docker exec "$proxy" cat /var/log/squid/access.log >&2 || true
+  exit 1
+fi
+jq -e '.path=="/v1/responses" and ((.body.tools // []) | length==0)' "$tmp/tls-request.json" >/dev/null
+docker exec "$proxy" grep -q 'CONNECT api.openai.com:443' /var/log/squid/access.log
 if client --max-time 10 -sS -x http://hermes-doc-egress:3128 https://example.com >/dev/null 2>&1; then
   echo "FAIL: doc egress proxy allowed off-list host" >&2
   exit 1
 fi
 
-echo "PASS: renameat2, zero-tool runtime, durable idempotency, trace attachment, and egress spikes"
+echo "PASS: renameat2, zero-tool runtime, durable idempotency, trace, and integrated proxy spikes"

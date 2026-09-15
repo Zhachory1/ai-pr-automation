@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import ssl
 import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -98,4 +99,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
 
-ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+server = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8000"))), Handler)
+if os.environ.get("TLS_CERT"):
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(os.environ["TLS_CERT"], os.environ["TLS_KEY"])
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+server.serve_forever()

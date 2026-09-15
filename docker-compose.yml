@@ -417,9 +417,17 @@ services:
         condition: service_completed_successfully
 
   # --- Hermes M2a: pinned zero-tool doc runtime, still disconnected from doc controller ---
+  hermes-doc-preflight:
+    profiles: ["hermes-m0", "hermes-m2a"]
+    image: busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+    network_mode: none
+    environment:
+      API_SERVER_KEY: ${HERMES_DOC_API_KEY:-}
+    command: ["sh", "-ec", "test $${#API_SERVER_KEY} -ge 16"]
+
   hermes-doc-egress:
     profiles: ["hermes-m0", "hermes-m2a"]
-    image: agent-fleet/hermes-doc-egress:${HERMES_DOC_EGRESS_VERSION:-latest}
+    image: agent-fleet/hermes-doc-egress:m2a
     build:
       context: .
       dockerfile: docker/Dockerfile.hermes-doc-egress
@@ -435,7 +443,7 @@ services:
       - default
       - hermes-doc
     healthcheck:
-      test: ["CMD-SHELL", "squid -k parse"]
+      test: ["CMD-SHELL", "test -s /run/squid.pid && kill -0 $$(cat /run/squid.pid) && grep -q ':0C38 ' /proc/net/tcp /proc/net/tcp6"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -468,6 +476,8 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import json,os,urllib.request; r=urllib.request.Request(\"http://127.0.0.1:8642/health/detailed\",headers={\"Authorization\":\"Bearer \"+os.environ[\"API_SERVER_KEY\"]}); raise SystemExit(0 if json.load(urllib.request.urlopen(r,timeout=5)).get(\"status\")==\"ok\" else 1)'"]
     depends_on:
+      hermes-doc-preflight:
+        condition: service_completed_successfully
       hermes-doc-egress:
         condition: service_healthy
 

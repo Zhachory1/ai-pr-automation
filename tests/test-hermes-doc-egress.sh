@@ -21,9 +21,18 @@ proxy="$(docker run -d --read-only --cap-drop ALL --security-opt no-new-privileg
   --tmpfs /var/log/squid:rw,noexec,nosuid,nodev,mode=1777 \
   --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,mode=1777 "$image")"
 docker network connect --alias hermes-doc-egress "$network" "$proxy"
-for _ in $(seq 1 20); do docker exec "$proxy" squid -k parse >/dev/null 2>&1 && break; sleep 1; done
-docker exec "$proxy" squid -k parse >/dev/null 2>&1
+listener_ready=false
+for _ in $(seq 1 20); do
+  if docker exec "$proxy" sh -ec "test -s /run/squid.pid && kill -0 \$(cat /run/squid.pid) && grep -q ':0C38 ' /proc/net/tcp /proc/net/tcp6"; then
+    listener_ready=true
+    break
+  fi
+  sleep 1
+done
+[[ "$listener_ready" == true ]]
 [[ "$(docker exec "$proxy" id -u)" != 0 ]]
+grep -Fq 'FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254' docker/Dockerfile.hermes-doc-egress
+grep -Fq 'squid=6.14-0ubuntu0.24.04.4' docker/Dockerfile.hermes-doc-egress
 
 client() { docker run --rm --network "$network" curlimages/curl:8.11.1 "$@"; }
 if client --max-time 5 -fsS https://api.openai.com >/dev/null 2>&1; then

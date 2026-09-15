@@ -53,10 +53,18 @@ jq -e '
   ($h.healthcheck.test[1] | contains("get(\"status\")==\"ok\"")) and
   (.volumes | has("hermes_doc_state")) and
   (.networks["hermes-doc"].internal == true) and
+  (.services["hermes-doc-preflight"].profiles == ["hermes-m0", "hermes-m2a"]) and
+  (.services["hermes-doc-preflight"].image == "busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662") and
+  (.services["hermes-doc-preflight"].network_mode == "none") and
+  (.services["hermes-doc-preflight"].command[2] | contains("#API_SERVER_KEY")) and
   (.services["hermes-doc-egress"].profiles == ["hermes-m0", "hermes-m2a"]) and
+  (.services["hermes-doc-egress"].image == "agent-fleet/hermes-doc-egress:m2a") and
   (.services["hermes-doc-egress"].read_only == true) and
   (.services["hermes-doc-egress"].cap_drop == ["ALL"]) and
   (.services["hermes-doc-egress"].networks | keys == ["default", "hermes-doc"]) and
+  (.services["hermes-doc-egress"].healthcheck.test[1] | contains("/run/squid.pid")) and
+  (.services["hermes-doc-egress"].healthcheck.test[1] | contains(":0C38")) and
+  (.services["hermes-doc"].depends_on["hermes-doc-preflight"].condition == "service_completed_successfully") and
   (.services["hermes-doc"].depends_on["hermes-doc-egress"].condition == "service_healthy") and
   ([.services | to_entries[] | select(.key != "hermes-doc") |
     ((.value.depends_on // {}) | has("hermes-doc"))] | any | not) and
@@ -88,5 +96,12 @@ if ! diff -u "$tmp/expected-services" "$tmp/default-services"; then
   echo "FAIL: default service set changed" >&2
   exit 1
 fi
+if docker run --rm --network none -e API_SERVER_KEY=short busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 \
+  sh -ec 'test ${#API_SERVER_KEY} -ge 16'; then
+  echo "FAIL: Hermes preflight accepted short API key" >&2
+  exit 1
+fi
+docker run --rm --network none -e API_SERVER_KEY=0123456789abcdef busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 \
+  sh -ec 'test ${#API_SERVER_KEY} -ge 16'
 
 echo "PASS: Hermes doc runtime is pinned, zero-tool configured, egress-isolated, and not host-published"
