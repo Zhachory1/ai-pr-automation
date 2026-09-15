@@ -588,14 +588,8 @@ UPDATE requests r SET status='reconcile', finished_at=clock_timestamp(), lease_e
  WHERE r.kind='doc-write' AND r.status IN ('queued','running')
    AND EXISTS (SELECT 1 FROM attempts a WHERE a.request_id=r.id);
 
-WITH publications AS (
-  UPDATE doc_publications SET state='reconcile', error='runtime rollback quarantine', updated_at=clock_timestamp()
-   WHERE state='prepared' RETURNING request_id
-)
-UPDATE requests r SET status='reconcile', finished_at=clock_timestamp(), lease_expires_at=NULL,
-       fail_response='prepared doc publication quarantined for rollback'
- WHERE r.status IN ('queued','running','reconcile')
-   AND EXISTS (SELECT 1 FROM publications p WHERE p.request_id=r.id);
+-- Prepared publications already put their request in reconcile before filesystem access. Leave the
+-- immutable prepared state intact so rollback cannot race an in-flight no-replace publication.
 COMMIT;
 SQL
 }
