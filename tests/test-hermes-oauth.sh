@@ -21,9 +21,11 @@ jq -e '
   ($a.image == "nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874") and
   ($a.networks | keys == ["hermes-oauth"]) and
   ($a.ports == null) and
-  ($a.environment | keys == ["HERMES_IGNORE_RULES","HERMES_SAFE_MODE","HTTPS_PROXY","HTTP_PROXY","NO_PROXY"]) and
-  ($a.volumes | length == 1) and
-  ($a.volumes[0].type == "volume" and $a.volumes[0].source == "hermes_doc_state" and $a.volumes[0].target == "/opt/data") and
+  ($a.environment | keys == ["HERMES_IGNORE_RULES","HERMES_SAFE_MODE","HTTPS_PROXY","HTTP_PROXY","NO_PROXY","OPENSSL_CONF"]) and
+  ($a.environment.OPENSSL_CONF == "/etc/hermes/oauth-openssl.cnf") and
+  ($a.volumes | length == 2) and
+  ([ $a.volumes[] | select(.type == "volume" and .source == "hermes_doc_state" and .target == "/opt/data") ] | length == 1) and
+  ([ $a.volumes[] | select(.type == "bind" and .target == "/etc/hermes/oauth-openssl.cnf" and .read_only == true) ] | length == 1) and
   ($a.depends_on["hermes-openai-oauth-egress"].condition == "service_healthy") and
   ($e.networks | keys == ["default","hermes-oauth"]) and
   ($e.read_only == true) and ($e.cap_drop == ["ALL"]) and

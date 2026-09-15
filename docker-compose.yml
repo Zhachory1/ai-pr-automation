@@ -461,11 +461,13 @@ services:
     environment:
       HERMES_SAFE_MODE: "1"
       HERMES_IGNORE_RULES: "1"
+      OPENSSL_CONF: /etc/hermes/oauth-openssl.cnf
       HTTPS_PROXY: http://hermes-openai-oauth-egress:3128
       HTTP_PROXY: http://hermes-openai-oauth-egress:3128
       NO_PROXY: 127.0.0.1,localhost
     volumes:
       - hermes_doc_state:/opt/data
+      - ./docker/hermes-oauth-openssl.cnf:/etc/hermes/oauth-openssl.cnf:ro
     networks:
       - hermes-oauth
     pids_limit: 256
@@ -512,12 +514,14 @@ services:
       OPENAI_BASE_URL: https://api.openai.com/v1
       HERMES_SAFE_MODE: "1"
       HERMES_IGNORE_RULES: "1"
+      OPENSSL_CONF: /etc/hermes/oauth-openssl.cnf
       HTTPS_PROXY: http://hermes-doc-egress:3128
       HTTP_PROXY: http://hermes-doc-egress:3128
       NO_PROXY: 127.0.0.1,localhost
     volumes:
       - hermes_doc_state:/opt/data
       - ./agent-config/hermes/doc-config.yaml:/opt/data/config.yaml:ro
+      - ./docker/hermes-oauth-openssl.cnf:/etc/hermes/oauth-openssl.cnf:ro
     networks:
       - hermes-doc
     pids_limit: 256

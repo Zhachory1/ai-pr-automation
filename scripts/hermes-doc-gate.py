@@ -24,6 +24,7 @@ COMPONENTS = [
     "bin/hermes-run",
     "docker/Dockerfile.hermes-doc-egress",
     "docker/hermes-doc-egress.conf",
+    "docker/hermes-oauth-openssl.cnf",
     "docker/initdb/01-schema.sql",
     "docker/initdb/02-agent-server.sql",
     "docker/initdb/03-human-review-queue.sql",
