@@ -16,6 +16,7 @@ Status: M0 merged. M2a non-routing foundation at machine-gate validation. M2b li
 - [M2 design](DD-m2-doc-runtime.md)
 - [M2 council](council-m2-doc-runtime.md)
 - [M2a plan](plan-m2a-doc-foundation.md)
+- [M2b shadow/routing plan](plan-m2b-shadow-routing.md)
 - [OAuth PRD](PRD-oauth-login.md)
 - [OAuth design](DD-oauth-login.md)
 - [OAuth plan](plan-oauth-login.md)

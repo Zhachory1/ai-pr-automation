@@ -87,6 +87,49 @@ def load_body(args):
     return data
 
 
+def persist_run_id(path, run_id):
+    if not path:
+        return
+    target = Path(path)
+    data = (run_id + "\n").encode()
+    try:
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        temporary = target.with_name(target.name + ".tmp")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(data); output.flush(); os.fsync(output.fileno())
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        finally:
+            temporary.unlink(missing_ok=True)
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+        return
+    with os.fdopen(descriptor, "rb") as source:
+        if source.read() != data:
+            raise ValueError("run ID file contains different value")
+
+
+def wait_for_run_id_ack(path, run_id, timeout):
+    if not path:
+        return
+    deadline = time.monotonic() + min(30, max(1, timeout * 3))
+    target = Path(path)
+    while time.monotonic() < deadline:
+        try:
+            descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            time.sleep(0.01)
+            continue
+        with os.fdopen(descriptor, "rb") as source:
+            if source.read() != (run_id + "\n").encode():
+                raise ValueError("run ID acknowledgement contains different value")
+        return
+    raise TimeoutError("run ID acknowledgement timed out")
+
+
 def request_shutdown(*_):
     global STOP_REQUESTED
     STOP_REQUESTED = True
@@ -271,6 +314,8 @@ def parser():
     result.add_argument("--idempotency-key", required=True)
     result.add_argument("--expected-digest", required=True)
     result.add_argument("--run-id")
+    result.add_argument("--run-id-file")
+    result.add_argument("--run-id-ack-file")
     result.add_argument("--provider", default="openai-api")
     result.add_argument("--model", default="gpt-5.6-sol")
     result.add_argument("--timeout", type=float, default=1000)
@@ -289,6 +334,12 @@ def main():
         emit("failed", raw_status="invalid_request", error=str(error))
         raise SystemExit(2)
     run_id, replayed = (args.run_id, False) if args.run_id else submit(args, body)
+    try:
+        persist_run_id(args.run_id_file, run_id)
+        wait_for_run_id_ack(args.run_id_ack_file, run_id, args.poll_interval)
+    except (OSError, TimeoutError, ValueError) as error:
+        emit("submit_unknown", run_id=run_id, raw_status="run_id_persist_failed", error=str(error))
+        raise SystemExit(4)
     poll(args, run_id, replayed)
 
 

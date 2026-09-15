@@ -22,12 +22,13 @@ class State:
     last_body = None
     last_key = None
     redirect_hits = 0
+    get_count = 0
     confirm_stop = False
 
     @classmethod
     def reset(cls, mode="completed"):
         cls.mode = mode
-        cls.post_count = cls.stop_count = cls.redirect_hits = 0
+        cls.post_count = cls.stop_count = cls.redirect_hits = cls.get_count = 0
         cls.last_body = cls.last_key = None
         cls.confirm_stop = False
 
@@ -80,6 +81,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(202, {"run_id": "run-1", "status": "queued"})
 
     def do_GET(self):
+        State.get_count += 1
         if self.path == "/redirect-target":
             State.redirect_hits += 1
             self.send_json(200, {"run_id": "leaked"})
@@ -128,7 +130,7 @@ class HermesRunTest(unittest.TestCase):
     def setUp(self):
         State.reset()
 
-    def run_adapter(self, body=None, *extra, url=None):
+    def run_adapter(self, body=None, *extra, url=None, run_id_file=None):
         body = body or {
             "input": "task", "instructions": "text only",
             "model": "gpt-5.6-sol", "provider": "openai-api",
@@ -138,12 +140,15 @@ class HermesRunTest(unittest.TestCase):
             request_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
             request_file.write_bytes(request_bytes)
             env = os.environ | {"HERMES_DOC_API_KEY": API_KEY}
-            return subprocess.run([
+            command = [
                 str(ADAPTER), "--url", url or self.url,
                 "--request-file", str(request_file), "--expected-digest", hashlib.sha256(request_bytes).hexdigest(),
                 "--idempotency-key", "doc:1:draft",
                 "--timeout", "0.05", "--poll-interval", "0.01", *extra,
-            ], env=env, text=True, capture_output=True)
+            ]
+            if run_id_file:
+                command += ["--run-id-file", str(run_id_file)]
+            return subprocess.run(command, env=env, text=True, capture_output=True)
 
     def payload(self, result):
         self.assertTrue(result.stdout.strip(), result.stderr)
@@ -161,6 +166,32 @@ class HermesRunTest(unittest.TestCase):
         self.assertEqual(State.post_count, 1)
         self.assertEqual(State.last_key, "doc:1:draft")
         self.assertEqual(json.loads(State.last_body)["provider"], "openai-api")
+
+    def test_run_id_is_persisted_before_terminal_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_id_file = pathlib.Path(directory) / "run-id"
+            result = self.run_adapter(run_id_file=run_id_file)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(run_id_file.read_text(), "run-1\n")
+            run_id_file.write_text("different\n")
+            result = self.run_adapter(run_id_file=run_id_file)
+            self.assertEqual(result.returncode, 4)
+            self.assertEqual(self.payload(result)["raw_status"], "run_id_persist_failed")
+
+    def test_poll_waits_for_durable_run_id_acknowledgement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_id_file = pathlib.Path(directory) / "run-id"
+            ack_file = pathlib.Path(directory) / "run-id-ack"
+            ack_file.write_text("run-1\n")
+            result = self.run_adapter(None, "--run-id-ack-file", str(ack_file), run_id_file=run_id_file)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(State.get_count, 1)
+            State.reset()
+            ack_file.unlink()
+            result = self.run_adapter(None, "--run-id-ack-file", str(ack_file), run_id_file=run_id_file)
+            self.assertEqual(result.returncode, 4)
+            self.assertEqual(State.get_count, 0)
+            self.assertEqual(self.payload(result)["raw_status"], "run_id_persist_failed")
 
     def test_request_digest_must_match_submitted_bytes(self):
         body = {"input": "task", "instructions": "text only",

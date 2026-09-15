@@ -339,11 +339,13 @@ WITH eligible AS (
   ON CONFLICT (request_id,phase) DO NOTHING
   RETURNING json_build_object('state',state,'request_digest',request_digest,
             'runtime_generation',runtime_generation,'submit_count',submit_count,
-            'hermes_run_id',hermes_run_id,'replay_until',replay_until)::text AS value
+            'hermes_run_id',hermes_run_id,'replay_until',replay_until,
+            'raw_status',raw_status,'output_digest',output_digest,'usage',usage,'error',error)::text AS value
 ), existing AS (
   SELECT json_build_object('state',h.state,'request_digest',h.request_digest,
          'runtime_generation',h.runtime_generation,'submit_count',h.submit_count,
-         'hermes_run_id',h.hermes_run_id,'replay_until',h.replay_until)::text AS value
+         'hermes_run_id',h.hermes_run_id,'replay_until',h.replay_until,
+         'raw_status',h.raw_status,'output_digest',h.output_digest,'usage',h.usage,'error',h.error)::text AS value
     FROM hermes_doc_runs h, eligible
    WHERE h.request_id=:'id' AND h.phase=:'phase'
 )
@@ -368,6 +370,24 @@ UPDATE hermes_doc_runs h
  WHERE h.request_id=:'id' AND h.phase=:'phase' AND h.state='submitting'
    AND h.submit_count<2 AND h.replay_until>clock_timestamp()
 RETURNING h.submit_count;
+SQL
+}
+
+hermes_doc_run_record_id() {
+  local id="$1" phase="$2" run_id="$3" nonce="$4"
+  _psql -v id="$id" -v phase="$phase" -v run_id="$run_id" -v nonce="$nonce" <<'SQL'
+WITH eligible AS (
+  SELECT 1 FROM requests
+   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
+     AND lease_expires_at>clock_timestamp()
+   FOR UPDATE
+)
+UPDATE hermes_doc_runs h
+   SET hermes_run_id=:'run_id', updated_at=clock_timestamp()
+  FROM eligible
+ WHERE h.request_id=:'id' AND h.phase=:'phase' AND h.state='submitting'
+   AND (h.hermes_run_id IS NULL OR h.hermes_run_id=:'run_id')
+RETURNING h.hermes_run_id;
 SQL
 }
 

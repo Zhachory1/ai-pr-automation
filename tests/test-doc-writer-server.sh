@@ -23,14 +23,21 @@ stage="$tmp/stage"; inbox="$tmp/inbox"; mkdir -p "$stage" "$inbox"
 cat > "$tmp/fake-harness" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-: "${DOC_WRITER_REQUEST_ID:?}" "${DOC_WRITER_STAGE_DIR:?}"
+: "${DOC_WRITER_REQUEST_ID:?}" "${DOC_WRITER_QUEUE_NONCE:?}" "${DOC_WRITER_STAGE_DIR:?}"
 printf '%s\n' "$DOC_WRITER_REQUEST_ID" >> "$HARNESS_CALLS"
+title="$(jq -r .title <<<"$2")"
+target=dd-2026-09-15-approved.md
+case "$title" in
+  Reconcile) jq -cn '{status:"reconcile",reason:"fake ambiguous outcome"}'; exit 3 ;;
+  Crash) exit 4 ;;
+  Slow) sleep 4; target=dd-2026-09-15-slow.md ;;
+esac
 dir="$DOC_WRITER_STAGE_DIR/requests/$DOC_WRITER_REQUEST_ID"
 mkdir -p "$dir"
 printf '%s\n' '---' 'human_reviewed: true' '---' '' '# Approved bytes' > "$dir/publish.md"
 digest="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$dir/publish.md")"
-jq -cn --arg d "$digest" '{status:"awaiting_approval",staged_path:"requests/'"$DOC_WRITER_REQUEST_ID"'/publish.md",
-  target_path:"dd-2026-09-15-approved.md",content_digest:$d,
+jq -cn --arg d "$digest" --arg target "$target" '{status:"awaiting_approval",staged_path:"requests/'"$DOC_WRITER_REQUEST_ID"'/publish.md",
+  target_path:$target,content_digest:$d,
   document_generation:"legacy:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",council:"skipped"}'
 SH
 chmod +x "$tmp/fake-harness"
@@ -78,13 +85,32 @@ env "${common[@]}" bin/doc-writer-server >/dev/null
 [[ ! -e "$inbox/dd-2026-09-15-approved.md" ]]
 [[ "$(wc -l < "$tmp/harness-calls" | tr -d ' ')" == 1 ]]
 
+reconcile_id="$(q "INSERT INTO requests(kind,payload,dedupe_key) VALUES(
+  'doc-write','{\"doc_type\":\"dd\",\"title\":\"Reconcile\",\"requirements\":\"r\"}','doc:reconcile') RETURNING id;")"
+env "${common[@]}" DOC_WRITER_RUNTIME=hermes bin/doc-writer-server >/dev/null
+[[ "$(q "SELECT status||'/'||fail_response FROM requests WHERE id=$reconcile_id;")" == "reconcile/fake ambiguous outcome" ]]
+
+crash_id="$(q "INSERT INTO requests(kind,payload,dedupe_key) VALUES(
+  'doc-write','{\"doc_type\":\"dd\",\"title\":\"Crash\",\"requirements\":\"r\"}','doc:crash') RETURNING id;")"
+env "${common[@]}" DOC_WRITER_RUNTIME=hermes bin/doc-writer-server >/dev/null
+[[ "$(q "SELECT status FROM requests WHERE id=$crash_id;")" == reconcile ]]
+
+slow_id="$(q "INSERT INTO requests(kind,payload,dedupe_key) VALUES(
+  'doc-write','{\"doc_type\":\"dd\",\"title\":\"Slow\",\"requirements\":\"r\"}','doc:slow') RETURNING id;")"
+env "${common[@]}" DOC_WRITER_RUNTIME=hermes DOC_WRITER_LEASE_SECONDS=6 \
+  DOC_WRITER_LEASE_HEARTBEAT=1 DOC_WRITER_LEASE_DB_TIMEOUT=1 bin/doc-writer-server >/dev/null
+[[ "$(q "SELECT status FROM requests WHERE id=$slow_id;")" == "done" ]] || {
+  q "SELECT status||'/'||coalesce(fail_response,'') FROM requests WHERE id=$slow_id;" >&2
+  exit 1
+}
+
 [[ "$(doc_publication_approve "$request_id")" == "$request_id" ]]
 [[ "$(q "SELECT status||'/'||(payload->>'publication_only')||'/'||split_part(dedupe_key,'@',1) FROM requests WHERE id=$request_id;")" == "queued/true/doc-publish:$request_id" ]]
-env "${common[@]}" bin/doc-writer-server >/dev/null
+env "${common[@]}" DOC_WRITER_RUNTIME=hermes bin/doc-writer-server >/dev/null
 [[ "$(q "SELECT r.status||'/'||p.state||'/'||r.posted_ref FROM requests r
   JOIN doc_publications p ON p.request_id=r.id WHERE r.id=$request_id;")" == done/published/dd-2026-09-15-approved.md ]]
 [[ -f "$inbox/dd-2026-09-15-approved.md" ]]
-[[ "$(wc -l < "$tmp/harness-calls" | tr -d ' ')" == 1 ]]
+[[ "$(wc -l < "$tmp/harness-calls" | tr -d ' ')" == 4 ]]
 
 prepare_reconcile() {
   local key="$1" target="$2" id dir digest

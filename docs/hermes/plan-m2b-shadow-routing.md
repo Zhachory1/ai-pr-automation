@@ -1,7 +1,7 @@
 # Plan: M2b Shadow And Routing
 
 - Owner: Zhach
-- Status: approved for disabled implementation only
+- Status: S1/S2 implemented; paid shadow still blocked
 - PRD: [`PRD-m2-doc-runtime.md`](PRD-m2-doc-runtime.md)
 - DD: [`DD-m2-doc-runtime.md`](DD-m2-doc-runtime.md)
 - Prior council: [`council-m2-doc-runtime.md`](council-m2-doc-runtime.md)
@@ -15,7 +15,7 @@ Current slice builds seam only. Default stays legacy. No paid calls. No queue ro
 
 Success:
 
-- legacy path unchanged;
+- legacy model invocation, parsing, and publication behavior unchanged;
 - Hermes draft and council phases use immutable renderer, bounded adapter, and durable DB attempt rows;
 - one retry owner; same key and body only;
 - ambiguous outcome goes reconcile;
@@ -88,7 +88,7 @@ bash tests/test-hermes-doc-schema.sh
 
 Add `DOC_WRITER_RUNTIME=legacy|hermes`. Default `legacy`.
 
-- Legacy calls stay byte-for-byte behavior compatible.
+- Legacy model invocation and output handling stay behavior compatible; generation digest changes when harness code changes.
 - Hermes mode calls S1 for draft and council.
 - Existing parsing, human questions, exact-byte staging, and publication remain shared.
 - Hermes final document generation uses approved runtime generation.
@@ -140,6 +140,14 @@ What matters:
 - Current PR ends after S2.
 - Paid calls start only after H1.
 - Queue routing starts only after H2.
+
+## S1/S2 Evidence
+
+- model seam, adapter, schema, legacy harness, Hermes harness, controller, and image checks pass;
+- run ID acknowledgement blocks first poll until DB persistence;
+- full non-routing gate generation: `3664d84e54cf0d0e7ced79405fceea52049f555f7f217b79e6d480da6a1f9660`;
+- final code review: pass, no blockers;
+- no Compose service selects Hermes model mode.
 
 ## Review
 

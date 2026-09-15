@@ -39,6 +39,36 @@ case "$mode" in
 esac
 SH
 chmod +x "$tmp/fake-mewrite"
+cat > "$tmp/fake-hermes-model" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+phase="$1"; shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --request-id) id="$2"; shift 2 ;;
+    --stage-root) stage="$2"; shift 2 ;;
+    --payload|--queue-nonce|--runtime-generation) shift 2 ;;
+    *) exit 2 ;;
+  esac
+done
+printf '%s\n' "$phase" >> "$HERMES_CALLS"
+mode="$(cat "$FAKE_MODE" 2>/dev/null || echo questions)"
+if [[ "$phase" == council ]]; then
+  output='Council verdict: accept.'
+elif [[ "$mode" == clean ]]; then
+  output=$'# PRD Draft\n\nComplete.\n\n```json\n{"open_questions": []}\n```'
+elif [[ "$mode" == noblock ]]; then
+  output=$'# PRD Draft\n\nagent forgot the JSON block entirely.'
+else
+  output=$'# PRD Draft\n\nProblem: X.\n\n```json\n{"open_questions": ["What is the baseline?"]}\n```'
+fi
+dir="$stage/requests/$id"; mkdir -p "$dir"
+digest="$(printf '%s' "$output" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
+jq -cn --arg o "$output" --arg d "$digest" '{status:"completed",output:$o,output_digest:$d}' > "$dir/$phase-response.json"
+jq -cn --arg p "requests/$id/$phase-response.json" --arg d "$digest" \
+  '{status:"completed",response_file:$p,output_digest:$d}'
+SH
+chmod +x "$tmp/fake-hermes-model"
 echo questions > "$tmp/mode"
 
 run() { # $1 = payload json. Force council OFF (point at a nonexistent skill) so the finalize path
@@ -51,6 +81,14 @@ run() { # $1 = payload json. Force council OFF (point at a nonexistent skill) so
     cat "$tmp/last.err" >&2
     return 1
   fi
+}
+
+run_hermes() {
+  env DOC_WRITER_RUNTIME=hermes HERMES_DOC_MODEL_BIN="$tmp/fake-hermes-model" \
+    HERMES_DOC_APPROVED_GENERATION="$(printf 'a%.0s' {1..64})" DOC_WRITER_QUEUE_NONCE=owner \
+    HERMES_CALLS="$tmp/hermes-calls" FAKE_MODE="$tmp/mode" MEWRITE_CODING_AGENT_DIR="$config_root" \
+    DOC_WRITER_STAGE_DIR="$stage" DOC_WRITER_INBOX_DIR="$inbox" DOC_WRITER_REQUEST_ID="${RUN_ID:-20}" \
+    bin/doc-writer --payload "$1" 2>"$tmp/last.err"
 }
 
 # 1) round 1 with open questions -> status=open_questions, questions parsed, draft staged.
@@ -94,5 +132,23 @@ echo clean > "$tmp/mode"
 out="$(RUN_ID=6 run '{"doc_type":"seprd","title":"../../etc/passwd & rm -rf /","requirements":"r","round":1}')"
 target="$(jq -r .target_path <<<"$out")"
 check "malicious title is safe target basename" "[[ '$target' == seprd-* && '$target' != */* && '$target' != *'etc/passwd'* ]]"
+
+# 7) Hermes uses same parsing/human loop, then draft+council for finalization.
+: > "$tmp/hermes-calls"; echo questions > "$tmp/mode"
+out="$(RUN_ID=20 run_hermes '{"doc_type":"seprd","title":"Hermes Questions","requirements":"r","round":1}')"
+check "Hermes draft keeps open-question loop" "[[ \$(jq -r .status <<<\"\$out\") == open_questions ]]"
+check "open-question path calls only Hermes draft" "[[ \$(cat '$tmp/hermes-calls') == draft ]]"
+
+echo clean > "$tmp/mode"; : > "$tmp/hermes-calls"
+out="$(RUN_ID=21 run_hermes '{"doc_type":"dd","title":"Hermes Final","requirements":"r","round":1}')"
+check "Hermes no-question draft stages approval" "[[ \$(jq -r .status <<<\"\$out\") == awaiting_approval ]]"
+check "Hermes finalize calls draft then council" "[[ \$(paste -sd, '$tmp/hermes-calls') == draft,council ]]"
+check "Hermes publication binds approved generation" "[[ \$(jq -r .document_generation <<<\"\$out\") == hermes:$(printf 'a%.0s' {1..64}) ]]"
+check "Hermes council remains advisory in staged bytes" "grep -q 'Council verdict: accept' '$stage/requests/21/publish.md'"
+
+echo questions > "$tmp/mode"; : > "$tmp/hermes-calls"
+out="$(RUN_ID=22 run_hermes '{"doc_type":"dd","title":"Hermes Forced","requirements":"r","round":1,"finalize":true}')"
+check "Hermes finalize overrides open questions" "[[ \$(jq -r .status <<<\"\$out\") == awaiting_approval ]]"
+check "Hermes forced finalize calls council" "[[ \$(paste -sd, '$tmp/hermes-calls') == draft,council ]]"
 
 (( fail == 0 ))

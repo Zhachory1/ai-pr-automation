@@ -23,9 +23,10 @@ COPY bin/doc-writer-publication ./bin/doc-writer-publication
 COPY bin/doc-writer-reconcile ./bin/doc-writer-reconcile
 COPY bin/hermes-run ./bin/hermes-run
 COPY bin/hermes-doc-request ./bin/hermes-doc-request
+COPY bin/hermes-doc-model ./bin/hermes-doc-model
 COPY lib/ ./lib/
 COPY agent-config/doc-writer/ ./agent-config/doc-writer/
-RUN chmod +x bin/doc-writer bin/doc-writer-server bin/doc-writer-publication bin/doc-writer-reconcile bin/hermes-run bin/hermes-doc-request
+RUN chmod +x bin/doc-writer bin/doc-writer-server bin/doc-writer-publication bin/doc-writer-reconcile bin/hermes-run bin/hermes-doc-request bin/hermes-doc-model
 
 ENV MEWRITE_CODING_AGENT_DIR=/app/agent-config/doc-writer
 ENV DOC_WRITER_AGENTS_DIR=/app/agent-config/doc-writer/agents
