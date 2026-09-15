@@ -2,7 +2,7 @@
 
 Date: 2026-09-14
 
-Status: proposed
+Status: active; M0 merged and validated
 
 Owner: Zhach
 
@@ -201,7 +201,7 @@ Assumptions:
 | Per-tier containers | Live agent work | Platform/security | Secret, mount, network, and state isolation tests pass |
 | Structured result adapter | Live review and maintenance | Migration owner | Schema-invalid result cannot reach publisher |
 | Fault-injection harness | Queue or publisher retirement | Migration owner | Kill-before/after-effect cases produce expected terminal state |
-| Backup and restore drill | Hermes durable state adoption | Operator | Restore succeeds on clean host |
+| State-loss recovery drill | Hermes durable state adoption | Operator | Tier policy proves clean restore or deterministic quarantine without replay |
 | Human UI parity | Status UI retirement | Migration owner | All actions preserve actor, provenance, retry, and CSRF/auth rules |
 
 No calendar commitment before baseline and Hermes integration spike. Expected shape: Now = 1–2 weeks, Next = 3–6 weeks, Later = evidence-driven.
@@ -240,7 +240,7 @@ Outcome: small overlay repo. No duplicate control plane.
 
 ## Milestones
 
-### M0 — Contract Lock And Baseline
+### M0 — Contract Lock And Baseline — Complete
 
 Build:
 
@@ -295,35 +295,38 @@ Delete after pass:
 
 - review producer sleep-loop service only.
 
-### M2 — Doc Runtime Pilot
+### M2 — Doc Runtime Pilot — Active
 
-Investigated before M1 after M0. Activation needs separate plan-to-launch design approval.
+M2a non-routing foundations passed design council and are planned. M2b paid shadow/live activation remains blocked behind M2a evidence, separate plan-to-launch, and human approval.
 
 Build:
 
-- dedicated Hermes doc profile inside dedicated doc container;
-- existing `doc-write` queue, refine/finalize loop, daily cap, narrow inbox mount, and status actions stay authoritative;
-- current worker calls Hermes documented run API instead of `mewritecode exec`;
-- automatic Hermes shared-memory sync disabled.
+- dedicated zero-tool Hermes doc service and provider egress tier;
+- existing `doc-write` queue, refine/finalize loop, daily cap, status actions, and controller authority stay;
+- exact-byte Publish/Dismiss approval precedes inbox write;
+- current worker calls documented Runs API through durable request-phase identity;
+- automatic Hermes tools, memory, background review, and shared-memory sync disabled.
 
 Run:
 
-- 10 operator-triggered finalizations;
-- include restart, timeout, malformed result, and existing-filename cases.
+- M2a non-routing foundation first;
+- M2b: five paid paired-shadow payloads, then at most 10 operator-triggered draft admissions plus one council phase per finalized request;
+- include restart, timeout, malformed result, existing-filename, state-loss, and rollback-quarantine cases.
 
 Pass:
 
-- 10/10 terminal states recorded;
-- zero clobbered files;
-- zero writes outside inbox;
+- every accepted draft/council phase reaches completed, failed, or reconcile;
+- zero clobbered or duplicate inbox files;
+- zero unexpected or model-directed writes; approved infrastructure writes are Hermes state, doc stage, request DB, proxy tmpfs, bounded adapter temp, hidden inbox staging, gate reports, and exact-approved inbox target;
 - malformed open-question result fails closed;
-- council and `human_reviewed` metadata remain correct;
-- current worker resumes without data repair.
+- council remains advisory and published bytes carry exact-approved `human_reviewed` metadata;
+- restart/state loss deterministically recovers or quarantines to reconcile;
+- rollback to legacy completes within 15 minutes without replaying attached ambiguity.
 
 Delete after pass:
 
-- doc-specific runner glue replaced by Hermes;
-- no human-loop or publisher deletion yet.
+- after M2b evidence and 14-day rollback window, doc-specific direct model-runner glue can be removed;
+- exact-byte human approval and server-owned publisher remain.
 
 ### M3 — Read-Only Review Shadow
 
