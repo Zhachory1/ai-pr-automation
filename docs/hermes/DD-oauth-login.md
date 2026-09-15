@@ -1,7 +1,7 @@
 # DD: Hermes OAuth Login
 
 - Owner: Zhach
-- Status: OpenAI OAuth validated; Anthropic slice in progress
+- Status: OpenAI and Anthropic OAuth validated
 - PRD: [`PRD-oauth-login.md`](PRD-oauth-login.md)
 - Deadline: 2026-09-15
 
@@ -126,4 +126,4 @@ Pinned OAuth facts:
 
 ## Next Gate
 
-OpenAI PR review and merge. Then Anthropic implementation slice.
+Anthropic PR review and merge. OAuth does not authorize document routing.

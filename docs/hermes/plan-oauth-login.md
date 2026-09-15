@@ -106,6 +106,16 @@ Depends on: A1 PR open and focused validation green.
 
 Run status, restart, refresh, zero-tool, OAuth-only smoke, and logout checks. Human browser approval is required.
 
+Anthropic evidence, 2026-09-15:
+
+- fresh-helper status: `anthropic: logged in`;
+- API-key fallback: absent;
+- enabled toolsets: zero;
+- OAuth run `run_a88d96a010014c4f83b83d76731aced3`: completed;
+- model: `claude-sonnet-4-6`;
+- output: `claude-oauth-ok`;
+- usage: 694 input, 8 output tokens.
+
 ## Graph
 
 ```mermaid
