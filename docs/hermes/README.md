@@ -16,6 +16,9 @@ Status: M0 merged. M2a non-routing foundation at machine-gate validation. M2b li
 - [M2 design](DD-m2-doc-runtime.md)
 - [M2 council](council-m2-doc-runtime.md)
 - [M2a plan](plan-m2a-doc-foundation.md)
+- [OAuth PRD](PRD-oauth-login.md)
+- [OAuth design](DD-oauth-login.md)
+- [OAuth plan](plan-oauth-login.md)
 
 ## M0 Pull Requests
 
@@ -72,6 +75,27 @@ scripts/hermes-doc-gate.py run
 
 The report proves the non-routing foundation only. It cannot approve a real provider key, paid call,
 or Hermes-routed document request.
+
+## OpenAI OAuth
+
+Use supported lifecycle wrapper only. Login stops Hermes and leaves it stopped:
+
+```bash
+scripts/hermes-oauth.sh login openai-codex
+scripts/hermes-oauth.sh status openai-codex
+scripts/hermes-oauth.sh start
+```
+
+Open shown device URL in browser and enter shown code. Token stays in `hermes_doc_state`; it is not
+stored in `.env`. Check or remove login with:
+
+```bash
+scripts/hermes-oauth.sh status openai-codex
+scripts/hermes-oauth.sh logout openai-codex
+```
+
+If token is exposed, revoke it from OpenAI account before local logout. OAuth login does not enable
+Hermes document routing. Paid OAuth smoke still needs explicit human approval.
 
 ## Baseline
 
