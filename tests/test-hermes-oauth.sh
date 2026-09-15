@@ -18,7 +18,7 @@ trap cleanup EXIT
 HERMES_DOC_API_KEY=0123456789abcdef docker compose --profile hermes-oauth config --format json > "$tmp/compose.json"
 jq -e '
   .services["hermes-doc-auth"] as $a |
-  .services["hermes-openai-oauth-egress"] as $e |
+  .services["hermes-oauth-egress"] as $e |
   .services["hermes-oauth-preflight"] as $p |
   ($a.profiles == ["hermes-oauth"]) and
   ($a.image == "nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874") and
@@ -31,7 +31,7 @@ jq -e '
   ([ $a.volumes[] | select(.type == "volume" and .source == "hermes_doc_state" and .target == "/opt/data") ] | length == 1) and
   ([ $a.volumes[] | select(.type == "bind" and .target == "/etc/hermes/oauth-openssl.cnf" and .read_only == true) ] | length == 1) and
   ($a.depends_on["hermes-oauth-preflight"].condition == "service_completed_successfully") and
-  ($a.depends_on["hermes-openai-oauth-egress"].condition == "service_healthy") and
+  ($a.depends_on["hermes-oauth-egress"].condition == "service_healthy") and
   ($p.network_mode == "none") and ($p.command[2] | contains("#API_SERVER_KEY")) and
   ($e.networks | keys == ["default","hermes-oauth"]) and
   ($e.read_only == true) and ($e.cap_drop == ["ALL"]) and
@@ -40,14 +40,17 @@ jq -e '
   (.networks["hermes-oauth"].internal == true)
 ' "$tmp/compose.json" >/dev/null
 
-grep -Fxq 'acl allowed_oauth dstdomain auth.openai.com' docker/hermes-openai-oauth-egress.conf
-grep -Fxq 'acl allowed_provider dstdomain api.openai.com auth.openai.com chatgpt.com' docker/hermes-doc-egress.conf
-if scripts/hermes-oauth.sh login anthropic >/dev/null 2>&1; then
+grep -Fxq 'acl allowed_oauth dstdomain auth.openai.com platform.claude.com console.anthropic.com' docker/hermes-oauth-egress.conf
+grep -Fxq 'acl allowed_provider dstdomain api.openai.com auth.openai.com chatgpt.com api.anthropic.com platform.claude.com console.anthropic.com' docker/hermes-doc-egress.conf
+if scripts/hermes-oauth.sh login other >/dev/null 2>&1; then
   echo "FAIL: unsupported provider accepted" >&2; exit 1
 fi
-if scripts/hermes-oauth.sh unknown openai-codex >/dev/null 2>&1; then
-  echo "FAIL: unsupported action accepted" >&2; exit 1
-fi
+for supported in openai-codex anthropic; do
+  if output="$(scripts/hermes-oauth.sh unknown "$supported" 2>&1)"; then
+    echo "FAIL: unsupported action accepted" >&2; exit 1
+  fi
+  [[ "$output" == usage:* ]]
+done
 if docker run --rm --network none -e API_SERVER_KEY=short \
   busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 \
   sh -ec 'test ${#API_SERVER_KEY} -ge 16'; then
@@ -81,6 +84,9 @@ fi
 if HERMES_OAUTH_LOCK_FILE="$lock" PATH="$tmp/bin:$PATH" scripts/hermes-oauth.sh start >/dev/null 2>&1; then
   echo "FAIL: concurrent OAuth lifecycle accepted" >&2; exit 1
 fi
+if HERMES_OAUTH_LOCK_FILE="$lock" PATH="$tmp/bin:$PATH" scripts/hermes-oauth.sh status anthropic >/dev/null 2>&1; then
+  echo "FAIL: concurrent Anthropic status accepted" >&2; exit 1
+fi
 child="$(pgrep -P "$holder")"
 kill -KILL "$holder"
 wait "$holder" 2>/dev/null || true
@@ -105,7 +111,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$tmp/ca.key" -out "$tmp/ca.cr
 openssl req -newkey rsa:2048 -nodes -keyout "$tmp/server.key" -out "$tmp/server.csr" \
   -subj '/CN=auth.openai.com' >/dev/null 2>&1
 cat > "$tmp/server.ext" <<'EOF'
-subjectAltName=DNS:auth.openai.com,DNS:chatgpt.com,DNS:example.com
+subjectAltName=DNS:auth.openai.com,DNS:chatgpt.com,DNS:platform.claude.com,DNS:console.anthropic.com,DNS:api.anthropic.com,DNS:example.com
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
@@ -124,7 +130,9 @@ start_proxy() {
   local alias="$1" config="$2"
   local id
   id="$(docker run -d --read-only --cap-drop ALL --security-opt no-new-privileges \
-    --add-host "auth.openai.com:$provider_ip" --add-host "chatgpt.com:$provider_ip" --add-host "example.com:$provider_ip" \
+    --add-host "auth.openai.com:$provider_ip" --add-host "chatgpt.com:$provider_ip" \
+    --add-host "platform.claude.com:$provider_ip" --add-host "console.anthropic.com:$provider_ip" \
+    --add-host "api.anthropic.com:$provider_ip" --add-host "example.com:$provider_ip" \
     --tmpfs /run:rw,noexec,nosuid,nodev,mode=1777 \
     --tmpfs /var/log/squid:rw,noexec,nosuid,nodev,mode=1777 \
     --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,mode=1777 \
@@ -136,7 +144,7 @@ start_proxy() {
     sleep 1
   done
 }
-start_proxy oauth-proxy docker/hermes-openai-oauth-egress.conf
+start_proxy oauth-proxy docker/hermes-oauth-egress.conf
 start_proxy runtime-proxy docker/hermes-doc-egress.conf
 client() {
   docker run --rm --network "$network" -v "$tmp/ca.crt:/ca.crt:ro" \
@@ -145,7 +153,11 @@ client() {
 client -fsS --cacert /ca.crt -x http://oauth-proxy:3128 https://auth.openai.com/v1/models >/dev/null
 client -fsS --cacert /ca.crt -x http://runtime-proxy:3128 https://auth.openai.com/v1/models >/dev/null
 client -fsS --cacert /ca.crt -x http://runtime-proxy:3128 https://chatgpt.com/v1/models >/dev/null
-if client --max-time 5 -fsS https://auth.openai.com/v1/models >/dev/null 2>&1; then
+client -fsS --cacert /ca.crt -x http://oauth-proxy:3128 https://platform.claude.com/v1/models >/dev/null
+client -fsS --cacert /ca.crt -x http://oauth-proxy:3128 https://console.anthropic.com/v1/models >/dev/null
+client -fsS --cacert /ca.crt -x http://runtime-proxy:3128 https://api.anthropic.com/v1/models >/dev/null
+client -fsS --cacert /ca.crt -x http://runtime-proxy:3128 https://platform.claude.com/v1/models >/dev/null
+if client --max-time 5 -fsS https://platform.claude.com/v1/models >/dev/null 2>&1; then
   echo "FAIL: auth network has direct provider route" >&2; exit 1
 fi
 if client --max-time 5 -fsS -x http://oauth-proxy:3128 https://example.com >/dev/null 2>&1; then
@@ -155,4 +167,4 @@ if client --max-time 5 -fsS -x http://oauth-proxy:3128 https://auth.openai.com:8
   echo "FAIL: auth proxy allowed non-TLS port" >&2; exit 1
 fi
 
-echo "PASS: OpenAI OAuth helper is isolated, provider-fixed, lifecycle-locked, and proxy-scoped"
+echo "PASS: Hermes OAuth helpers are isolated, provider-fixed, lifecycle-locked, and proxy-scoped"
