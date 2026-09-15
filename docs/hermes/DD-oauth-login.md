@@ -7,7 +7,7 @@
 
 ## Decision
 
-Add one-shot `hermes-doc-auth` Compose service. Same pinned Hermes image. Same `hermes_doc_state` volume. Dedicated internal auth network and OAuth-only proxy. No ports. No repo, inbox, Docker socket, DB, or service credentials.
+Add one-shot `hermes-doc-auth` Compose service. Same pinned Hermes image. Same `hermes_doc_state` volume. Dedicated internal auth network and OAuth-only proxy. No ports. No repo, inbox, Docker socket, DB, or provider credentials. Helper receives existing internal API-server key only to prevent pinned-image setup from rotating persisted gateway auth.
 
 Add one lifecycle wrapper. Atomic host lock. Stop and verify gateway absent before auth write. Hold lock until helper exits. Compose start refuses while lock is live.
 
@@ -111,7 +111,7 @@ Pinned OAuth facts:
 
 ## Validation
 
-- Compose contract: helper has only state volume, no ports/secrets, pinned image, internal auth network, auth proxy.
+- Compose contract: helper has state plus read-only TLS config, no ports/provider secrets, pinned image, internal auth network, auth proxy, stable API-server key.
 - Lifecycle test: skipped stop, live lock, stale lock, concurrent login/start, signal cleanup.
 - Egress test: exact auth/runtime domains allowed; unrelated hosts denied.
 - Login test: fixed provider/action command; no fake OAuth token committed.

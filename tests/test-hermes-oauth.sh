@@ -13,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker compose --profile hermes-oauth config --format json > "$tmp/compose.json"
+HERMES_DOC_API_KEY=0123456789abcdef docker compose --profile hermes-oauth config --format json > "$tmp/compose.json"
 jq -e '
   .services["hermes-doc-auth"] as $a |
   .services["hermes-openai-oauth-egress"] as $e |
@@ -21,7 +21,8 @@ jq -e '
   ($a.image == "nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874") and
   ($a.networks | keys == ["hermes-oauth"]) and
   ($a.ports == null) and
-  ($a.environment | keys == ["HERMES_IGNORE_RULES","HERMES_SAFE_MODE","HTTPS_PROXY","HTTP_PROXY","NO_PROXY","OPENSSL_CONF"]) and
+  ($a.environment | keys == ["API_SERVER_KEY","HERMES_IGNORE_RULES","HERMES_SAFE_MODE","HTTPS_PROXY","HTTP_PROXY","NO_PROXY","OPENSSL_CONF"]) and
+  ($a.environment.API_SERVER_KEY | length >= 16) and
   ($a.environment.OPENSSL_CONF == "/etc/hermes/oauth-openssl.cnf") and
   ($a.volumes | length == 2) and
   ([ $a.volumes[] | select(.type == "volume" and .source == "hermes_doc_state" and .target == "/opt/data") ] | length == 1) and

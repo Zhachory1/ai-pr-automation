@@ -40,7 +40,7 @@ Accept:
 - unsupported provider/action fails;
 - live lock and concurrent start fail;
 - stale lock recovers;
-- auth helper has no default network, ports, repo, DB, or service secrets;
+- auth helper has no default network, ports, repo, DB, or provider secrets; existing API-server key remains stable;
 - M2a no-route and zero-tool tests pass.
 
 Validate:
