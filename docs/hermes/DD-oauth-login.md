@@ -61,7 +61,7 @@ scripts/hermes-oauth.sh status openai-codex
 scripts/hermes-oauth.sh logout openai-codex
 ```
 
-OpenAI slice accepts no other provider. Anthropic support comes in next PR. Login/logout take kernel lifecycle lock and stop gateway. Status is read-only. Kernel releases lock after process death; child inherits lock until auth work exits.
+OpenAI and Anthropic are enabled by separate PR evidence. Login, status, and logout take kernel lifecycle lock and stop gateway because native Anthropic status can normalize credential-pool state. Kernel releases lock after process death; child inherits lock until auth work exits.
 
 ## Egress
 
@@ -84,7 +84,7 @@ CONNECT ACL limits host and port, not URL path. Accepted blast radius: one provi
 
 ## Storage
 
-OAuth state stays in `hermes_doc_state`. No host bind. Pinned Anthropic flow writes `.anthropic_oauth.json` atomically at mode `0600`. Pinned OpenAI flow writes provider state under Hermes auth lock. No backup. Local logout does not prove provider revocation. For exposure, revoke in provider account first. Volume quarantine/deletion requires separate human confirmation.
+OAuth state stays in `hermes_doc_state`. No host bind. Generic `auth add anthropic` stores pool-owned `manual:hermes_pkce` state in owner-only `auth.json`; refresh commits under Hermes auth lock. OpenAI writes provider state under same lock. No backup. Local logout does not prove provider revocation. For exposure, revoke in provider account first. Volume quarantine/deletion requires separate human confirmation.
 
 Pinned OAuth facts:
 

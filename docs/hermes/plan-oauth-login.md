@@ -93,7 +93,7 @@ Build:
 - add Anthropic login option;
 - auth proxy hosts `platform.claude.com` and fallback `console.anthropic.com`;
 - runtime proxy hosts those refresh endpoints plus `api.anthropic.com`;
-- assert PKCE/state flow and owner-only atomic credential file;
+- assert PKCE/state flow and owner-only locked credential-pool state;
 - keep OpenAI evidence unchanged.
 
 Accept: same lifecycle tests pass independently for `anthropic`. Scope shown before login: `org:create_api_key user:profile user:inference`.
