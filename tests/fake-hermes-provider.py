@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
 import os
+import ssl
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -27,9 +29,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))) or b"{}")
-        os.makedirs(os.path.dirname(CAPTURE), exist_ok=True)
-        with open(CAPTURE, "w") as output:
+        directory = os.path.dirname(CAPTURE)
+        os.makedirs(directory, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", dir=directory, delete=False) as output:
             json.dump({"path": self.path, "body": body}, output, sort_keys=True)
+            temporary = output.name
+        os.replace(temporary, CAPTURE)
         if not self.path.endswith("/responses"):
             self.send_error(404)
             return
@@ -94,4 +99,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
 
-ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+server = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8000"))), Handler)
+if os.environ.get("TLS_CERT"):
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(os.environ["TLS_CERT"], os.environ["TLS_KEY"])
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+server.serve_forever()
