@@ -31,7 +31,7 @@ jq -e '
   ($h.environment.HERMES_SAFE_MODE == "1") and
   ($h.environment.HERMES_IGNORE_RULES == "1") and
   ($h.environment.HTTPS_PROXY == "http://hermes-doc-egress:3128") and
-  ($h.environment | keys == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) and
+  ($h.environment | keys == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENSSL_CONF"]) and
   (($h | has("ports")) | not) and
   (($h | has("env_file")) | not) and
   (($h | has("secrets")) | not) and
@@ -43,9 +43,11 @@ jq -e '
   ($h.pids_limit == 256) and
   ($h.mem_limit == "2147483648") and
   ($h.cpus == 1) and
-  ($h.volumes | length == 2) and
+  ($h.volumes | length == 3) and
   ([ $h.volumes[] | select(.type == "volume" and .source == "hermes_doc_state" and .target == "/opt/data") ] | length == 1) and
   ([ $h.volumes[] | select(.type == "bind" and .target == "/opt/data/config.yaml" and .read_only == true) ] | length == 1) and
+  ([ $h.volumes[] | select(.type == "bind" and .target == "/etc/hermes/oauth-openssl.cnf" and .read_only == true) ] | length == 1) and
+  ($h.environment.OPENSSL_CONF == "/etc/hermes/oauth-openssl.cnf") and
   ($h.healthcheck.test[1] | contains("/health/detailed")) and
   ($h.healthcheck.test[1] | contains("Authorization")) and
   ($h.healthcheck.test[1] | contains("Bearer ")) and

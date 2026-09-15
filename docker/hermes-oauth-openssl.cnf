@@ -1,0 +1,10 @@
+openssl_conf = openssl_init
+
+[openssl_init]
+ssl_conf = ssl_config
+
+[ssl_config]
+system_default = tls_defaults
+
+[tls_defaults]
+Groups = X25519:P-256:P-384:X448

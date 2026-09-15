@@ -78,8 +78,9 @@ start_hermes() {
     -e API_SERVER_ENABLED=true -e API_SERVER_HOST=0.0.0.0 -e API_SERVER_PORT=8642 \
     -e API_SERVER_KEY="$API_KEY" -e OPENAI_API_KEY=test-key \
     -e OPENAI_BASE_URL=http://fake-provider:8000/v1 \
-    -e HERMES_SAFE_MODE=1 -e HERMES_IGNORE_RULES=1 \
+    -e HERMES_SAFE_MODE=1 -e HERMES_IGNORE_RULES=1 -e OPENSSL_CONF=/etc/hermes/oauth-openssl.cnf \
     -v "$state:/opt/data" -v "$tmp/config.yaml:/opt/data/config.yaml:ro" \
+    -v "$PWD/docker/hermes-oauth-openssl.cnf:/etc/hermes/oauth-openssl.cnf:ro" \
     "$HERMES_IMAGE" gateway run
 }
 hermes="$(start_hermes)"
@@ -195,8 +196,9 @@ hermes="$(docker run -d --network "$network" --network-alias hermes-doc \
   -e NO_PROXY=127.0.0.1,localhost \
   -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
   -e REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
-  -e HERMES_SAFE_MODE=1 -e HERMES_IGNORE_RULES=1 \
+  -e HERMES_SAFE_MODE=1 -e HERMES_IGNORE_RULES=1 -e OPENSSL_CONF=/etc/hermes/oauth-openssl.cnf \
   -v "$state:/opt/data" -v "$tmp/config.yaml:/opt/data/config.yaml:ro" \
+  -v "$PWD/docker/hermes-oauth-openssl.cnf:/etc/hermes/oauth-openssl.cnf:ro" \
   -v "$tmp/ca.crt:/etc/ssl/certs/ca-certificates.crt:ro" \
   -v "$tmp/ca.crt:/opt/hermes/.venv/lib/python3.13/site-packages/certifi/cacert.pem:ro" \
   "$HERMES_IMAGE" gateway run)"

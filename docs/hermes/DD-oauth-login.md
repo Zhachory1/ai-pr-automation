@@ -1,13 +1,13 @@
 # DD: Hermes OAuth Login
 
 - Owner: Zhach
-- Status: draft
+- Status: OpenAI OAuth validated; Anthropic slice pending
 - PRD: [`PRD-oauth-login.md`](PRD-oauth-login.md)
 - Deadline: 2026-09-15
 
 ## Decision
 
-Add one-shot `hermes-doc-auth` Compose service. Same pinned Hermes image. Same `hermes_doc_state` volume. Dedicated internal auth network and OAuth-only proxy. No ports. No repo, inbox, Docker socket, DB, or service credentials.
+Add one-shot `hermes-doc-auth` Compose service. Same pinned Hermes image. Same `hermes_doc_state` volume. Dedicated internal auth network and OAuth-only proxy. No ports. No repo, inbox, Docker socket, DB, or provider credentials. Helper receives existing internal API-server key only to prevent pinned-image setup from rotating persisted gateway auth.
 
 Add one lifecycle wrapper. Atomic host lock. Stop and verify gateway absent before auth write. Hold lock until helper exits. Compose start refuses while lock is live.
 
@@ -56,12 +56,12 @@ What matters:
 Operator uses one wrapper:
 
 ```bash
-scripts/hermes-oauth.sh login anthropic
-scripts/hermes-oauth.sh status anthropic
-scripts/hermes-oauth.sh logout anthropic
+scripts/hermes-oauth.sh login openai-codex
+scripts/hermes-oauth.sh status openai-codex
+scripts/hermes-oauth.sh logout openai-codex
 ```
 
-Replace `anthropic` with `openai-codex` for OpenAI account login. Wrapper accepts no other provider or action. Login/logout take lock and stop gateway. Status is read-only. Dead-owner lock is removed only after PID check.
+OpenAI slice accepts no other provider. Anthropic support comes in next PR. Login/logout take kernel lifecycle lock and stop gateway. Status is read-only. Kernel releases lock after process death; child inherits lock until auth work exits.
 
 ## Egress
 
@@ -111,17 +111,19 @@ Pinned OAuth facts:
 
 ## Validation
 
-- Compose contract: helper has only state volume, no ports/secrets, pinned image, internal auth network, auth proxy.
+- Compose contract: helper has state plus read-only TLS config, no ports/provider secrets, pinned image, internal auth network, auth proxy, stable API-server key.
 - Lifecycle test: skipped stop, live lock, stale lock, concurrent login/start, signal cleanup.
 - Egress test: exact auth/runtime domains allowed; unrelated hosts denied.
 - Login test: fixed provider/action command; no fake OAuth token committed.
 - M2a regression: no controller dependency, caller network, route, or approved generation.
 - Manual gate: human login, status after fresh container, then separately approved OAuth-only smoke with same-provider API key unset.
 
-## Open Questions
+## Decisions
 
-- Provider account terms and Anthropic `org:create_api_key` scope. Human owns decision and browser approval.
+- OpenAI Codex first. Anthropic second.
+- Human accepted Anthropic requested scopes. Browser approval still controls provider terms.
+- Each provider needs own status, restart, refresh, logout, and OAuth-only smoke evidence.
 
 ## Next Gate
 
-Minimal council. Then task plan. Then `ship`.
+OpenAI PR review and merge. Then Anthropic implementation slice.
