@@ -24,6 +24,7 @@ services:
     networks:
       - default
       - pr-safety-analyst
+      - status-internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet}"]
       interval: 5s
@@ -88,6 +89,7 @@ services:
     networks:
       - default
       - pr-safety-analyst
+      - status-internal
     healthcheck:
       # /health returns 200; root (/) is 404. curl is present in the image (verified).
       test: ["CMD-SHELL", "curl -fsS http://localhost:8888/health >/dev/null || exit 1"]
@@ -438,8 +440,8 @@ services:
 
   # --- doc-writer: PRD / Design Doc writer for the 'doc-write' queue kind ---
   # Runs the PRD/DD persona (with the bundled Rokt handbook) via mewritecode. Drafts, then routes open
-  # questions to the human-review queue; on finalize runs council and writes the doc to the WRITABLE
-  # private-docs inbox mount (only inbox is writable — not the whole brain). No GitHub token.
+  # questions to the human-review queue; on finalize runs council and stages exact bytes. Only a
+  # later digest-bound Publish approval writes the private-docs inbox mount. No GitHub token.
   doc-writer-server:
     profiles: ["doc-writer"]
     image: agent-fleet/doc-writer:${DOC_WRITER_VERSION:-latest}
@@ -461,7 +463,7 @@ services:
       HOME: /work
     volumes:
       - doc_writer_work:/work                                 # mewritecode HOME + draft staging
-      # ONLY the private-docs inbox, WRITABLE. Finished docs land here for the human to file. The rest
+      # ONLY the private-docs inbox, WRITABLE. Exact-approved docs land here for the human to file. The rest
       # of the brain is never mounted here (the curator reads it elsewhere, read-only).
       - ${DOC_WRITER_INBOX_HOST:-/var/empty}:/inbox
     depends_on:
@@ -630,9 +632,14 @@ services:
       PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
       PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
       DOC_WRITE_DAILY_CAP: ${DOC_WRITE_DAILY_CAP:-30}
+      DOC_WRITER_STAGE_DIR: /work/stage
       HINDSIGHT_URL: http://hindsight:8888
       HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against PR-safety server paths
       STATUS_BIND: 0.0.0.0
+    volumes:
+      - doc_writer_work:/work:ro
+    networks:
+      - status-internal
     depends_on:
       db-requests:
         condition: service_healthy
@@ -641,6 +648,8 @@ services:
 
 networks:
   hermes-doc:
+  status-internal:
+    internal: true
   pr-safety-analyst:
     internal: true
     name: agent-fleet-pr-safety-analyst

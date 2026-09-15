@@ -551,7 +551,7 @@ Use small Python helper.
 2. Reject target symlink, directory, or existing mismatch.
 3. Create deterministic hidden temp under inbox `.ai-pr-automation-staging/` with `O_CREAT|O_EXCL`; extension is `.tmp`, never `.md`.
 4. Copy exact bytes and fsync temp.
-5. Recheck prepared publication, matching approval, and request `reconcile` state immediately before final syscall.
+5. Launch only after prepare succeeds. No background transition mutates prepared publication state; rollback stops controller first and leaves prepared state intact.
 6. Atomically move temp to final path with Linux `renameat2(RENAME_NOREPLACE)`.
 7. fsync hidden staging directory and final target parent.
 8. Transaction requires prepared publication, matching target/digest/document generation, exact human approval, and matching target bytes.
@@ -600,7 +600,7 @@ Quarantine-first sequence:
 
 1. Pause doc submissions.
 2. Stop controller after short bounded drain.
-3. In one transaction, move every nonterminal Hermes phase and attached request to reconcile. Move every prepared publication/request to reconcile. No POST or provider wait.
+3. In one transaction, move every nonterminal Hermes phase and attached request to reconcile. Prepared publications already have request `reconcile`; leave their immutable state intact after controller stops. No POST or provider wait.
 4. Stop Hermes and egress proxy.
 5. Set runtime default to legacy for requests with no Hermes phase row.
 6. Start exactly one legacy controller.

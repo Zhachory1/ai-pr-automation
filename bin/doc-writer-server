@@ -4,7 +4,7 @@
 # Claims one doc-write request at a time and runs bin/doc-writer (the harness) to draft a Rokt PRD
 # or Design Doc. Mirrors bin/agent-server's concurrency machinery (renewable DB lease + nonce
 # fencing; reclaim; FOR UPDATE SKIP LOCKED claim; heartbeat self-exit) via lib/queue.sh. No GitHub
-# token — documents are local; the only side effect is writing to ~/private-docs/inbox.
+# token — documents are local; exact approved bytes are the only inbox side effect.
 #
 # Request payload (requests.kind = 'doc-write'):
 #   { "doc_type": "seprd"|"mlprd"|"launchpad"|"dd",
@@ -14,7 +14,7 @@
 #     "answers": "<human answers>",          # round>1: answers to the open questions
 #     "finalize": true|false }               # skip remaining questions -> council + write
 # The harness routes: open questions -> human-review queue (answer loop); finalize/no-questions ->
-# council review + write the doc to the inbox, with requests.posted_ref = the written file path.
+# council review + exact-byte approval; approved publication sets requests.posted_ref.
 set -euo pipefail
 umask 077
 
@@ -26,7 +26,11 @@ KIND=doc-write
 POLL_INTERVAL="${DOC_WRITER_POLL_INTERVAL:-15}"
 PER_REQUEST_TIMEOUT="${DOC_WRITER_PER_REQUEST_TIMEOUT:-1800}"   # 25m ceiling (agent draft + council)
 LOOP_HEARTBEAT_MAX="${DOC_WRITER_LOOP_HEARTBEAT_MAX:-7200}"
+ONCE="${DOC_WRITER_ONCE:-false}"
 HARNESS="${DOC_WRITER_HARNESS:-$HERE/bin/doc-writer}"
+PUBLICATION_BIN="${DOC_WRITER_PUBLICATION_BIN:-$HERE/bin/doc-writer-publication}"
+STAGE_DIR="${DOC_WRITER_STAGE_DIR:-$HOME/.local/share/ai-pr-automation/doc-writer}"
+INBOX_DIR="${DOC_WRITER_INBOX_DIR:-$HOME/private-docs/inbox}"
 # Renewable DB lease + nonce fencing (same model as agent-server since #58). A background heartbeat
 # renews the lease while the long-running harness works; reclaim only requeues expired leases.
 LEASE_SECONDS="${DOC_WRITER_LEASE_SECONDS:-120}"
@@ -42,6 +46,7 @@ log() { echo "$(ts) doc-writer-server $*"; }
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
 need psql; need jq; need python3
 [[ -x "$HARNESS" ]] || { echo "missing harness: $HARNESS" >&2; exit 2; }
+[[ -x "$PUBLICATION_BIN" ]] || { echo "missing publication helper: $PUBLICATION_BIN" >&2; exit 2; }
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
 db_up() { _psql <<<"SELECT 1;" >/dev/null 2>&1; }
@@ -98,22 +103,62 @@ queue_doc_review() {
     --argjson oq "$oq_json" --argjson r "$round" --arg s "$n open question(s) on '$title' ($doc_type), round $round" \
     '{kind:"doc-open-questions", doc_type:$dt, title:$t, draft_path:$dp, open_questions:$oq, round:$r, summary:$s}')"
   prov="$(jq -cn --arg rid "$id" --argjson r "$round" '{request_id:$rid, round:$r}')"
-  pending_maintenance_review_insert "$id" "$proposal" "$prov" "$nonce"
+  pending_doc_review_finish "$id" "$proposal" "$prov" "queued: awaiting answers (round $round)" "$nonce" | grep -qx 1
+}
+
+process_publication() {
+  local id="$1" nonce="$2" publication staged target digest generation result status
+  publication="$(doc_publication_claimed "$id" "$nonce")"
+  [[ -n "$publication" ]] || { queue_mark_reconcile "$id" "approved publication state missing" "$nonce" >/dev/null; return; }
+  staged="$(jq -r .staged_path <<<"$publication")"
+  target="$(jq -r .target_path <<<"$publication")"
+  digest="$(jq -r .content_digest <<<"$publication")"
+  generation="$(jq -r .document_generation <<<"$publication")"
+  if [[ -z "$(doc_publication_prepare "$id" "$target" "$digest" "$generation" "$nonce")" ]]; then
+    queue_mark_reconcile "$id" "publication prepare lost queue ownership" "$nonce" >/dev/null 2>&1 || true
+    return
+  fi
+  local outfile rc=0
+  outfile="$(mktemp)"
+  "$PUBLICATION_BIN" publish --stage-root "$STAGE_DIR" --inbox-root "$INBOX_DIR" \
+    --staged-path "$staged" --target-path "$target" --digest "$digest" >"$outfile" &
+  ACTIVE_CHILD="$!"
+  wait "$ACTIVE_CHILD" || rc=$?
+  ACTIVE_CHILD=""
+  result="$(cat "$outfile")"
+  rm -f "$outfile"
+  if (( rc != 0 )); then
+    log "request $id reconcile (publication helper failed)"
+    return
+  fi
+  status="$(jq -r '.status // empty' <<<"$result")"
+  if [[ "$status" == published || "$status" == matching ]]; then
+    if [[ -n "$(doc_publication_mark_published "$id" "$target" "$digest" "$generation")" ]]; then
+      log "request $id done: published $target"
+    else
+      log "request $id reconcile (target published but DB settlement failed)"
+    fi
+  else
+    log "request $id reconcile (publication status=$status)"
+  fi
 }
 
 process_one() {
-  local id="$1" payload="$2" run_id="$3" nonce="$4"
+  local id="$1" payload="$2" run_id="$3" nonce="$4" generated_at="$5"
   local doc_type title round; doc_type="$(jq -r '.doc_type // empty' <<<"$payload")"
   title="$(jq -r '.title // empty' <<<"$payload")"; round="$(jq -r '.round // 1' <<<"$payload")"
   if [[ -z "$doc_type" || -z "$title" ]]; then
     queue_mark_failed "$id" "invalid doc-write payload (need doc_type,title)" "$nonce" >/dev/null; return 0
   fi
-
-  # Writing to private-docs is a side effect: fence it before the long run.
-  queue_mark_side_effect "$id" "$nonce" >/dev/null 2>&1 || true
+  if [[ "$(jq -r '.publication_only // false' <<<"$payload")" == true ]]; then
+    process_publication "$id" "$nonce"
+    return 0
+  fi
 
   local outfile; outfile="$(mktemp)"; local rc=0
-  "$TIMEOUT_BIN" --kill-after=15s "${PER_REQUEST_TIMEOUT}s" "$HARNESS" --payload "$payload" >"$outfile" 2>>/dev/stderr &
+  DOC_WRITER_REQUEST_ID="$id" DOC_WRITER_GENERATED_AT="$generated_at" \
+    "$TIMEOUT_BIN" --kill-after=15s "${PER_REQUEST_TIMEOUT}s" \
+    "$HARNESS" --payload "$payload" >"$outfile" 2>>/dev/stderr &
   ACTIVE_CHILD="$!"
   wait "$ACTIVE_CHILD" || rc=$?
   ACTIVE_CHILD=""
@@ -133,17 +178,30 @@ process_one() {
       draft_path="$(jq -r '.draft_path' <<<"$result")"
       oq_json="$(jq -c '.open_questions' <<<"$result")"
       if queue_doc_review "$id" "$nonce" "$doc_type" "$title" "$draft_path" "$oq_json" "$round"; then
-        queue_mark_done "$id" "queued: awaiting answers (round $round)" "$nonce" >/dev/null
         log "request $id queued for human answers (round $round)"
       else
         queue_mark_reconcile "$id" "draft staged but human-review insert failed" "$nonce" >/dev/null
         log "request $id reconcile (review insert failed)"
       fi ;;
-    written)
-      local doc_path council
-      doc_path="$(jq -r '.doc_path' <<<"$result")"; council="$(jq -r '.council' <<<"$result")"
-      queue_mark_done "$id" "$doc_path" "$nonce" >/dev/null
-      log "request $id done: wrote $doc_path (council=$council)" ;;
+    awaiting_approval)
+      local staged_path target_path digest generation council proposal prov
+      staged_path="$(jq -r '.staged_path' <<<"$result")"
+      target_path="$(jq -r '.target_path' <<<"$result")"
+      digest="$(jq -r '.content_digest' <<<"$result")"
+      generation="$(jq -r '.document_generation' <<<"$result")"
+      council="$(jq -r '.council' <<<"$result")"
+      proposal="$(jq -cn --arg kind doc-publication-approval --arg title "$title" --arg target "$target_path" \
+        --arg staged "$staged_path" --arg digest "$digest" --arg generation "$generation" --arg council "$council" \
+        --arg summary "'$title' is staged for exact-byte publication approval" \
+        '{kind:$kind,title:$title,target_path:$target,staged_path:$staged,content_digest:$digest,
+          document_generation:$generation,council:$council,summary:$summary}')"
+      prov="$(jq -cn --arg rid "$id" '{request_id:$rid,approval:"exact-bytes"}')"
+      if [[ -n "$(doc_publication_stage "$id" "$target_path" "$digest" "$generation" "$proposal" "$prov" "$nonce")" ]]; then
+        log "request $id done: awaiting exact publication approval for $target_path"
+      else
+        queue_mark_reconcile "$id" "failed to record publication approval" "$nonce" >/dev/null
+        log "request $id reconcile (publication approval insert failed)"
+      fi ;;
     *)
       queue_mark_failed "$id" "doc-writer returned status=$status" "$nonce" >/dev/null
       log "request $id failed (status=$status)" ;;
@@ -172,10 +230,12 @@ while true; do
   id="$(jq -r '.id' <<<"$claim")"
   payload="$(jq -c '.payload' <<<"$claim")"
   dedupe_key="$(jq -r '.dedupe_key' <<<"$claim")"
+  generated_at="$(jq -r '.created_at' <<<"$claim")"
   log "claimed request $id ($dedupe_key)"
   start_lease_heartbeat "$id" "$nonce"
-  process_one "$id" "$payload" "$run_id" "$nonce" || log "process_one error for $id"
+  process_one "$id" "$payload" "$run_id" "$nonce" "$generated_at" || log "process_one error for $id"
   stop_lease_heartbeat
+  [[ "$ONCE" == true ]] && exit 0
   last_progress="$(date +%s)"
   [[ "$SHUTDOWN_REQUESTED" == true ]] && exit 0
 done

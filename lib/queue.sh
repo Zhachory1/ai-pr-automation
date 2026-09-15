@@ -115,7 +115,8 @@ WITH candidate AS (
    WHERE r.id = c.id
   RETURNING r.*
 )
-SELECT json_build_object('id', id, 'kind', kind, 'payload', payload, 'dedupe_key', dedupe_key)::text
+SELECT json_build_object('id', id, 'kind', kind, 'payload', payload, 'dedupe_key', dedupe_key,
+       'created_at', created_at)::text
   FROM claimed;
 SQL
 }
@@ -462,8 +463,10 @@ WITH eligible AS (
 ), queued AS (
   UPDATE requests r SET status='queued', started_at=NULL, finished_at=NULL, posted_ref=NULL,
          run_id=NULL, run_nonce=NULL, lease_expires_at=NULL,
+         dedupe_key='doc-publish:'||r.id||'@'||p.content_digest,
          payload=jsonb_set(r.payload,'{publication_only}','true'::jsonb,true)
-   FROM review h WHERE r.id=h.request_id RETURNING r.id
+   FROM review h JOIN doc_publications p ON p.request_id=h.request_id
+  WHERE r.id=h.request_id RETURNING r.id
 )
 SELECT id FROM queued;
 SQL
@@ -485,6 +488,29 @@ WITH eligible AS (
    FROM publication p WHERE h.request_id=p.request_id RETURNING h.request_id
 )
 SELECT request_id FROM review;
+SQL
+}
+
+doc_publication_claimed() {
+  local id="$1" nonce="$2"
+  _psql -v id="$id" -v nonce="$nonce" <<'SQL'
+SELECT json_build_object('staged_path',p.staged_path,'target_path',p.target_path,
+       'content_digest',p.content_digest,'document_generation',p.document_generation)::text
+  FROM doc_publications p JOIN requests r ON r.id=p.request_id
+ WHERE p.request_id=:'id' AND p.state='approved' AND p.approved_at IS NOT NULL
+   AND r.status='running' AND r.run_nonce=:'nonce' AND r.lease_expires_at>clock_timestamp();
+SQL
+}
+
+doc_publication_reconcile_state() {
+  local id="$1"
+  _psql -v id="$id" <<'SQL'
+SELECT json_build_object('staged_path',p.staged_path,'target_path',p.target_path,
+       'content_digest',p.content_digest,'document_generation',p.document_generation,
+       'publication_state',p.state)::text
+  FROM doc_publications p JOIN requests r ON r.id=p.request_id
+ WHERE p.request_id=:'id' AND p.state IN ('prepared','reconcile') AND p.approved_at IS NOT NULL
+   AND r.status='reconcile';
 SQL
 }
 
@@ -530,6 +556,26 @@ SELECT id FROM finished;
 SQL
 }
 
+doc_publication_reconcile_published() {
+  local id="$1" target="$2" digest="$3" generation="$4"
+  _psql -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" <<'SQL'
+WITH eligible AS (
+  SELECT p.request_id FROM doc_publications p JOIN requests r ON r.id=p.request_id
+   WHERE p.request_id=:'id' AND p.state IN ('prepared','reconcile') AND p.approved_at IS NOT NULL
+     AND p.target_path=:'target' AND p.content_digest=:'digest' AND p.document_generation=:'generation'
+     AND r.status='reconcile'
+   FOR UPDATE OF p,r
+), publication AS (
+  UPDATE doc_publications p SET state='published', published_at=clock_timestamp(), updated_at=clock_timestamp(), error=NULL
+   FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
+), finished AS (
+  UPDATE requests r SET status='done', posted_ref=:'target', finished_at=clock_timestamp(), fail_response=NULL
+   FROM publication p WHERE r.id=p.request_id RETURNING r.id
+)
+SELECT id FROM finished;
+SQL
+}
+
 hermes_doc_quarantine() {
   _psql <<'SQL'
 BEGIN;
@@ -542,14 +588,8 @@ UPDATE requests r SET status='reconcile', finished_at=clock_timestamp(), lease_e
  WHERE r.kind='doc-write' AND r.status IN ('queued','running')
    AND EXISTS (SELECT 1 FROM attempts a WHERE a.request_id=r.id);
 
-WITH publications AS (
-  UPDATE doc_publications SET state='reconcile', error='runtime rollback quarantine', updated_at=clock_timestamp()
-   WHERE state='prepared' RETURNING request_id
-)
-UPDATE requests r SET status='reconcile', finished_at=clock_timestamp(), lease_expires_at=NULL,
-       fail_response='prepared doc publication quarantined for rollback'
- WHERE r.status IN ('queued','running','reconcile')
-   AND EXISTS (SELECT 1 FROM publications p WHERE p.request_id=r.id);
+-- Prepared publications already put their request in reconcile before filesystem access. Leave the
+-- immutable prepared state intact so rollback cannot race an in-flight no-replace publication.
 COMMIT;
 SQL
 }

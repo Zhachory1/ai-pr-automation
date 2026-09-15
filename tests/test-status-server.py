@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import hashlib
 import http.client
 import importlib.util
 import json
 import pathlib
+import tempfile
 from importlib.machinery import SourceFileLoader
 import threading
 import unittest
@@ -307,6 +309,113 @@ class StatusServerTest(unittest.TestCase):
             msg = status_server.doc_refine(7, "answers", finalize=False)
         self.assertIn("NOT queued", msg)
         self.assertIn("Resubmit", msg)
+
+    def test_publication_preview_is_exact_escaped_and_server_bound(self):
+        content = b"# Exact <script>alert(1)</script>\n"
+        digest = hashlib.sha256(content).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "requests" / "42"
+            path.mkdir(parents=True)
+            (path / "publish.md").write_bytes(content)
+            with patch.object(status_server, "DOC_WRITER_STAGE_DIR", directory):
+                page = status_server.human_review_table([[
+                    "17", "42", "", "Ready <now>", "[]", "", "09-15 10:00",
+                    "doc-publication-approval", "[]", "", "requests/42/publish.md",
+                    "dd-2026-09-15-exact.md", digest, "legacy:" + "a" * 64,
+                ]])
+
+        self.assertIn("Ready &lt;now&gt;", page)
+        self.assertIn("# Exact &lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertNotIn("<script>alert", page)
+        self.assertIn('/doc-publications/17/publish', page)
+        self.assertIn('/doc-publications/17/dismiss', page)
+        self.assertNotIn(f'name=digest value="{digest}"', page)
+
+    def test_publication_preview_rejects_symlink_or_bad_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            path = root / "requests" / "42"
+            path.mkdir(parents=True)
+            (path / "publish.md").symlink_to("/etc/passwd")
+            with patch.object(status_server, "DOC_WRITER_STAGE_DIR", directory):
+                with self.assertRaises(ValueError):
+                    status_server._publication_bytes("requests/42/publish.md", "a" * 64)
+            (path / "publish.md").unlink()
+            (path / "publish.md").write_text("different")
+            with patch.object(status_server, "DOC_WRITER_STAGE_DIR", directory):
+                with self.assertRaises(ValueError):
+                    status_server._publication_bytes("requests/42/publish.md", "a" * 64)
+            invalid = b"\xff"
+            (path / "publish.md").write_bytes(invalid)
+            with patch.object(status_server, "DOC_WRITER_STAGE_DIR", directory):
+                with self.assertRaisesRegex(ValueError, "UTF-8"):
+                    status_server._publication_bytes(
+                        "requests/42/publish.md", hashlib.sha256(invalid).hexdigest())
+
+    def test_publication_decision_uses_only_review_id(self):
+        lookup = json.dumps({"staged_path": "requests/42/publish.md", "content_digest": "a" * 64})
+        with patch.object(status_server, "_psql", side_effect=[self._cp(0, lookup), self._cp(0, "42\n")]) as psql, \
+                patch.object(status_server, "_publication_bytes", return_value=b"exact") as validate:
+            self.assertEqual(status_server.doc_publication_decide(17, "publish"),
+                             "queued approved publication request #42")
+        validate.assert_called_once_with("requests/42/publish.md", "a" * 64)
+        self.assertEqual(psql.call_args_list[1].args[0], ["-v", "rid=17"])
+        sql = psql.call_args_list[1].args[1]
+        self.assertIn("p.state='awaiting_approval'", sql)
+        self.assertIn("payload=jsonb_set", sql)
+        self.assertIn("dedupe_key='doc-publish:'", sql)
+        self.assertNotIn("target_path=:", sql)
+        with patch.object(status_server, "_psql", return_value=self._cp(0, "42\n")) as psql:
+            self.assertEqual(status_server.doc_publication_decide(17, "dismiss"),
+                             "dismissed publication request #42")
+        self.assertIn("state='dismissed'", psql.call_args.args[1])
+
+    def test_publication_approval_rejects_changed_stage_before_update(self):
+        lookup = json.dumps({"staged_path": "requests/42/publish.md", "content_digest": "a" * 64})
+        with patch.object(status_server, "_psql", side_effect=[self._cp(0, lookup), self._cp(0, "17\n")]) as psql, \
+                patch.object(status_server, "_publication_bytes", side_effect=ValueError("digest mismatch")):
+            with self.assertRaises(ValueError):
+                status_server.doc_publication_decide(17, "publish")
+        self.assertEqual(psql.call_count, 2)
+        invalidation = psql.call_args_list[1].args[1]
+        self.assertIn("state='invalid'", invalidation)
+        self.assertIn("state='dismissed'", invalidation)
+
+    def test_publication_post_is_csrf_guarded(self):
+        server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
+        origin = f"http://127.0.0.1:{server.server_port}"
+        status_server.ALLOWED_HOSTS = {f"127.0.0.1:{server.server_port}"}
+        status_server.ALLOWED_ORIGINS = {origin}
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"{origin}/doc-publications/17/publish"
+            body = urlencode({"token": status_server.CSRF_TOKEN}).encode()
+            request = urllib.request.Request(url, data=body, method="POST", headers={"Origin": origin})
+            with patch.object(status_server, "doc_publication_decide", return_value="queued") as decide, \
+                    patch.object(status_server, "render", return_value="ok"):
+                self.assertEqual(urllib.request.urlopen(request).status, 200)
+                decide.assert_called_once_with(17, "publish")
+            bad = urllib.request.Request(url, data=urlencode({"token": "bad"}).encode(),
+                                         method="POST", headers={"Origin": origin})
+            with patch.object(status_server, "doc_publication_decide") as decide:
+                with self.assertRaises(urllib.error.HTTPError) as response:
+                    urllib.request.urlopen(bad)
+                self.assertEqual(response.exception.code, 403)
+                response.exception.close()
+                decide.assert_not_called()
+            missing_origin = urllib.request.Request(url, data=body, method="POST")
+            with patch.object(status_server, "doc_publication_decide") as decide:
+                with self.assertRaises(urllib.error.HTTPError) as response:
+                    urllib.request.urlopen(missing_origin)
+                self.assertEqual(response.exception.code, 403)
+                response.exception.close()
+                decide.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS = old_hosts, old_origins
 
 
 if __name__ == "__main__":

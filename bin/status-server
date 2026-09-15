@@ -2,8 +2,9 @@
 """Status and human-review web view for the agent fleet (M3 read + M4 writes).
 
 Serves one auto-refreshing HTML page over the request Postgres. Writes are a SMALL whitelisted set:
-cancel a queued row, force-inject a PR, update local human-review work, or retain an approved stored
-decision to configured Hindsight shared memory — never f-string SQL or GitHub actions. All dynamic values
+cancel a queued row, force-inject a PR, update local human-review work, approve exact document bytes,
+or retain an approved stored decision to configured Hindsight shared memory — never f-string SQL or
+GitHub actions. All dynamic values
 are HTML-escaped (request data is attacker-influenced).
 
 Binds 127.0.0.1 in-code (not just compose). No auth by design (localhost single-user); writes are
@@ -12,10 +13,13 @@ REQUESTS_DB_HOST/PORT/USER/NAME + PGPASSWORD; PR_PRODUCER_ORGS/REPOSITORIES/ALLO
 producer's repo allowlist so inject cannot target an out-of-scope repo; HINDSIGHT_URL configures
 memory promotion to fleet-shared.
 """
+import hashlib
 import html
 import json
 import os
+import pathlib
 import re
+import stat
 import secrets
 import subprocess
 import threading
@@ -89,6 +93,7 @@ ALLOWED_ORGS = set(filter(None, os.environ.get("PR_PRODUCER_ORGS", "").split(","
 ALLOW_ALL_REPOS = os.environ.get("PR_PRODUCER_ALLOW_ALL_REPOS", "false") == "true"
 KINDS = {"pr-review", "pr-maintain"}
 HANDOFF_ROOT = os.environ.get("HANDOFF_ROOT", "")   # for validating swe-implement handoff submissions
+DOC_WRITER_STAGE_DIR = os.environ.get("DOC_WRITER_STAGE_DIR", "/work/stage")
 CSRF_TOKEN = secrets.token_urlsafe(32)          # per-process; page embeds it, POST must echo it
 ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
 ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
@@ -255,7 +260,97 @@ def doc_refine(review_id: int, answers: str, finalize: bool) -> str:
     if not result.startswith("enqueued"):
         # closed but not enqueued (cap/suppressed): tell the operator plainly, no silent drop.
         return f"answers recorded but next round NOT queued — {result}. Resubmit from Documents."
-    return ("finalizing document (council + write)" if finalize else f"refining (round {nxt})")
+    return ("finalizing document (council + publication approval)" if finalize else f"refining (round {nxt})")
+
+
+def _publication_bytes(staged_path: str, expected_digest: str) -> bytes:
+    if not re.fullmatch(r"requests/[1-9][0-9]*/publish\.md", staged_path or ""):
+        raise ValueError("invalid staged publication path")
+    root = pathlib.Path(DOC_WRITER_STAGE_DIR).resolve(strict=True)
+    path = root.joinpath(*pathlib.PurePosixPath(staged_path).parts)
+    try:
+        path.resolve(strict=True).relative_to(root)
+        mode = path.lstat().st_mode
+    except (FileNotFoundError, ValueError):
+        raise ValueError("staged publication is missing") from None
+    if path.is_symlink() or not stat.S_ISREG(mode):
+        raise ValueError("staged publication is not a regular file")
+    with path.open("rb") as source:
+        data = source.read(256 * 1024 + 1)
+    if len(data) > 256 * 1024 or hashlib.sha256(data).hexdigest() != expected_digest:
+        raise ValueError("staged publication digest mismatch")
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("staged publication is not UTF-8") from None
+    return data
+
+
+def _invalidate_doc_publication(review_id: int, error: str) -> None:
+    proc = _psql(["-v", f"rid={review_id}", "-v", f"error={error[:200]}"],
+                 "WITH eligible AS (SELECT p.request_id FROM pending_maintenance_reviews h "
+                 "JOIN doc_publications p ON p.request_id=h.request_id "
+                 "WHERE h.id=:'rid'::bigint AND h.state='pending' AND p.state='awaiting_approval' "
+                 "FOR UPDATE OF h,p), publication AS (UPDATE doc_publications p SET state='invalid',"
+                 "error=:'error',updated_at=clock_timestamp() FROM eligible e "
+                 "WHERE p.request_id=e.request_id RETURNING p.request_id) "
+                 "UPDATE pending_maintenance_reviews h SET state='dismissed',reviewed_at=clock_timestamp() "
+                 "FROM publication p WHERE h.id=:'rid'::bigint AND h.request_id=p.request_id RETURNING h.id")
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "publication invalidation failed")
+
+
+def doc_publication_decide(review_id: int, action: str) -> str:
+    if action not in ("publish", "dismiss"):
+        raise ValueError("bad publication action")
+    if action == "publish":
+        lookup = _psql(["-v", f"rid={review_id}"],
+                       "SELECT json_build_object('staged_path',p.staged_path,'content_digest',p.content_digest)::text "
+                       "FROM pending_maintenance_reviews h JOIN doc_publications p ON p.request_id=h.request_id "
+                       "WHERE h.id=:'rid'::bigint AND h.state='pending' AND p.state='awaiting_approval'")
+        if lookup.returncode != 0:
+            raise RuntimeError(lookup.stderr.strip() or "publication lookup failed")
+        if not lookup.stdout.strip():
+            return f"publication review #{review_id} is not pending"
+        publication = json.loads(lookup.stdout)
+        try:
+            _publication_bytes(publication["staged_path"], publication["content_digest"])
+        except ValueError as error:
+            _invalidate_doc_publication(review_id, str(error))
+            raise
+    if action == "dismiss":
+        sql = (
+            "WITH eligible AS (SELECT p.request_id FROM pending_maintenance_reviews h "
+            "JOIN doc_publications p ON p.request_id=h.request_id "
+            "WHERE h.id=:'rid'::bigint AND h.state='pending' AND p.state='awaiting_approval' "
+            "FOR UPDATE OF h,p), publication AS (UPDATE doc_publications p SET state='dismissed', "
+            "updated_at=clock_timestamp() FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id), "
+            "review AS (UPDATE pending_maintenance_reviews h SET state='dismissed', reviewed_at=clock_timestamp() "
+            "FROM publication p WHERE h.id=:'rid'::bigint AND h.request_id=p.request_id RETURNING h.request_id) "
+            "SELECT request_id FROM review")
+    else:
+        sql = (
+            "WITH eligible AS (SELECT p.request_id FROM pending_maintenance_reviews h "
+            "JOIN doc_publications p ON p.request_id=h.request_id JOIN requests r ON r.id=p.request_id "
+            "WHERE h.id=:'rid'::bigint AND h.state='pending' AND p.state='awaiting_approval' AND r.status='done' "
+            "FOR UPDATE OF h,p,r), publication AS (UPDATE doc_publications p SET state='approved', "
+            "approved_at=clock_timestamp(),updated_at=clock_timestamp() FROM eligible e "
+            "WHERE p.request_id=e.request_id RETURNING p.request_id), "
+            "review AS (UPDATE pending_maintenance_reviews h SET state='reviewed',reviewed_at=clock_timestamp() "
+            "FROM publication p WHERE h.id=:'rid'::bigint AND h.request_id=p.request_id RETURNING h.request_id), "
+            "queued AS (UPDATE requests r SET status='queued',started_at=NULL,finished_at=NULL,posted_ref=NULL,"
+            "run_id=NULL,run_nonce=NULL,lease_expires_at=NULL,dedupe_key='doc-publish:'||r.id||'@'||p.content_digest,"
+            "payload=jsonb_set(r.payload,'{publication_only}','true'::jsonb,true) FROM review h "
+            "JOIN doc_publications p ON p.request_id=h.request_id WHERE r.id=h.request_id RETURNING r.id) "
+            "SELECT id FROM queued")
+    proc = _psql(["-v", f"rid={review_id}"], sql)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "publication decision failed")
+    request_id = proc.stdout.strip()
+    if not request_id:
+        return f"publication review #{review_id} is not pending"
+    return (f"queued approved publication request #{request_id}" if action == "publish"
+            else f"dismissed publication request #{request_id}")
 
 
 def swe_implement_handoff(handoff_path: str) -> str:
@@ -434,10 +529,38 @@ def findings_html(raw: str) -> str:
     return "<ul>" + "".join(items) + "</ul>"
 
 
+def _doc_publication_row(review_id, request_id, summary, staged_path, target_path,
+                         content_digest, generation, created) -> str:
+    rid = e(review_id)
+    try:
+        preview = _publication_bytes(staged_path, content_digest).decode("utf-8")
+        error = ""
+    except ValueError as ex:
+        preview = ""
+        error = f'<p class="err">{e(ex)}</p>'
+    publish = ""
+    if not error:
+        publish = (
+            f'<form class=inline method=post action="/doc-publications/{rid}/publish" '
+            f'onsubmit="return confirm(\'Publish exact approved bytes to {e(target_path)}?\')">'
+            f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Publish</button></form>')
+    actions = (
+        publish
+        + f'<form class=inline method=post action="/doc-publications/{rid}/dismiss">'
+          f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Dismiss</button></form>')
+    detail = (f"{e(summary)}<br><b>target:</b> {e(target_path)}<br><b>digest:</b> {e(content_digest)}"
+              f"<br><b>generation:</b> {e(generation)}{error}"
+              + (f"<details><summary>Exact bytes</summary><pre>{e(preview)}</pre></details>" if preview else ""))
+    return ("<tr>"
+            f"<td>{rid}</td><td><span class=\"chip s-running\">doc publish</span></td>"
+            f"<td>request #{e(request_id)}</td><td>{detail}</td><td></td><td></td>"
+            f"<td>{e(created)}</td><td>{actions}</td></tr>")
+
+
 def _doc_review_row(review_id, summary, open_questions_raw, draft_path, created) -> str:
     """Render one doc-open-questions queue item: the agent's open questions + an answers box with
     Refine / Finalize / Dismiss. Refine re-runs the writer with the answers; Finalize skips remaining
-    questions and goes straight to council + write to private-docs."""
+    questions and goes straight to council + exact-byte publication approval."""
     try:
         questions = json.loads(open_questions_raw) if open_questions_raw else []
     except (ValueError, TypeError):
@@ -450,7 +573,7 @@ def _doc_review_row(review_id, summary, open_questions_raw, draft_path, created)
         f'<textarea name=answers rows=4 cols=48 placeholder="Answer the open questions here..."></textarea><br>'
         f'<button type=submit>Refine</button></form>'
         f'<form class=inline method=post action="/doc-reviews/{rid}/finalize" '
-        f'onsubmit="return confirm(\'Finalize now? Skips remaining questions, runs council, writes to private-docs.\')">'
+        f'onsubmit="return confirm(\'Finalize now? Skips remaining questions, runs council, then asks for exact-byte publication approval.\')">'
         f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Finalize</button></form>'
         f'<form class=inline method=post action="/human-reviews/{rid}/dismissed">'
         f'<input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Dismiss</button></form>')
@@ -465,14 +588,22 @@ def human_review_table(rows: list[list[str]]) -> str:
         return "<section><h2>Human review queue (0)</h2><p class=empty>nothing needs review</p></section>"
     body = ""
     for row in rows:
-        # Tolerate the pre-doc 8-tuple and the doc-aware 10-tuple: doc fields default to empty.
+        # Tolerate older tuples; doc publication fields default to empty.
         review_id, request_id, url, summary, findings, handoff, created, rtype = row[:8]
         open_questions = row[8] if len(row) > 8 else "[]"
         draft_path = row[9] if len(row) > 9 else ""
+        staged_path = row[10] if len(row) > 10 else ""
+        target_path = row[11] if len(row) > 11 else ""
+        content_digest = row[12] if len(row) > 12 else ""
+        generation = row[13] if len(row) > 13 else ""
         # Document open-questions items get their own renderer: the draft's questions + an answers box
         # and Refine/Finalize/Dismiss, instead of the maintenance Reviewed/Dismiss.
         if rtype == "doc-open-questions":
             body += _doc_review_row(review_id, summary, open_questions, draft_path, created)
+            continue
+        if rtype == "doc-publication-approval":
+            body += _doc_publication_row(review_id, request_id, summary, staged_path, target_path,
+                                         content_digest, generation, created)
             continue
         type_chip = ('<span class="chip s-done">review-ready</span>' if rtype == "review-ready"
                      else '<span class="chip s-running">pr-safety</span>' if rtype == "pr-safety-review"
@@ -575,10 +706,14 @@ def render(flash: str = "", fragment: bool = False) -> str:
             "coalesce(d.proposal->>'handoff_path','') AS handoff, "
             "to_char(d.created_at,'MM-DD HH24:MI') AS created, "
             "CASE WHEN d.proposal->>'kind' = 'doc-open-questions' THEN 'doc-open-questions' "
+            "     WHEN d.proposal->>'kind' = 'doc-publication-approval' THEN 'doc-publication-approval' "
             "     WHEN d.proposal->>'ready' = 'true' THEN 'review-ready' ELSE r.kind END AS rtype, "
             "coalesce((d.proposal->'open_questions')::text,'[]') AS open_questions, "
-            "coalesce(d.proposal->>'draft_path','') AS draft_path "
+            "coalesce(d.proposal->>'draft_path','') AS draft_path, "
+            "coalesce(p.staged_path,'') AS staged_path, coalesce(p.target_path,'') AS target_path, "
+            "coalesce(p.content_digest,'') AS content_digest, coalesce(p.document_generation,'') AS generation "
             "FROM pending_maintenance_reviews d JOIN requests r ON r.id = d.request_id "
+            "LEFT JOIN doc_publications p ON p.request_id=d.request_id "
             "WHERE d.state='pending' ORDER BY d.created_at DESC")
         pending = query(
             "SELECT d.id AS id, d.request_id AS request_id, d.kind AS kind, "
@@ -722,7 +857,7 @@ def _doc_ref(result: str) -> str:
 
 def doc_section(rows: list[list[str]]) -> str:
     """Documents form (PRD/DD writer) + a table of doc-write requests. Open questions are answered
-    from the human-review queue above; finished docs land in private-docs/inbox."""
+    from the human-review queue above; finalized bytes need explicit Publish approval before inbox write."""
     if rows:
         body = "".join(
             "<tr>"
@@ -736,7 +871,7 @@ def doc_section(rows: list[list[str]]) -> str:
     return ("<section><h2>Documents <span class=sub>PRD / Design Doc writer (Rokt)</span></h2>"
             "<p class=hint>Draft a Rokt PRD (SEPRD / MLPRD / Launchpad) or a Design Doc. The writer drafts, "
             "then sends its <b>open questions</b> to the human-review queue above — answer them and <b>Refine</b>, "
-            "or <b>Finalize</b> to run council and write the doc into <code>~/private-docs/inbox</code>.</p>"
+            "or <b>Finalize</b> to run council, preview exact bytes, and approve publication into <code>~/private-docs/inbox</code>.</p>"
             "<form class=toolbar method=post action=/doc-write "
             "onsubmit=\"return confirm('Draft this document?')\">"
             f"<input type=hidden name=token value=\"{e(CSRF_TOKEN)}\">"
@@ -871,7 +1006,7 @@ class Handler(BaseHTTPRequestHandler):
         if host not in ALLOWED_HOSTS:
             return False
         origin = self.headers.get("Origin")
-        if origin is not None and origin not in ALLOWED_ORIGINS:
+        if origin not in ALLOWED_ORIGINS:
             return False
         return secrets.compare_digest(params.get("token", [""])[0], CSRF_TOKEN)
 
@@ -917,10 +1052,13 @@ class Handler(BaseHTTPRequestHandler):
                 review_match = re.fullmatch(r"/human-reviews/(\d+)/(reviewed|dismissed)", self.path)
                 decision_match = re.fullmatch(r"/pending-decisions/(\d+)/(approve|retry|reject)", self.path)
                 doc_review_match = re.fullmatch(r"/doc-reviews/(\d+)/(refine|finalize)", self.path)
+                publication_match = re.fullmatch(r"/doc-publications/(\d+)/(publish|dismiss)", self.path)
                 if doc_review_match:
                     result = doc_refine(int(doc_review_match.group(1)),
                                         params.get("answers", [""])[0],
                                         doc_review_match.group(2) == "finalize")
+                elif publication_match:
+                    result = doc_publication_decide(int(publication_match.group(1)), publication_match.group(2))
                 elif review_match:
                     result = update_human_review_state(int(review_match.group(1)), review_match.group(2))
                 elif decision_match:
