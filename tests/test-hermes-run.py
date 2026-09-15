@@ -135,11 +135,13 @@ class HermesRunTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             request_file = pathlib.Path(directory) / "request.json"
-            request_file.write_text(json.dumps(body, sort_keys=True, separators=(",", ":")))
+            request_bytes = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+            request_file.write_bytes(request_bytes)
             env = os.environ | {"HERMES_DOC_API_KEY": API_KEY}
             return subprocess.run([
                 str(ADAPTER), "--url", url or self.url,
-                "--request-file", str(request_file), "--idempotency-key", "doc:1:draft",
+                "--request-file", str(request_file), "--expected-digest", hashlib.sha256(request_bytes).hexdigest(),
+                "--idempotency-key", "doc:1:draft",
                 "--timeout", "0.05", "--poll-interval", "0.01", *extra,
             ], env=env, text=True, capture_output=True)
 
@@ -159,6 +161,25 @@ class HermesRunTest(unittest.TestCase):
         self.assertEqual(State.post_count, 1)
         self.assertEqual(State.last_key, "doc:1:draft")
         self.assertEqual(json.loads(State.last_body)["provider"], "openai-api")
+
+    def test_request_digest_must_match_submitted_bytes(self):
+        body = {"input": "task", "instructions": "text only",
+                "model": "gpt-5.6-sol", "provider": "openai-api"}
+        with tempfile.TemporaryDirectory() as directory:
+            request_file = pathlib.Path(directory) / "request.json"
+            request_file.write_text(json.dumps(body))
+            result = subprocess.run([
+                str(ADAPTER), "--url", self.url, "--request-file", str(request_file),
+                "--expected-digest", "0" * 64, "--idempotency-key", "doc:1:draft",
+            ], env=os.environ | {"HERMES_DOC_API_KEY": API_KEY}, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(State.post_count, 0)
+        self.assertIn("digest mismatch", self.payload(result)["error"])
+
+    def test_idempotency_key_is_derived_request_phase(self):
+        result = self.run_adapter(None, "--idempotency-key", "arbitrary")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(State.post_count, 0)
 
     def test_known_run_id_polls_without_post(self):
         result = self.run_adapter(None, "--run-id", "run-known")
@@ -276,10 +297,12 @@ class HermesRunTest(unittest.TestCase):
                 "model": "gpt-5.6-sol", "provider": "openai-api"}
         with tempfile.TemporaryDirectory() as directory:
             request_file = pathlib.Path(directory) / "request.json"
-            request_file.write_text(json.dumps(body))
+            request_bytes = json.dumps(body).encode()
+            request_file.write_bytes(request_bytes)
             process = subprocess.Popen([
                 str(ADAPTER), "--url", self.url, "--request-file", str(request_file),
-                "--idempotency-key", "doc:term:draft", "--timeout", "5",
+                "--expected-digest", hashlib.sha256(request_bytes).hexdigest(),
+                "--idempotency-key", "doc:2:draft", "--timeout", "5",
                 "--poll-interval", "0.02",
             ], env=os.environ | {"HERMES_DOC_API_KEY": API_KEY}, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)

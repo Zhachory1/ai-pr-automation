@@ -1,6 +1,6 @@
 # Hermes Migration
 
-Status: M0 merged. M2a non-routing foundation in progress. M2b live activation and M1 blocked.
+Status: M0 merged. M2a non-routing foundation at machine-gate validation. M2b live activation and M1 blocked.
 
 ## Artifacts
 
@@ -38,7 +38,8 @@ M0 focused validation passed after merge. No M0 PR activates Hermes.
 | Atomic publication helper | [#124](https://github.com/Zhachory1/ai-pr-automation/pull/124) | merged |
 | Exact publication approval | [#125](https://github.com/Zhachory1/ai-pr-automation/pull/125) | merged |
 | Bounded Runs adapter | [#126](https://github.com/Zhachory1/ai-pr-automation/pull/126) | merged |
-| Immutable prompt renderer | [#127](https://github.com/Zhachory1/ai-pr-automation/pull/127) | open |
+| Immutable prompt renderer | [#127](https://github.com/Zhachory1/ai-pr-automation/pull/127) | merged |
+| Runtime and egress conformance | [#128](https://github.com/Zhachory1/ai-pr-automation/pull/128) | merged |
 
 No M2a PR routes a doc request through Hermes or makes a paid provider call.
 
@@ -59,7 +60,18 @@ real provider key:
 bash tests/test-hermes-compose-contract.sh
 bash tests/test-hermes-doc-egress.sh
 bash tests/test-hermes-doc-spikes.sh
+bash tests/test-hermes-doc-quarantine.sh
+bash tests/test-hermes-doc-gate.sh
 ```
+
+Generate the owner-only M2a evidence report after focused checks pass:
+
+```bash
+scripts/hermes-doc-gate.py run
+```
+
+The report proves the non-routing foundation only. It cannot approve a real provider key, paid call,
+or Hermes-routed document request.
 
 ## Baseline
 

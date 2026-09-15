@@ -50,7 +50,9 @@ jq -e '
   ($h.healthcheck.test[1] | contains("Authorization")) and
   ($h.healthcheck.test[1] | contains("Bearer ")) and
   ($h.healthcheck.test[1] | contains("json.load")) and
-  ($h.healthcheck.test[1] | contains("get(\"status\")==\"ok\"")) and
+  ($h.healthcheck.test[1] | contains("gateway_state")) and
+  ($h.healthcheck.test[1] | contains("api_server")) and
+  ($h.healthcheck.test[1] | contains("background_queues")) and
   (.volumes | has("hermes_doc_state")) and
   (.networks["hermes-doc"].internal == true) and
   (.services["hermes-doc-preflight"].profiles == ["hermes-m0", "hermes-m2a"]) and

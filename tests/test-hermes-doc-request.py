@@ -50,14 +50,21 @@ class HermesDocRequestTest(unittest.TestCase):
         self.assertRegex(metadata["request_digest"], r"^[0-9a-f]{64}$")
         self.assertRegex(metadata["renderer_generation"], r"^[0-9a-f]{64}$")
 
-    def test_dd_embeds_both_selection_templates(self):
+    def test_dd_uses_service_design_template_only(self):
         result = self.render("draft", 2, {
             "doc_type": "dd", "title": "Design", "requirements": "design it",
         })
         self.assertEqual(result.returncode, 0, result.stderr)
         instructions = self.body(json.loads(result.stdout))["instructions"]
         self.assertIn('<handbook-file name="template-sedd.md">', instructions)
-        self.assertIn('<handbook-file name="template-mldd.md">', instructions)
+        self.assertNotIn('<handbook-file name="template-mldd.md">', instructions)
+        ml_result = self.render("draft", 13, {
+            "doc_type": "dd", "dd_template": "mldd", "title": "Model Design", "requirements": "design it",
+        })
+        self.assertEqual(ml_result.returncode, 0, ml_result.stderr)
+        ml_instructions = self.body(json.loads(ml_result.stdout))["instructions"]
+        self.assertIn('<handbook-file name="template-mldd.md">', ml_instructions)
+        self.assertNotIn('<handbook-file name="template-sedd.md">', ml_instructions)
 
     def test_same_request_is_immutable(self):
         payload = {"doc_type": "mlprd", "title": "Model", "requirements": "first"}
@@ -71,6 +78,9 @@ class HermesDocRequestTest(unittest.TestCase):
         changed = self.render("draft", 3, {**payload, "requirements": "changed"})
         self.assertEqual(changed.returncode, 2)
         self.assertEqual(path.read_bytes(), original)
+        other = self.render("draft", 14, {**payload, "requirements": "other"})
+        self.assertEqual(json.loads(first.stdout)["renderer_generation"],
+                         json.loads(other.stdout)["renderer_generation"])
 
     def test_prior_draft_is_bounded_and_must_be_inside_stage(self):
         prior = self.stage / "prior.md"
@@ -86,7 +96,12 @@ class HermesDocRequestTest(unittest.TestCase):
                 "doc_type": "seprd", "title": "Bad", "requirements": "",
                 "prior_draft": outside.name, "answers": "answer",
             })
+            traversal = self.render("draft", 15, {
+                "doc_type": "seprd", "title": "Traversal", "requirements": "",
+                "prior_draft": str(self.stage / ".." / pathlib.Path(outside.name).name), "answers": "answer",
+            })
         self.assertEqual(rejected.returncode, 2)
+        self.assertEqual(traversal.returncode, 2)
         oversized = self.stage / "large.md"
         oversized.write_text("x" * 60_001)
         rejected = self.render("draft", 6, {
@@ -109,6 +124,16 @@ class HermesDocRequestTest(unittest.TestCase):
         self.assertLessEqual(len(body["input"].encode()), 60_100)
         self.assertNotIn("rewrite the draft", body["input"])
 
+    def test_council_truncation_preserves_utf8(self):
+        directory = self.stage / "requests" / "12"
+        directory.mkdir(parents=True)
+        (directory / "draft.md").write_bytes(b"a" * 59_999 + "é".encode())
+        result = self.render("council", 12)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.body(json.loads(result.stdout))
+        self.assertNotIn("é", body["input"])
+        self.assertNotIn("�", body["input"])
+
     def test_invalid_inputs_fail_before_request_file(self):
         invalid = [
             self.render("draft", 0, {"doc_type": "seprd", "title": "x", "requirements": "x"}),
@@ -116,6 +141,7 @@ class HermesDocRequestTest(unittest.TestCase):
             self.render("draft", 9, {"doc_type": "seprd", "title": "", "requirements": "x"}),
             self.render("draft", 10, {"doc_type": "seprd", "title": "x", "requirements": "x", "round": 0}),
             self.render("council", 11, {"unexpected": True}),
+            self.render("draft", 16, {"doc_type": "dd", "dd_template": "other", "title": "x", "requirements": "x"}),
         ]
         self.assertTrue(all(result.returncode == 2 for result in invalid))
         self.assertFalse(any(self.stage.glob("requests/*/*-request.json")))

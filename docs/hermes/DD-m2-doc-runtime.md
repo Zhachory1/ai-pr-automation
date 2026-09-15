@@ -6,7 +6,7 @@
 - PRD: [`PRD-m2-doc-runtime.md`](PRD-m2-doc-runtime.md)
 - grounding: [`grounding-m2-doc-runtime.md`](grounding-m2-doc-runtime.md)
 - parent councils: [`council-m0-m2.md`](council-m0-m2.md), [`council-m2-doc-runtime.md`](council-m2-doc-runtime.md)
-- next gate: M2a Task 0 cheap-failure spikes
+- next gate: human review of M2a machine-gate evidence
 
 ## Context
 
