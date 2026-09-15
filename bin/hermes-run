@@ -62,8 +62,10 @@ def validate(args):
         raise ValueError("invalid Hermes URL")
     if len(args.api_key) < 16:
         raise ValueError("Hermes API key must be at least 16 characters")
-    if not re.fullmatch(r"[\x21-\x7e]{1,255}", args.idempotency_key):
+    if not re.fullmatch(r"doc:[1-9][0-9]*:(draft|council)", args.idempotency_key):
         raise ValueError("invalid idempotency key")
+    if not re.fullmatch(r"[0-9a-f]{64}", args.expected_digest):
+        raise ValueError("invalid expected request digest")
     if args.timeout <= 0 or args.poll_interval <= 0:
         raise ValueError("timeouts must be positive")
 
@@ -73,6 +75,8 @@ def load_body(args):
         data = source.read(MAX_REQUEST_BYTES + 1)
     if len(data) > MAX_REQUEST_BYTES:
         raise ValueError("Hermes request exceeds byte cap")
+    if hashlib.sha256(data).hexdigest() != args.expected_digest:
+        raise ValueError("Hermes request digest mismatch")
     body = json.loads(data)
     if not isinstance(body, dict) or set(body) != ALLOWED_REQUEST_KEYS:
         raise ValueError("Hermes request must contain exactly input, instructions, model, provider")
@@ -265,6 +269,7 @@ def parser():
     result.set_defaults(api_key=os.environ.get("HERMES_DOC_API_KEY", ""))
     result.add_argument("--request-file", required=True)
     result.add_argument("--idempotency-key", required=True)
+    result.add_argument("--expected-digest", required=True)
     result.add_argument("--run-id")
     result.add_argument("--provider", default="openai-api")
     result.add_argument("--model", default="gpt-5.6-sol")

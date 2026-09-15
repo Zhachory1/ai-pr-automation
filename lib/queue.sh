@@ -579,6 +579,9 @@ SQL
 hermes_doc_quarantine() {
   _psql <<'SQL'
 BEGIN;
+SET LOCAL statement_timeout = '14min';
+LOCK TABLE requests IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE hermes_doc_runs IN SHARE ROW EXCLUSIVE MODE;
 WITH attempts AS (
   UPDATE hermes_doc_runs SET state='reconcile', error='runtime rollback quarantine', updated_at=clock_timestamp()
    WHERE state='submitting' RETURNING request_id
@@ -586,7 +589,7 @@ WITH attempts AS (
 UPDATE requests r SET status='reconcile', finished_at=clock_timestamp(), lease_expires_at=NULL,
        fail_response='Hermes doc runtime quarantined for rollback'
  WHERE r.kind='doc-write' AND r.status IN ('queued','running')
-   AND EXISTS (SELECT 1 FROM attempts a WHERE a.request_id=r.id);
+   AND EXISTS (SELECT 1 FROM hermes_doc_runs h WHERE h.request_id=r.id);
 
 -- Prepared publications already put their request in reconcile before filesystem access. Leave the
 -- immutable prepared state intact so rollback cannot race an in-flight no-replace publication.
