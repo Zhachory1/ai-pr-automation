@@ -2,11 +2,12 @@
 # doc-writer harness: run a Rokt PRD/DD persona (with the bundled handbook) over a request payload,
 # parse the draft + machine-readable open_questions, and either (a) hand the draft + questions back to
 # the server for the human-review answer loop, or (b) on finalize/no-questions, run council and write
-# the finished doc to ~/private-docs/inbox.
+# exact finished bytes for human publication approval.
 #
 # Contract: reads one JSON payload via --payload '<json>'. Emits ONE result JSON to stdout:
 #   staged  : {"status":"open_questions","draft_path":..,"open_questions":[..],"round":N}
-#   final   : {"status":"written","doc_path":..,"council":"reviewed|skipped"}
+#   final   : {"status":"awaiting_approval","staged_path":..,"target_path":..,
+#              "content_digest":..,"document_generation":..,"council":"reviewed|skipped"}
 #   error   : nonzero exit + {"status":"error","reason":..}
 # All human-facing artifacts are files; stdout is machine JSON only (logs go to stderr).
 set -euo pipefail
@@ -26,6 +27,9 @@ ROUND_CAP="${DOC_WRITER_ROUND_CAP:-4}"
 RUN_TIMEOUT="${DOC_WRITER_TIMEOUT:-1000}"           # agent draft budget
 COUNCIL_TIMEOUT="${DOC_WRITER_COUNCIL_TIMEOUT:-500}"  # council review budget (only on finalize)
 COUNCIL_SKILL="${DOC_WRITER_COUNCIL_SKILL:-}"   # optional path to the council skill; empty = try default
+PUBLICATION_BIN="${DOC_WRITER_PUBLICATION_BIN:-$HERE/bin/doc-writer-publication}"
+REQUEST_ID="${DOC_WRITER_REQUEST_ID:-}"
+GENERATED_AT="${DOC_WRITER_GENERATED_AT:-$(date '+%Y-%m-%dT%H:%M:%S%z')}"
 
 log() { printf '%s doc-writer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
 emit() { printf '%s\n' "$1"; }                 # the one machine-JSON line on stdout
@@ -54,6 +58,8 @@ run_council() {
 need() { command -v "$1" >/dev/null 2>&1 || { echo "doc-writer: missing dependency: $1" >&2; exit 2; }; }
 need jq; need python3
 command -v "$MEWRITE" >/dev/null || die "missing mewritecode ($MEWRITE)"
+[[ -x "$PUBLICATION_BIN" ]] || die "missing publication helper: $PUBLICATION_BIN"
+[[ "$REQUEST_ID" =~ ^[1-9][0-9]*$ ]] || die "DOC_WRITER_REQUEST_ID must be a positive integer"
 [[ -d "$HANDBOOK_DIR" ]] || die "missing handbook dir: $HANDBOOK_DIR"
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || die "GNU timeout required"
@@ -89,6 +95,48 @@ esac
 slug="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' \
         | sed 's/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-48)"
 slug="${slug:-untitled}"
+
+target_name() {
+  local date_str="${GENERATED_AT:0:10}" target="${doc_type}-${GENERATED_AT:0:10}-${slug}.md" n
+  [[ "$date_str" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "DOC_WRITER_GENERATED_AT must start with YYYY-MM-DD"
+  if [[ -e "$INBOX_DIR/$target" ]]; then
+    n=2
+    while [[ -e "$INBOX_DIR/${doc_type}-${date_str}-${slug}-${n}.md" ]]; do n=$((n+1)); done
+    target="${doc_type}-${date_str}-${slug}-${n}.md"
+  fi
+  printf '%s' "$target"
+}
+
+generation_hash="$(python3 - "$MODEL" "$doc_type" "$0" "$persona_file" "$HANDBOOK_DIR" "$PUBLICATION_BIN" <<'PY'
+import hashlib, pathlib, sys
+model, doc_type, harness, persona, handbook, publisher = sys.argv[1:]
+h = hashlib.sha256()
+for value in ("legacy-doc-writer-v1", model, doc_type):
+    h.update(value.encode()); h.update(b"\0")
+for path in [pathlib.Path(harness), pathlib.Path(persona), pathlib.Path(publisher),
+             *sorted(pathlib.Path(handbook).glob("*.md"))]:
+    h.update(path.name.encode()); h.update(b"\0"); h.update(path.read_bytes()); h.update(b"\0")
+print(h.hexdigest())
+PY
+)"
+
+[[ -d "$INBOX_DIR" ]] || die "missing inbox dir: $INBOX_DIR"
+request_stage="$STAGE_DIR/requests/$REQUEST_ID"
+mkdir -p "$request_stage"
+existing_publish="$request_stage/publish.md"
+if [[ -f "$existing_publish" && ! -L "$existing_publish" ]]; then
+  staged="$($PUBLICATION_BIN stage --stage-root "$STAGE_DIR" --request-id "$REQUEST_ID" < "$existing_publish")"
+  [[ "$(jq -r '.status // empty' <<<"$staged")" == staged ]] || die "existing publication staging invalid"
+  grep -q '^human_reviewed: true$' "$existing_publish" || die "existing publication lacks approval marker"
+  council_state=skipped; grep -q '^council_reviewed: true$' "$existing_publish" && council_state=reviewed
+  stored_generation="$(awk '/^document_generation: /{print $2; exit}' "$existing_publish")"
+  [[ "$stored_generation" =~ ^legacy:[0-9a-f]{64}$ ]] || die "existing publication generation invalid"
+  emit "$(jq -cn --arg p "$(jq -r .staged_path <<<"$staged")" --arg t "$(target_name)" \
+    --arg d "$(jq -r .content_digest <<<"$staged")" --arg g "$stored_generation" --arg c "$council_state" \
+    '{status:"awaiting_approval",staged_path:$p,target_path:$t,content_digest:$d,
+      document_generation:$g,council:$c}')"
+  exit 0
+fi
 
 mkdir -p "$STAGE_DIR"
 work="$(mktemp -d "${TMPDIR:-/tmp}/doc-writer.XXXXXX")"; trap 'rm -rf "$work"' EXIT
@@ -177,7 +225,7 @@ fi
 oq_count="$(printf '%s' "$oq" | jq 'length')"
 
 # --- route: queue for answers, or finalize (council + write) -------------------------------------
-draftfile="$STAGE_DIR/${doc_type}-${slug}-r${round}.md"
+draftfile="$request_stage/draft.md"
 printf '%s\n' "$draft" > "$draftfile"
 
 # finalize when: caller forced it, OR no open questions, OR round cap reached.
@@ -193,35 +241,35 @@ if (( ! force_final )); then
   exit 0
 fi
 
-# --- finalize: council review, then write to private-docs inbox -----------------------------------
+# --- finalize: council review, then stage exact bytes for publication approval ---------------------
 council_state="skipped"; council_note="council skipped: infra unavailable in this environment"
 council_out="$work/council.md"
 if run_council "$draftfile" "$council_out"; then
   council_state="reviewed"; council_note="$(cat "$council_out")"
 fi
 
-mkdir -p "$INBOX_DIR"
-date_str="$(date +%Y-%m-%d)"
-out="$INBOX_DIR/${doc_type}-${date_str}-${slug}.md"
-# never clobber an existing brain file: suffix -2, -3, ...
-if [[ -e "$out" ]]; then n=2; while [[ -e "$INBOX_DIR/${doc_type}-${date_str}-${slug}-${n}.md" ]]; do n=$((n+1)); done
-  out="$INBOX_DIR/${doc_type}-${date_str}-${slug}-${n}.md"; fi
-
+target="$(target_name)"
+final="$work/final.md"
 {
-  # Provenance frontmatter: this is machine-generated and NOT human-reviewed until curated.
   printf -- '---\n'
   printf 'written_by: doc-writer-agent\n'
-  printf 'human_reviewed: false\n'
+  printf 'human_reviewed: true\n'
   printf 'council_reviewed: %s\n' "$([[ "$council_state" == reviewed ]] && echo true || echo false)"
+  printf 'document_generation: legacy:%s\n' "$generation_hash"
   printf 'doc_type: %s\n' "$doc_type"
-  printf 'generated: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')"
+  printf 'generated: %s\n' "$GENERATED_AT"
   printf -- '---\n\n'
   if [[ "$council_state" != reviewed ]]; then
     printf '> \342\232\240 COUNCIL SKIPPED \342\200\224 NOT REVIEWED. %s\n\n' "$council_note"
   fi
   printf '%s\n\n' "$draft"
   printf -- '---\n\n## Council Review\n\n%s\n' "$council_note"
-} > "$out"
+} > "$final"
 
-log "wrote $out (council=$council_state)"
-emit "$(jq -cn --arg p "$out" --arg c "$council_state" '{status:"written", doc_path:$p, council:$c}')"
+staged="$($PUBLICATION_BIN stage --stage-root "$STAGE_DIR" --request-id "$REQUEST_ID" < "$final")"
+[[ "$(jq -r '.status // empty' <<<"$staged")" == staged ]] || die "publication staging failed"
+log "staged request $REQUEST_ID for exact publication approval (council=$council_state)"
+emit "$(jq -cn --arg p "$(jq -r .staged_path <<<"$staged")" --arg t "$target" \
+  --arg d "$(jq -r .content_digest <<<"$staged")" --arg g "legacy:$generation_hash" --arg c "$council_state" \
+  '{status:"awaiting_approval", staged_path:$p, target_path:$t, content_digest:$d,
+    document_generation:$g, council:$c}')"

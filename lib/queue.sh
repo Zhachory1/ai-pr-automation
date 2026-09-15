@@ -115,7 +115,8 @@ WITH candidate AS (
    WHERE r.id = c.id
   RETURNING r.*
 )
-SELECT json_build_object('id', id, 'kind', kind, 'payload', payload, 'dedupe_key', dedupe_key)::text
+SELECT json_build_object('id', id, 'kind', kind, 'payload', payload, 'dedupe_key', dedupe_key,
+       'created_at', created_at)::text
   FROM claimed;
 SQL
 }
@@ -485,6 +486,17 @@ WITH eligible AS (
    FROM publication p WHERE h.request_id=p.request_id RETURNING h.request_id
 )
 SELECT request_id FROM review;
+SQL
+}
+
+doc_publication_claimed() {
+  local id="$1" nonce="$2"
+  _psql -v id="$id" -v nonce="$nonce" <<'SQL'
+SELECT json_build_object('staged_path',p.staged_path,'target_path',p.target_path,
+       'content_digest',p.content_digest,'document_generation',p.document_generation)::text
+  FROM doc_publications p JOIN requests r ON r.id=p.request_id
+ WHERE p.request_id=:'id' AND p.state='approved' AND p.approved_at IS NOT NULL
+   AND r.status='running' AND r.run_nonce=:'nonce' AND r.lease_expires_at>clock_timestamp();
 SQL
 }
 

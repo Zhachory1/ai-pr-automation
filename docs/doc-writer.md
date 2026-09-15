@@ -1,8 +1,8 @@
 # Doc-writer fleet: PRD / Design Doc writers
 
 A fleet agent-server that drafts Rokt product/design docs from the status UI, loops the operator in to
-answer the doc's open questions, runs a council review, and writes the finished doc to
-`~/private-docs/inbox`.
+answer the doc's open questions, runs a council review, previews exact final bytes, and writes them
+to `~/private-docs/inbox` only after explicit Publish approval.
 
 ## Flow
 
@@ -14,7 +14,10 @@ doc-writer-server: run the persona (PRD or DD) + bundled Rokt handbook → draft
         Refine (with answers) → re-enqueue round N+1 (folds answers in)   [loop, cap 4 rounds]
         Finalize            → skip remaining questions
    → run council on the draft → append "## Council Review"
-   → write <type>-<date>-<slug>.md to ~/private-docs/inbox  (marked human_reviewed:false)
+   → stage exact final bytes outside private-docs
+   → human-review queue: preview bytes + target + digest → Publish / Dismiss
+   → Publish writes one no-overwrite <type>-<date>-<slug>.md to ~/private-docs/inbox
+      (marked human_reviewed:true because those exact bytes were approved)
 ```
 
 ## Personas
@@ -34,14 +37,16 @@ doc-writer-server: run the persona (PRD or DD) + bundled Rokt handbook → draft
 - **Shared context is read-only**: PRD and DD writers recall prior decisions from Hindsight's
   `fleet-shared` bank and query Coderag for named repositories, Systems, and Components. They cannot
   retain shared memories or modify indexed code.
-- Every written doc carries frontmatter `written_by: doc-writer-agent`, `human_reviewed: false`,
-  `council_reviewed: <bool>`. Nothing is auto-committed.
+- Every published doc carries frontmatter `written_by: doc-writer-agent`, `human_reviewed: true`,
+  `council_reviewed: <bool>`. Approval is bound to staged path, target, SHA-256 digest, and document
+  generation. Nothing is auto-committed.
 - **Council degrades gracefully**: if the council skill/infra is unavailable in the container, the doc
   is still written but with an unmissable `⚠ COUNCIL SKIPPED — NOT REVIEWED` banner and
   `council_reviewed: false`. (v1 images do not bundle the council skill; docs are marked accordingly.)
 - **Spend cap**: the UI is credential-free (enqueue only); `DOC_WRITE_DAILY_CAP` (default 30) bounds
   doc-write requests per day. The round cap (default 4) bounds the refine loop.
-- Slugs are `[a-z0-9-]` truncated; existing inbox files are never clobbered (suffix `-2`, `-3`).
+- Slugs are `[a-z0-9-]` truncated. Target name is fixed before approval. Publication uses
+  `renameat2(RENAME_NOREPLACE)` and never clobbers or picks a new suffix after approval.
 - An absent/malformed open-questions block is treated as "needs human", never a silent finalize.
 
 ## Run it

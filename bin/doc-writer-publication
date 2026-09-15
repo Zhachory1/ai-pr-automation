@@ -131,7 +131,8 @@ def stage(args):
     elif digest(pending) != expected:
         fail("staged temporary file has different digest")
     try:
-        rename_noreplace(temporary, target)
+        os.link(temporary, target, follow_symlinks=False)
+        temporary.unlink()
     except FileExistsError:
         existing = regular_bytes(target)
         if existing is None or digest(existing) != expected:
