@@ -1,7 +1,7 @@
 # DD: Hermes OAuth Login
 
 - Owner: Zhach
-- Status: draft
+- Status: approved; provider slices ship separately
 - PRD: [`PRD-oauth-login.md`](PRD-oauth-login.md)
 - Deadline: 2026-09-15
 
@@ -118,9 +118,11 @@ Pinned OAuth facts:
 - M2a regression: no controller dependency, caller network, route, or approved generation.
 - Manual gate: human login, status after fresh container, then separately approved OAuth-only smoke with same-provider API key unset.
 
-## Open Questions
+## Decisions
 
-- Provider account terms and Anthropic `org:create_api_key` scope. Human owns decision and browser approval.
+- OpenAI Codex first. Anthropic second.
+- Human accepted Anthropic requested scopes. Browser approval still controls provider terms.
+- Each provider needs own status, restart, refresh, logout, and OAuth-only smoke evidence.
 
 ## Next Gate
 

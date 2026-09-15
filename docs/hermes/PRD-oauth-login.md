@@ -1,7 +1,7 @@
 # PRD: Hermes OAuth Login
 
 - Owner: Zhach
-- Status: draft
+- Status: approved; OpenAI first, Anthropic second
 - Deadline: 2026-09-15
 - Source: [`grounding-oauth-login.md`](grounding-oauth-login.md)
 
@@ -77,10 +77,12 @@ What matters:
 6. Unset same-provider API-key fallback.
 7. Ask human before one paid/manual OAuth smoke.
 
-## Open Questions
+## Decisions
 
-- Which provider logs in first: Anthropic or OpenAI Codex? Owner: Zhach. Does not block dual-provider helper.
-- Do provider terms allow intended account use? Owner: Zhach. Blocks actual browser approval, not implementation.
+- OpenAI Codex ships first.
+- Anthropic ships second in separate PR.
+- Zhach accepted Anthropic scopes `org:create_api_key user:profile user:inference` on 2026-09-15.
+- Browser approval remains final provider-terms gate.
 
 ## Next Gate
 
