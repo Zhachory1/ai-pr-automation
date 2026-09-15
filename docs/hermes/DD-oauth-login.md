@@ -1,7 +1,7 @@
 # DD: Hermes OAuth Login
 
 - Owner: Zhach
-- Status: OpenAI OAuth validated; Anthropic slice pending
+- Status: OpenAI OAuth validated; Anthropic slice in progress
 - PRD: [`PRD-oauth-login.md`](PRD-oauth-login.md)
 - Deadline: 2026-09-15
 

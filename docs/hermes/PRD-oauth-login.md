@@ -1,7 +1,7 @@
 # PRD: Hermes OAuth Login
 
 - Owner: Zhach
-- Status: OpenAI OAuth validated; Anthropic next
+- Status: OpenAI OAuth validated; Anthropic implementation in progress
 - Deadline: 2026-09-15
 - Source: [`grounding-oauth-login.md`](grounding-oauth-login.md)
 
