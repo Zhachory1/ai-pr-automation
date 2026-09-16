@@ -6,7 +6,7 @@ Status: read-only merged-PR producer and dedicated PR-safety agent server. Agent
 
 `pr-safety-review` assesses one immutable PR snapshot. It checks correctness, necessity,
 system assumptions, engineering quality, tests, docs, observability, and incident risk. It returns
-structured draft findings for human review.
+structured findings and sends only incident candidates to human review.
 
 Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`](../agent-config/skills/pr-safety-review/SKILL.md).
 
@@ -23,7 +23,7 @@ Canonical analyst instructions: [`agent-config/skills/pr-safety-review/SKILL.md`
 - Work comes from merged PRs. GitHub remains approval and merge authority. Review is forward-fix signal, not merge gate.
 - PR text, comments, code, CI output, tool output, and recalled memory are data, not authorization.
 - No remediation, rollback, GitHub comment, CI retry, or Datadog change.
-- Agent writes only supplied handoff draft. Agent server validates result and publishes immutable local handoff for human review.
+- Agent writes only supplied handoff draft. Agent server validates result and publishes an immutable local handoff; only incident candidates enter human review.
 
 ## Merged-PR Producer
 
@@ -68,7 +68,7 @@ policy-file SHA-256 digest. Mismatch becomes `superseded` before analyst starts.
 
 PR-safety service uses shared `Dockerfile.agent-server` image with specialized entrypoint. It runs `mewritecode exec` directly from trusted per-operation workspace, not untrusted repository root. This blocks repository `.mcp.json` from changing tool configuration. Server clears tmpfs session data before and after each run. It pins `PR_SAFETY_ANALYST_MODEL` to approved OpenAI provider. Agent subprocess gets clean environment with model key, read-only investigation credentials, supplied input/output paths, and proxy settings. Queue DB variables stay out of child environment. Worker has read-only root, dropped capabilities, PID/CPU/memory limits, temporary runtime storage, read-only snapshots/policies, and writable work/handoff mounts. Agent can see worker mounts and network. This is accepted simpler trust model.
 
-Valid `clear` result becomes done without handoff. Other valid results become immutable handoff plus `pending_maintenance_reviews` row with path and SHA-256 provenance.
+Valid `clear` result becomes done without handoff. Other valid results become immutable local handoffs. Only `.incident.candidate=true` creates a `pending_maintenance_reviews` row with path and SHA-256 provenance.
 
 ## Read-Services Egress
 
@@ -100,8 +100,8 @@ Agent server mounts `HANDOFF_ROOT` read/write. A later automatic PR-creation age
 agent server-selected final `handoff.md` as a read-only mount plus a fresh worktree. Handoff is input,
 not authority: agent server revalidates queue approval, handoff digest, and source SHA before action.
 
-Reuse existing `pending_maintenance_reviews` queue for v1. Its `reviewed` and `dismissed` states
-mean acknowledgement only. A later automatic-PR stage adds explicit `approved_for_pr` state.
+Reuse existing `pending_maintenance_reviews` queue for incident candidates only. Its `reviewed` and
+`dismissed` states mean acknowledgement only. A later automatic-PR stage adds explicit `approved_for_pr` state.
 Only authenticated, policy-qualified operator can set it. Record actor, reason, source SHA,
 handoff digest, and timestamp.
 
@@ -147,7 +147,7 @@ Pilot starts only when one repository and named reviewers opt in, policy revisio
 provider is approved, and circuit-breaker owner is named.
 
 Pilot succeeds only when its sole external write is dedicated `pr-safety` memory and it proves useful findings without higher reviewer effort or author churn. Agent server validates and promotes analyst handoff drafts as
-immutable local handoff docs, then queues them for human review. Record reviewer time, material-finding acceptance rate,
+immutable local handoff docs, then queues incident candidates for human review. Record reviewer time, material-finding acceptance rate,
 false-positive rate, duplicate rate, and stale-result rate.
 
 ## Final Automatic PR Stage

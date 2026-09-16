@@ -155,6 +155,7 @@ valid_result() {
       (.blast_radius == null or (.blast_radius | type == "string")) and has("recommended_action") and
       (.recommended_action == null or (.recommended_action | IN("investigate", "forward_fix_candidate", "revert_candidate"))) and
       (.evidence | type == "array" and all(.[]; type == "string"))) and
+    ((.status == "incident_candidate") == .incident.candidate) and
     (.human_decisions_needed | type == "array" and all(.[]; type == "string")) and
     (.status != "clear" or ((.findings | length) == 0 and (.coverage.gaps | length) == 0 and
       (.documentation.required_updates | length) == 0 and (.observability.recommended_metrics | length) == 0 and
@@ -183,8 +184,20 @@ valid_handoff() {
   fi
 }
 
+handoff_incident_candidate() {
+  local marker
+  marker="$(awk -F': ' '/^incident_candidate: (true|false)$/{print $2; exit}' "$1")"
+  if [[ -n "$marker" ]]; then
+    printf '%s\n' "$marker"
+  elif grep -q '^status: incident_candidate$' "$1"; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
+
 queue_handoff() {
-  local id="$1" final="$2" op="$3" head="$4" base="$5" diff="$6" policy="$7" policy_digest="$8" result="${9:-}"
+  local id="$1" final="$2" op="$3" head="$4" base="$5" diff="$6" policy="$7" policy_digest="$8" result="${9:-}" human_review="${10:-false}"
   local handoff_digest provenance proposal
   handoff_digest="$(digest < "$final")"
   provenance="$(jq -cn --arg op "$op" --arg path "$final" --arg digest "$handoff_digest" --arg head "$head" --arg base "$base" --arg diff "$diff" --arg policy "$policy" --arg policy_digest "$policy_digest" '{operation_id:$op,handoff_path:$path,handoff_digest:$digest,head_sha:$head,base_sha:$base,diff_hash:$diff,policy_version:$policy,policy_digest:$policy_digest,written_by:"agent-server-pr-safety"}')"
@@ -193,7 +206,9 @@ queue_handoff() {
   else
     proposal="$(jq -cn --arg path "$final" --arg digest "$handoff_digest" '{summary:"Recovered PR safety handoff",findings:[],handoff_path:$path,handoff_digest:$digest}')"
   fi
-  pending_maintenance_review_operation_exists "$op" || pending_maintenance_review_insert "$id" "$proposal" "$provenance" "$ATTEMPT_NONCE" || return 1
+  if [[ "$human_review" == true ]]; then
+    pending_maintenance_review_operation_exists "$op" || pending_maintenance_review_insert "$id" "$proposal" "$provenance" "$ATTEMPT_NONCE" || return 1
+  fi
   queue_mark_done "$id" "handoff=$handoff_digest" "$ATTEMPT_NONCE" >/dev/null
 }
 
@@ -225,10 +240,12 @@ process_one() {
   # (owner/name with no spaces or extra slashes; pr a positive int), so only the single repo slash
   # needs escaping. The operation_id stays as suffix for uniqueness and dedup.
   local slug="${repo//\//__}__pr${pr}__${op}"
-  local final="$HANDOFF_ROOT/$slug.md" work="$WORK_ROOT/$op" draft="$WORK_ROOT/$op/handoff.md" result="$WORK_ROOT/$op/result.json" prompt="$WORK_ROOT/$op/prompt.md"
+  local final="$HANDOFF_ROOT/$slug.md" work="$WORK_ROOT/$op" draft="$WORK_ROOT/$op/handoff.md" result="$WORK_ROOT/$op/result.json" prompt="$WORK_ROOT/$op/prompt.md" existing_incident
   if [[ -e "$final" ]]; then
     valid_handoff "$final" "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy" || { fail "$id" "invalid existing handoff"; return; }
-    queue_handoff "$id" "$final" "$op" "$head" "$base" "$diff" "$policy" "$policy_digest" || fail "$id" "handoff queue insert failed"
+    existing_incident="$(handoff_incident_candidate "$final")"
+    queue_handoff "$id" "$final" "$op" "$head" "$base" "$diff" "$policy" "$policy_digest" "" "${existing_incident:-false}" \
+      || fail "$id" "handoff queue insert failed"
     return
   fi
   rm -rf "$work"; mkdir -p "$work"; ln -s "$snapshot" "$work/snapshot"; : > "$draft"; chmod 600 "$draft"
@@ -259,7 +276,8 @@ EOF
   if (( status != 0 )); then fail "$id" "analyst exited $status"; return; fi
   python3 "$HERE/bin/pr-safety-json-repair.py" "$result" || true
   valid_result "$result" "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy" "$policy_digest" || { fail "$id" "invalid analyst result"; return; }
-  local result_status; result_status="$(jq -r .status "$result")"
+  local result_status incident_candidate; result_status="$(jq -r .status "$result")"
+  incident_candidate="$(jq -r .incident.candidate "$result")"
   if [[ "$result_status" == superseded ]]; then supersede "$id" "analyst reported superseded"; return; fi
   if [[ "$result_status" == clear ]]; then
     [[ "$(queue_mark_done "$id" "clear" "$ATTEMPT_NONCE")" == 1 ]] || return
@@ -274,8 +292,8 @@ EOF
   # draft is a failure and must not be papered over by the identity stamp.
   [[ -f "$draft" && ! -L "$draft" && -s "$draft" ]] || { fail "$id" "invalid analyst handoff draft"; return; }
   local stamped="$WORK_ROOT/$op/handoff.stamped.md"
-  { printf '<!-- pr-safety identity\noperation_id: %s\nrepo: %s\npr: %s\nhead_sha: %s\nbase_sha: %s\ndiff_hash: %s\npolicy_version: %s\nstatus: %s\n-->\n\n' \
-      "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy" "$result_status"; cat "$draft"; } > "$stamped" && mv "$stamped" "$draft"
+  { printf '<!-- pr-safety identity\noperation_id: %s\nrepo: %s\npr: %s\nhead_sha: %s\nbase_sha: %s\ndiff_hash: %s\npolicy_version: %s\nstatus: %s\nincident_candidate: %s\n-->\n\n' \
+      "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy" "$result_status" "$incident_candidate"; cat "$draft"; } > "$stamped" && mv "$stamped" "$draft"
   valid_handoff "$draft" "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy" "$result_status" || { fail "$id" "invalid analyst handoff draft"; return; }
 
   local tmp
@@ -284,11 +302,14 @@ EOF
   if ! ln "$tmp" "$final"; then
     rm -f "$tmp"
     valid_handoff "$final" "$op" "$repo" "$pr" "$head" "$base" "$diff" "$policy" || { fail "$id" "invalid existing handoff"; return; }
-    queue_handoff "$id" "$final" "$op" "$head" "$base" "$diff" "$policy" "$policy_digest" || fail "$id" "handoff queue insert failed"
+    existing_incident="$(handoff_incident_candidate "$final")"
+    queue_handoff "$id" "$final" "$op" "$head" "$base" "$diff" "$policy" "$policy_digest" "" "${existing_incident:-false}" \
+      || fail "$id" "handoff queue insert failed"
     return
   fi
   rm -f "$tmp"
-  queue_handoff "$id" "$final" "$op" "$head" "$base" "$diff" "$policy" "$policy_digest" "$result" || fail "$id" "handoff queue insert failed"
+  queue_handoff "$id" "$final" "$op" "$head" "$base" "$diff" "$policy" "$policy_digest" "$result" "$incident_candidate" \
+    || fail "$id" "handoff queue insert failed"
 }
 
 queue_reclaim_stale "$KIND"

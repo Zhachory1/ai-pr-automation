@@ -38,7 +38,22 @@ queue_enqueue pr-safety-review "$(payload op-success "$HEAD" "$DIFF")" op-succes
 bin/agent-server-pr-safety
 check "success promoted private handoff" '[[ -f "$HANDOFF_ROOT/o__r__pr7__op-success.md" ]] && [[ "$(stat -f "%Lp" "$HANDOFF_ROOT/o__r__pr7__op-success.md")" == 600 ]]'
 check "agent session data removed" '[[ -z "$(find "$PR_SAFETY_AGENT_DIR/sessions" -mindepth 1 -print -quit)" ]]'
-check "success queued once with digest provenance" "q \"SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=(SELECT id FROM requests WHERE dedupe_key='op-success');\" | grep -qx 1 && q \"SELECT provenance->>'handoff_digest' FROM pending_maintenance_reviews;\" | grep -Eq '^[0-9a-f]{64}$'"
+check "non-incident handoff stays out of human queue" "q \"SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=(SELECT id FROM requests WHERE dedupe_key='op-success');\" | grep -qx 0 && grep -q '^incident_candidate: false$' '$HANDOFF_ROOT/o__r__pr7__op-success.md'"
+export TEST_OPERATION_ID=op-incident TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
+queue_enqueue pr-safety-review "$(payload op-incident "$HEAD" "$DIFF")" op-incident >/dev/null
+bin/agent-server-pr-safety
+check "incident candidate queues one human review" "q \"SELECT count(*) FROM pending_maintenance_reviews WHERE request_id=(SELECT id FROM requests WHERE dedupe_key='op-incident');\" | grep -qx 1 && q \"SELECT provenance->>'handoff_digest' FROM pending_maintenance_reviews;\" | grep -Eq '^[0-9a-f]{64}$' && grep -q '^incident_candidate: true$' '$HANDOFF_ROOT/o__r__pr7__op-incident.md'"
+q "DELETE FROM pending_maintenance_reviews WHERE request_id=(SELECT id FROM requests WHERE dedupe_key='op-incident');" >/dev/null
+python3 - "$HANDOFF_ROOT/o__r__pr7__op-incident.md" <<'PY'
+from pathlib import Path
+import sys
+path=Path(sys.argv[1]); path.write_text('\n'.join(line for line in path.read_text().splitlines() if not line.startswith('incident_candidate:'))+'\n')
+PY
+_psql -v payload="$(payload op-incident "$HEAD" "$DIFF")" <<'SQL' >/dev/null
+INSERT INTO requests(kind, payload, dedupe_key) VALUES ('pr-safety-review', :'payload'::jsonb, 'op-incident');
+SQL
+bin/agent-server-pr-safety
+check "legacy incident handoff recovery still queues human review" "q \"SELECT count(*) FROM pending_maintenance_reviews WHERE provenance->>'operation_id'='op-incident';\" | grep -qx 1"
 export TEST_OPERATION_ID=op-clear TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-clear "$HEAD" "$DIFF")" op-clear >/dev/null
 bin/agent-server-pr-safety
@@ -55,7 +70,7 @@ _psql -v payload="$(payload op-success "$HEAD" "$DIFF")" <<'SQL' >/dev/null
 INSERT INTO requests(kind, payload, dedupe_key) VALUES ('pr-safety-review', :'payload'::jsonb, 'op-success');
 SQL
 bin/agent-server-pr-safety
-check "existing handoff queues no duplicate operation" "q \"SELECT count(*) FROM requests WHERE dedupe_key='op-success';\" | grep -qx 2 && q \"SELECT count(*) FROM pending_maintenance_reviews;\" | grep -qx 1"
+check "existing non-incident handoff queues no human review" "q \"SELECT count(*) FROM requests WHERE dedupe_key='op-success';\" | grep -qx 2 && q \"SELECT count(*) FROM pending_maintenance_reviews;\" | grep -qx 1"
 
 BAD_HEAD="$(printf 'f%.0s' {1..40})"; export TEST_OPERATION_ID=op-stale TEST_HEAD="$BAD_HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-stale "$BAD_HEAD" "$DIFF")" op-stale >/dev/null
@@ -88,6 +103,11 @@ export TEST_OPERATION_ID=op-invalid-result-schema TEST_HEAD="$HEAD" TEST_DIFF="$
 queue_enqueue pr-safety-review "$(payload op-invalid-result-schema "$HEAD" "$DIFF")" op-invalid-result-schema >/dev/null
 bin/agent-server-pr-safety
 check "malformed result fields fail schema validation" "q \"SELECT status FROM requests WHERE dedupe_key='op-invalid-result-schema';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/o__r__pr7__op-invalid-result-schema.md\" ]]"
+
+export TEST_OPERATION_ID=op-status-mismatch TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
+queue_enqueue pr-safety-review "$(payload op-status-mismatch "$HEAD" "$DIFF")" op-status-mismatch >/dev/null
+bin/agent-server-pr-safety
+check "incident status without candidate flag fails schema validation" "q \"SELECT status FROM requests WHERE dedupe_key='op-status-mismatch';\" | grep -qx failed && [[ ! -e \"$HANDOFF_ROOT/o__r__pr7__op-status-mismatch.md\" ]]"
 
 export TEST_OPERATION_ID=op-invalid-handoff TEST_HEAD="$HEAD" TEST_DIFF="$DIFF"
 queue_enqueue pr-safety-review "$(payload op-invalid-handoff "$HEAD" "$DIFF")" op-invalid-handoff >/dev/null

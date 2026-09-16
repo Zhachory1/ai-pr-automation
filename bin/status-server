@@ -627,7 +627,7 @@ def human_review_table(rows: list[list[str]]) -> str:
     return ("<section><h2>Human review queue (" + str(len(rows)) + ")</h2>"
             "<p class=hint>Agent-flagged work: <b>review-ready</b> PRs the agent judged done (your call to "
             "approve+merge on GitHub), <b>maintenance</b> work it left for a human, and <b>pr-safety</b> "
-            "handoff recommendations. Reviewed/Dismiss only update this local queue; they never write to GitHub.</p>"
+            "incident candidates. Reviewed/Dismiss only update this local queue; they never write to GitHub.</p>"
             "<table><thead><tr><th>id</th><th>type</th><th>PR</th><th>agent summary</th>"
             "<th>findings</th><th>handoff</th><th>created</th><th>queue</th></tr></thead><tbody>" + body + "</tbody></table></section>")
 
