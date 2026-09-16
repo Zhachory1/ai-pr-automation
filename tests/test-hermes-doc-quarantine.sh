@@ -6,6 +6,7 @@ cid="$(docker run -d --rm -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=t -e POSTGRES_
 cleanup() { docker rm -f "$cid" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 for _ in $(seq 1 30); do docker exec "$cid" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
+docker exec "$cid" pg_isready -U postgres >/dev/null
 for file in 01-schema.sql 02-agent-server.sql 06-hermes-doc-foundation.sql; do docker cp "docker/initdb/$file" "$cid:/tmp/$file"; done
 docker exec "$cid" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 \
   -f /tmp/01-schema.sql -f /tmp/02-agent-server.sql -f /tmp/06-hermes-doc-foundation.sql >/dev/null
