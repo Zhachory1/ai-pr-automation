@@ -30,8 +30,9 @@ jq -e '
   ($h.environment.OPENAI_BASE_URL == "https://api.openai.com/v1") and
   ($h.environment.HERMES_SAFE_MODE == "1") and
   ($h.environment.HERMES_IGNORE_RULES == "1") and
+  ($h.environment.HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS == "300") and
   ($h.environment.HTTPS_PROXY == "http://hermes-doc-egress:3128") and
-  ($h.environment | keys == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENSSL_CONF"]) and
+  ($h.environment | keys == ["API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_KEY", "API_SERVER_PORT", "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "HERMES_IGNORE_RULES", "HERMES_SAFE_MODE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENSSL_CONF"]) and
   (($h | has("ports")) | not) and
   (($h | has("env_file")) | not) and
   (($h | has("secrets")) | not) and

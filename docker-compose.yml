@@ -525,6 +525,7 @@ services:
       OPENAI_BASE_URL: https://api.openai.com/v1
       HERMES_SAFE_MODE: "1"
       HERMES_IGNORE_RULES: "1"
+      HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS: "300"
       OPENSSL_CONF: /etc/hermes/oauth-openssl.cnf
       HTTPS_PROXY: http://hermes-doc-egress:3128
       HTTP_PROXY: http://hermes-doc-egress:3128

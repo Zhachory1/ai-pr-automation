@@ -1,7 +1,7 @@
 # Plan: M2b Shadow And Routing
 
 - Owner: Zhach
-- Status: S1/S2 implemented; paid shadow still blocked
+- Status: first shadow stopped on watchdog guardrail; retry blocked
 - PRD: [`PRD-m2-doc-runtime.md`](PRD-m2-doc-runtime.md)
 - DD: [`DD-m2-doc-runtime.md`](DD-m2-doc-runtime.md)
 - Prior council: [`council-m2-doc-runtime.md`](council-m2-doc-runtime.md)
@@ -148,6 +148,19 @@ What matters:
 - full non-routing gate generation: `3664d84e54cf0d0e7ced79405fceea52049f555f7f217b79e6d480da6a1f9660`;
 - final code review: pass, no blockers;
 - no Compose service selects Hermes model mode.
+
+## First Shadow Attempt
+
+Date: 2026-09-16.
+
+- Five direct OpenAI baselines completed.
+- Direct usage: 142,004 input + 36,033 output = 178,037 tokens.
+- First Hermes shadow failed before output: 60-second Codex SSE idle watchdog.
+- Six of ten approved model calls attempted. Remaining pairs did not run.
+- No queue, review, or publication effect occurred.
+- Runtime provider key returned to empty after stop.
+- Fix sets pinned long-document event-stale timeout to 300 seconds.
+- Retry needs new human call-count approval.
 
 ## Review
 
