@@ -20,6 +20,7 @@ COMPONENTS = [
     "bin/doc-writer-publication",
     "bin/doc-writer-reconcile",
     "bin/doc-writer-server",
+    "bin/hermes-doc-model",
     "bin/hermes-doc-request",
     "bin/hermes-run",
     "docker/Dockerfile.hermes-doc-egress",
@@ -35,6 +36,7 @@ COMPONENTS = [
     "scripts/hermes-doc-gate.py",
 ]
 CHECKS = [
+    ("model-seam", ["bash", "tests/test-hermes-doc-model.sh"]),
     ("request-renderer", ["python3", "tests/test-hermes-doc-request.py"]),
     ("runs-adapter", ["python3", "tests/test-hermes-run.py"]),
     ("schema", ["bash", "tests/test-hermes-doc-schema.sh"]),

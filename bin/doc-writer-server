@@ -28,6 +28,7 @@ PER_REQUEST_TIMEOUT="${DOC_WRITER_PER_REQUEST_TIMEOUT:-1800}"   # 25m ceiling (a
 LOOP_HEARTBEAT_MAX="${DOC_WRITER_LOOP_HEARTBEAT_MAX:-7200}"
 ONCE="${DOC_WRITER_ONCE:-false}"
 HARNESS="${DOC_WRITER_HARNESS:-$HERE/bin/doc-writer}"
+RUNTIME="${DOC_WRITER_RUNTIME:-legacy}"
 PUBLICATION_BIN="${DOC_WRITER_PUBLICATION_BIN:-$HERE/bin/doc-writer-publication}"
 STAGE_DIR="${DOC_WRITER_STAGE_DIR:-$HOME/.local/share/ai-pr-automation/doc-writer}"
 INBOX_DIR="${DOC_WRITER_INBOX_DIR:-$HOME/private-docs/inbox}"
@@ -156,7 +157,7 @@ process_one() {
   fi
 
   local outfile; outfile="$(mktemp)"; local rc=0
-  DOC_WRITER_REQUEST_ID="$id" DOC_WRITER_GENERATED_AT="$generated_at" \
+  DOC_WRITER_REQUEST_ID="$id" DOC_WRITER_QUEUE_NONCE="$nonce" DOC_WRITER_GENERATED_AT="$generated_at" \
     "$TIMEOUT_BIN" --kill-after=15s "${PER_REQUEST_TIMEOUT}s" \
     "$HARNESS" --payload "$payload" >"$outfile" 2>>/dev/stderr &
   ACTIVE_CHILD="$!"
@@ -166,12 +167,23 @@ process_one() {
   # The harness prints exactly one machine-JSON result line on stdout; logs went to stderr.
   local result; result="$(grep -E '^\{"status":' "$outfile" | tail -1)"
   rm -f "$outfile"
-  if (( rc != 0 )) || [[ -z "$result" ]]; then
-    queue_mark_failed "$id" "doc-writer harness rc=$rc" "$nonce" >/dev/null
-    log "request $id failed (rc=$rc)"; return 0
+  local status=""
+  [[ -z "$result" ]] || status="$(jq -r '.status // empty' <<<"$result" 2>/dev/null || true)"
+  if [[ "$status" == reconcile ]]; then
+    local reason; reason="$(jq -r '.reason // "Hermes model phase requires reconciliation"' <<<"$result")"
+    queue_mark_reconcile "$id" "$reason" "$nonce" >/dev/null
+    log "request $id reconcile (model phase)"; return 0
   fi
-
-  local status; status="$(jq -r '.status' <<<"$result")"
+  if (( rc != 0 )) || [[ -z "$result" ]]; then
+    if [[ "$RUNTIME" == hermes && "$status" != failed ]]; then
+      queue_mark_reconcile "$id" "Hermes harness ended without terminal metadata (rc=$rc)" "$nonce" >/dev/null
+      log "request $id reconcile (ambiguous harness exit rc=$rc)"
+    else
+      queue_mark_failed "$id" "doc-writer harness rc=$rc" "$nonce" >/dev/null
+      log "request $id failed (rc=$rc)"
+    fi
+    return 0
+  fi
   case "$status" in
     open_questions)
       local draft_path oq_json

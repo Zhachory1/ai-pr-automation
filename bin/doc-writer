@@ -16,6 +16,10 @@ umask 077
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MEWRITE="${MEWRITECODE_BIN:-mewritecode}"
 MODEL="${DOC_WRITER_MODEL:-openai/gpt-5.6-sol}"
+RUNTIME="${DOC_WRITER_RUNTIME:-legacy}"
+HERMES_MODEL_BIN="${HERMES_DOC_MODEL_BIN:-$HERE/bin/hermes-doc-model}"
+QUEUE_NONCE="${DOC_WRITER_QUEUE_NONCE:-}"
+APPROVED_GENERATION="${HERMES_DOC_APPROVED_GENERATION:-}"
 CONFIG_ROOT="${MEWRITE_CODING_AGENT_DIR:-$HERE/agent-config/doc-writer}"
 AGENTS_DIR="${DOC_WRITER_AGENTS_DIR:-$CONFIG_ROOT/agents}"
 HANDBOOK_DIR="${DOC_WRITER_HANDBOOK_DIR:-$CONFIG_ROOT/handbook}"
@@ -55,14 +59,65 @@ run_council() {
   printf '%s\n' "$rev" > "$out"; return 0
 }
 
+run_hermes() {
+  local phase="$1" out="$2" payload="$3" timeout="$4" metadata helper_status digest rc=0 response
+  local -a args
+  metadata="$work/$phase-model.json"
+  args=("$phase" --request-id "$REQUEST_ID" --queue-nonce "$QUEUE_NONCE" \
+    --runtime-generation "$APPROVED_GENERATION" --stage-root "$STAGE_DIR")
+  [[ "$phase" == draft ]] && args+=(--payload "$payload")
+  HERMES_DOC_RUN_TIMEOUT="$timeout" "$HERMES_MODEL_BIN" "${args[@]}" >"$metadata" || rc=$?
+  if (( rc != 0 )); then
+    helper_status="$(jq -r '.status // empty' "$metadata" 2>/dev/null || true)"
+    if [[ "$helper_status" == reconcile || "$helper_status" == failed ]]; then
+      emit "$(jq -c --arg status "$helper_status" --arg phase "$phase" \
+        '{status:$status,reason:(.reason // ("Hermes "+$phase+" failed"))}' "$metadata")"
+      [[ "$helper_status" == reconcile ]] && exit 3 || exit 2
+    fi
+    die "Hermes $phase failed without terminal metadata"
+  fi
+  response="$(jq -r '.response_file // empty' "$metadata")"
+  digest="$(jq -r '.output_digest // empty' "$metadata")"
+  [[ "$response" == "requests/$REQUEST_ID/$phase-response.json" && "$digest" =~ ^[0-9a-f]{64}$ ]] \
+    || die "Hermes $phase returned invalid response metadata"
+  python3 - "$STAGE_DIR" "$REQUEST_ID" "$phase-response.json" "$out" "$digest" <<'PY'
+import hashlib, json, os, stat, sys
+root, request_id, name, target, expected = sys.argv[1:]
+fds = []
+try:
+    parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); fds.append(parent)
+    requests = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent); fds.append(requests)
+    directory = os.open(request_id, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=requests); fds.append(directory)
+    source_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+    with os.fdopen(source_fd, encoding="utf-8") as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError("Hermes response is not a regular file")
+        envelope = json.load(source)
+finally:
+    for descriptor in reversed(fds): os.close(descriptor)
+output = envelope.get("output") if isinstance(envelope, dict) else None
+if not isinstance(output, str) or hashlib.sha256(output.encode()).hexdigest() != expected:
+    raise SystemExit("Hermes response output digest mismatch")
+with open(target, "w", encoding="utf-8") as destination:
+    destination.write(output)
+PY
+}
+
 need() { command -v "$1" >/dev/null 2>&1 || { echo "doc-writer: missing dependency: $1" >&2; exit 2; }; }
 need jq; need python3
-command -v "$MEWRITE" >/dev/null || die "missing mewritecode ($MEWRITE)"
+case "$RUNTIME" in legacy|hermes) ;; *) die "DOC_WRITER_RUNTIME must be legacy or hermes" ;; esac
+if [[ "$RUNTIME" == legacy ]]; then
+  command -v "$MEWRITE" >/dev/null || die "missing mewritecode ($MEWRITE)"
+else
+  [[ -x "$HERMES_MODEL_BIN" ]] || die "missing Hermes model helper: $HERMES_MODEL_BIN"
+  [[ -n "$QUEUE_NONCE" ]] || die "DOC_WRITER_QUEUE_NONCE is required in Hermes mode"
+  [[ "$APPROVED_GENERATION" =~ ^[0-9a-f]{64}$ ]] || die "HERMES_DOC_APPROVED_GENERATION must be SHA-256"
+fi
 [[ -x "$PUBLICATION_BIN" ]] || die "missing publication helper: $PUBLICATION_BIN"
 [[ "$REQUEST_ID" =~ ^[1-9][0-9]*$ ]] || die "DOC_WRITER_REQUEST_ID must be a positive integer"
 [[ -d "$HANDBOOK_DIR" ]] || die "missing handbook dir: $HANDBOOK_DIR"
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
-[[ -n "$TIMEOUT_BIN" ]] || die "GNU timeout required"
+[[ "$RUNTIME" == hermes || -n "$TIMEOUT_BIN" ]] || die "GNU timeout required"
 
 PAYLOAD=""
 while [[ $# -gt 0 ]]; do case "$1" in --payload) PAYLOAD="${2:?}"; shift 2;; *) die "unknown arg: $1";; esac; done
@@ -107,7 +162,8 @@ target_name() {
   printf '%s' "$target"
 }
 
-generation_hash="$(python3 - "$MODEL" "$doc_type" "$0" "$persona_file" "$HANDBOOK_DIR" "$PUBLICATION_BIN" <<'PY'
+if [[ "$RUNTIME" == legacy ]]; then
+  generation_hash="$(python3 - "$MODEL" "$doc_type" "$0" "$persona_file" "$HANDBOOK_DIR" "$PUBLICATION_BIN" <<'PY'
 import hashlib, pathlib, sys
 model, doc_type, harness, persona, handbook, publisher = sys.argv[1:]
 h = hashlib.sha256()
@@ -119,6 +175,10 @@ for path in [pathlib.Path(harness), pathlib.Path(persona), pathlib.Path(publishe
 print(h.hexdigest())
 PY
 )"
+  document_generation="legacy:$generation_hash"
+else
+  document_generation="hermes:$APPROVED_GENERATION"
+fi
 
 [[ -d "$INBOX_DIR" ]] || die "missing inbox dir: $INBOX_DIR"
 request_stage="$STAGE_DIR/requests/$REQUEST_ID"
@@ -130,7 +190,7 @@ if [[ -f "$existing_publish" && ! -L "$existing_publish" ]]; then
   grep -q '^human_reviewed: true$' "$existing_publish" || die "existing publication lacks approval marker"
   council_state=skipped; grep -q '^council_reviewed: true$' "$existing_publish" && council_state=reviewed
   stored_generation="$(awk '/^document_generation: /{print $2; exit}' "$existing_publish")"
-  [[ "$stored_generation" =~ ^legacy:[0-9a-f]{64}$ ]] || die "existing publication generation invalid"
+  [[ "$stored_generation" =~ ^(legacy|hermes):[0-9a-f]{64}$ ]] || die "existing publication generation invalid"
   emit "$(jq -cn --arg p "$(jq -r .staged_path <<<"$staged")" --arg t "$(target_name)" \
     --arg d "$(jq -r .content_digest <<<"$staged")" --arg g "$stored_generation" --arg c "$council_state" \
     '{status:"awaiting_approval",staged_path:$p,target_path:$t,content_digest:$d,
@@ -158,9 +218,15 @@ promptfile="$work/prompt.md"
   printf 'Produce the document per your template, then the final open_questions JSON block.\n'
 } > "$promptfile"
 
-log "running $kind_label persona ($MODEL) round $round for '$title'"
-raw="$("$TIMEOUT_BIN" "${RUN_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" --cwd "$CONFIG_ROOT" \
-       "$(<"$promptfile")" 2>"$work/agent.err" </dev/null)" || { die "agent run failed/timed out: $(tail -c 300 "$work/agent.err")"; }
+if [[ "$RUNTIME" == legacy ]]; then
+  log "running $kind_label persona ($MODEL) round $round for '$title'"
+  raw="$("$TIMEOUT_BIN" "${RUN_TIMEOUT}s" "$MEWRITE" exec --model "$MODEL" --cwd "$CONFIG_ROOT" \
+         "$(<"$promptfile")" 2>"$work/agent.err" </dev/null)" || { die "agent run failed/timed out: $(tail -c 300 "$work/agent.err")"; }
+else
+  log "running $kind_label persona (hermes) round $round for '$title'"
+  run_hermes draft "$work/raw-hermes.txt" "$PAYLOAD" "$RUN_TIMEOUT"
+  raw="$(cat "$work/raw-hermes.txt")"
+fi
 
 # --- split the draft from the trailing open_questions JSON block ----------------------------------
 # Parse the LAST brace-balanced object that has an open_questions list (handles nested braces inside
@@ -244,7 +310,12 @@ fi
 # --- finalize: council review, then stage exact bytes for publication approval ---------------------
 council_state="skipped"; council_note="council skipped: infra unavailable in this environment"
 council_out="$work/council.md"
-if run_council "$draftfile" "$council_out"; then
+if [[ "${DOC_WRITER_COUNCIL:-on}" != on ]]; then
+  log "council disabled (DOC_WRITER_COUNCIL=off); skipping"
+elif [[ "$RUNTIME" == hermes ]]; then
+  run_hermes council "$council_out" "" "$COUNCIL_TIMEOUT"
+  council_state="reviewed"; council_note="$(cat "$council_out")"
+elif run_council "$draftfile" "$council_out"; then
   council_state="reviewed"; council_note="$(cat "$council_out")"
 fi
 
@@ -255,7 +326,7 @@ final="$work/final.md"
   printf 'written_by: doc-writer-agent\n'
   printf 'human_reviewed: true\n'
   printf 'council_reviewed: %s\n' "$([[ "$council_state" == reviewed ]] && echo true || echo false)"
-  printf 'document_generation: legacy:%s\n' "$generation_hash"
+  printf 'document_generation: %s\n' "$document_generation"
   printf 'doc_type: %s\n' "$doc_type"
   printf 'generated: %s\n' "$GENERATED_AT"
   printf -- '---\n\n'
@@ -270,6 +341,6 @@ staged="$($PUBLICATION_BIN stage --stage-root "$STAGE_DIR" --request-id "$REQUES
 [[ "$(jq -r '.status // empty' <<<"$staged")" == staged ]] || die "publication staging failed"
 log "staged request $REQUEST_ID for exact publication approval (council=$council_state)"
 emit "$(jq -cn --arg p "$(jq -r .staged_path <<<"$staged")" --arg t "$target" \
-  --arg d "$(jq -r .content_digest <<<"$staged")" --arg g "legacy:$generation_hash" --arg c "$council_state" \
+  --arg d "$(jq -r .content_digest <<<"$staged")" --arg g "$document_generation" --arg c "$council_state" \
   '{status:"awaiting_approval", staged_path:$p, target_path:$t, content_digest:$d,
     document_generation:$g, council:$c}')"
