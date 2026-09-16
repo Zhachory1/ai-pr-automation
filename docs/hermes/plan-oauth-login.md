@@ -93,7 +93,7 @@ Build:
 - add Anthropic login option;
 - auth proxy hosts `platform.claude.com` and fallback `console.anthropic.com`;
 - runtime proxy hosts those refresh endpoints plus `api.anthropic.com`;
-- assert PKCE/state flow and owner-only atomic credential file;
+- assert PKCE/state flow and owner-only locked credential-pool state;
 - keep OpenAI evidence unchanged.
 
 Accept: same lifecycle tests pass independently for `anthropic`. Scope shown before login: `org:create_api_key user:profile user:inference`.
@@ -105,6 +105,16 @@ Stop: scope changes, runtime needs `claude.ai`, or unrelated state changes.
 Depends on: A1 PR open and focused validation green.
 
 Run status, restart, refresh, zero-tool, OAuth-only smoke, and logout checks. Human browser approval is required.
+
+Anthropic evidence, 2026-09-15:
+
+- fresh-helper status: `anthropic: logged in`;
+- API-key fallback: absent;
+- enabled toolsets: zero;
+- OAuth run `run_a88d96a010014c4f83b83d76731aced3`: completed;
+- model: `claude-sonnet-4-6`;
+- output: `claude-oauth-ok`;
+- usage: 694 input, 8 output tokens.
 
 ## Graph
 

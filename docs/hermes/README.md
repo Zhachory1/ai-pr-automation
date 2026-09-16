@@ -76,9 +76,11 @@ scripts/hermes-doc-gate.py run
 The report proves the non-routing foundation only. It cannot approve a real provider key, paid call,
 or Hermes-routed document request.
 
-## OpenAI OAuth
+## Account OAuth
 
-Use supported lifecycle wrapper only. Login stops Hermes and leaves it stopped:
+Use supported lifecycle wrapper only. Login stops Hermes and leaves it stopped.
+
+OpenAI Codex:
 
 ```bash
 scripts/hermes-oauth.sh login openai-codex
@@ -94,7 +96,19 @@ scripts/hermes-oauth.sh status openai-codex
 scripts/hermes-oauth.sh logout openai-codex
 ```
 
-If token is exposed, revoke it from OpenAI account before local logout. OAuth login does not enable
+Claude Pro/Max:
+
+```bash
+scripts/hermes-oauth.sh login anthropic
+scripts/hermes-oauth.sh status anthropic
+scripts/hermes-oauth.sh start
+scripts/hermes-oauth.sh logout anthropic
+```
+
+Anthropic shows a browser URL, then asks you to paste returned authorization code. Requested scopes:
+`org:create_api_key user:profile user:inference`.
+
+If token is exposed, revoke it from provider account before local logout. OAuth login does not enable
 Hermes document routing. Paid OAuth smoke still needs explicit human approval.
 
 ## Baseline

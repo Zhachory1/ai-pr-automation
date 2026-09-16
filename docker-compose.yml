@@ -433,7 +433,7 @@ services:
       API_SERVER_KEY: ${HERMES_DOC_API_KEY:-}
     command: ["sh", "-ec", "test $${#API_SERVER_KEY} -ge 16"]
 
-  hermes-openai-oauth-egress:
+  hermes-oauth-egress:
     profiles: ["hermes-oauth"]
     image: agent-fleet/hermes-doc-egress:m2a
     build:
@@ -448,7 +448,7 @@ services:
       - /var/log/squid:rw,noexec,nosuid,nodev,mode=1777
       - /var/spool/squid:rw,noexec,nosuid,nodev,mode=1777
     volumes:
-      - ./docker/hermes-openai-oauth-egress.conf:/etc/squid/squid.conf:ro
+      - ./docker/hermes-oauth-egress.conf:/etc/squid/squid.conf:ro
     networks:
       - default
       - hermes-oauth
@@ -471,8 +471,8 @@ services:
       HERMES_SAFE_MODE: "1"
       HERMES_IGNORE_RULES: "1"
       OPENSSL_CONF: /etc/hermes/oauth-openssl.cnf
-      HTTPS_PROXY: http://hermes-openai-oauth-egress:3128
-      HTTP_PROXY: http://hermes-openai-oauth-egress:3128
+      HTTPS_PROXY: http://hermes-oauth-egress:3128
+      HTTP_PROXY: http://hermes-oauth-egress:3128
       NO_PROXY: 127.0.0.1,localhost
     volumes:
       - hermes_doc_state:/opt/data
@@ -485,7 +485,7 @@ services:
     depends_on:
       hermes-oauth-preflight:
         condition: service_completed_successfully
-      hermes-openai-oauth-egress:
+      hermes-oauth-egress:
         condition: service_healthy
 
   hermes-doc-egress:
