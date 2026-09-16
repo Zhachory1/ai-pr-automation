@@ -29,6 +29,9 @@ LOOP_HEARTBEAT_MAX="${DOC_WRITER_LOOP_HEARTBEAT_MAX:-7200}"
 ONCE="${DOC_WRITER_ONCE:-false}"
 HARNESS="${DOC_WRITER_HARNESS:-$HERE/bin/doc-writer}"
 RUNTIME="${DOC_WRITER_RUNTIME:-legacy}"
+HERMES_API_KEY="${HERMES_DOC_API_KEY:-}"
+HERMES_PROVIDER_KEY="${HERMES_DOC_PROVIDER_KEY:-}"
+LEGACY_API_KEY="${OPENAI_API_KEY:-}"
 PUBLICATION_BIN="${DOC_WRITER_PUBLICATION_BIN:-$HERE/bin/doc-writer-publication}"
 STAGE_DIR="${DOC_WRITER_STAGE_DIR:-$HOME/.local/share/ai-pr-automation/doc-writer}"
 INBOX_DIR="${DOC_WRITER_INBOX_DIR:-$HOME/private-docs/inbox}"
@@ -44,6 +47,12 @@ LEASE_DB_TIMEOUT="${DOC_WRITER_LEASE_DB_TIMEOUT:-10}"
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) doc-writer-server $*"; }
+trip_guardrail() {
+  if [[ "$RUNTIME" == hermes ]]; then
+    SHUTDOWN_REQUESTED=true
+    log "Hermes guardrail tripped; stopping before next claim"
+  fi
+}
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
 need psql; need jq; need python3
 [[ -x "$HARNESS" ]] || { echo "missing harness: $HARNESS" >&2; exit 2; }
@@ -51,6 +60,18 @@ need psql; need jq; need python3
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
 db_up() { _psql <<<"SELECT 1;" >/dev/null 2>&1; }
+case "$RUNTIME" in
+  hermes)
+    [[ "${HERMES_DOC_APPROVED_GENERATION:-}" =~ ^[0-9a-f]{64}$ ]] \
+      || { echo "HERMES_DOC_APPROVED_GENERATION must be SHA-256" >&2; exit 2; }
+    [[ -n "${HERMES_DOC_URL:-}" && ${#HERMES_API_KEY} -ge 16 && ${#HERMES_PROVIDER_KEY} -ge 20 ]] \
+      || { echo "Hermes URL, API key, and provider key are required" >&2; exit 2; }
+    ;;
+  legacy)
+    [[ ${#LEGACY_API_KEY} -ge 20 ]] || { echo "OPENAI_API_KEY is required for legacy runtime" >&2; exit 2; }
+    ;;
+  *) echo "DOC_WRITER_RUNTIME must be legacy or hermes" >&2; exit 2 ;;
+esac
 
 # --- renewable lease heartbeat (mirrors agent-server) ---
 WORKER_PID="$$"
@@ -172,7 +193,7 @@ process_one() {
   if [[ "$status" == reconcile ]]; then
     local reason; reason="$(jq -r '.reason // "Hermes model phase requires reconciliation"' <<<"$result")"
     queue_mark_reconcile "$id" "$reason" "$nonce" >/dev/null
-    log "request $id reconcile (model phase)"; return 0
+    log "request $id reconcile (model phase)"; trip_guardrail; return 0
   fi
   if (( rc != 0 )) || [[ -z "$result" ]]; then
     if [[ "$RUNTIME" == hermes && "$status" != failed ]]; then
@@ -182,6 +203,7 @@ process_one() {
       queue_mark_failed "$id" "doc-writer harness rc=$rc" "$nonce" >/dev/null
       log "request $id failed (rc=$rc)"
     fi
+    [[ "$RUNTIME" == hermes ]] && trip_guardrail
     return 0
   fi
   case "$status" in
@@ -193,7 +215,7 @@ process_one() {
         log "request $id queued for human answers (round $round)"
       else
         queue_mark_reconcile "$id" "draft staged but human-review insert failed" "$nonce" >/dev/null
-        log "request $id reconcile (review insert failed)"
+        log "request $id reconcile (review insert failed)"; trip_guardrail
       fi ;;
     awaiting_approval)
       local staged_path target_path digest generation council proposal prov
@@ -212,16 +234,26 @@ process_one() {
         log "request $id done: awaiting exact publication approval for $target_path"
       else
         queue_mark_reconcile "$id" "failed to record publication approval" "$nonce" >/dev/null
-        log "request $id reconcile (publication approval insert failed)"
+        log "request $id reconcile (publication approval insert failed)"; trip_guardrail
       fi ;;
     *)
       queue_mark_failed "$id" "doc-writer returned status=$status" "$nonce" >/dev/null
-      log "request $id failed (status=$status)" ;;
+      log "request $id failed (status=$status)"; trip_guardrail ;;
   esac
   return 0
 }
 
-log "doc-writer-server up (leased, kind=$KIND); poll ${POLL_INTERVAL}s, lease ${LEASE_SECONDS}s/${LEASE_HEARTBEAT}s heartbeat"
+db_up || { echo "request database unavailable during startup" >&2; exit 2; }
+if [[ "$RUNTIME" == legacy ]]; then
+  hermes_doc_quarantine >/dev/null
+else
+  [[ "$(hermes_doc_active_count)" == 0 ]] || {
+    echo "unresolved active Hermes request blocks controller startup" >&2
+    exit 2
+  }
+fi
+
+log "doc-writer-server up (leased, kind=$KIND, runtime=$RUNTIME); poll ${POLL_INTERVAL}s, lease ${LEASE_SECONDS}s/${LEASE_HEARTBEAT}s heartbeat"
 last_progress="$(date +%s)"
 
 while true; do
@@ -247,6 +279,10 @@ while true; do
   start_lease_heartbeat "$id" "$nonce"
   process_one "$id" "$payload" "$run_id" "$nonce" "$generated_at" || log "process_one error for $id"
   stop_lease_heartbeat
+  if [[ "$RUNTIME" == hermes ]]; then
+    final_status="$(_psql -v id="$id" <<<"SELECT status FROM requests WHERE id=:'id';")"
+    [[ "$final_status" == "done" ]] || trip_guardrail
+  fi
   [[ "$ONCE" == true ]] && exit 0
   last_progress="$(date +%s)"
   [[ "$SHUTDOWN_REQUESTED" == true ]] && exit 0

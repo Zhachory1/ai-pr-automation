@@ -19,7 +19,7 @@ docker compose -f "$tmp/docker-compose.yml" --env-file "$tmp/.env" \
 
 jq -e '
   .services["hermes-doc"] as $h |
-  ($h.profiles == ["hermes-m0", "hermes-m2a"]) and
+  ($h.profiles == ["hermes-m0", "hermes-m2a", "doc-writer"]) and
   ($h.image == "nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874") and
   ($h.command == ["gateway", "run"]) and
   ($h.environment.API_SERVER_ENABLED == "true") and
@@ -59,11 +59,11 @@ jq -e '
   ($h.healthcheck.test[1] | contains("background_queues")) and
   (.volumes | has("hermes_doc_state")) and
   (.networks["hermes-doc"].internal == true) and
-  (.services["hermes-doc-preflight"].profiles == ["hermes-m0", "hermes-m2a"]) and
+  (.services["hermes-doc-preflight"].profiles == ["hermes-m0", "hermes-m2a", "doc-writer"]) and
   (.services["hermes-doc-preflight"].image == "busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662") and
   (.services["hermes-doc-preflight"].network_mode == "none") and
   (.services["hermes-doc-preflight"].command[2] | contains("#API_SERVER_KEY")) and
-  (.services["hermes-doc-egress"].profiles == ["hermes-m0", "hermes-m2a"]) and
+  (.services["hermes-doc-egress"].profiles == ["hermes-m0", "hermes-m2a", "doc-writer"]) and
   (.services["hermes-doc-egress"].image == "agent-fleet/hermes-doc-egress:m2a") and
   (.services["hermes-doc-egress"].read_only == true) and
   (.services["hermes-doc-egress"].cap_drop == ["ALL"]) and

@@ -7,6 +7,7 @@ cid="$(docker run -d --rm -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=t -e POSTGRES_
 cleanup() { docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf "$tmp"; }
 trap cleanup EXIT
 for _ in $(seq 1 30); do docker exec "$cid" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
+docker exec "$cid" pg_isready -U postgres >/dev/null
 for file in 01-schema.sql 02-agent-server.sql 03-human-review-queue.sql 04-pending-decision-approval.sql 06-hermes-doc-foundation.sql; do
   docker cp "docker/initdb/$file" "$cid:/tmp/$file"
 done
@@ -76,8 +77,17 @@ common=(
   DOC_WRITER_HARNESS="$tmp/fake-harness" DOC_WRITER_PUBLICATION_BIN="$tmp/fake-publication"
   DOC_WRITER_STAGE_DIR="$stage" DOC_WRITER_INBOX_DIR="$inbox" HARNESS_CALLS="$tmp/harness-calls"
   REQUESTS_DB_USER=postgres REQUESTS_DB_NAME=fleet REQUESTS_DB_HOST=127.0.0.1
-  REQUESTS_DB_PORT="$port" PGPASSWORD=t
+  REQUESTS_DB_PORT="$port" PGPASSWORD=t OPENAI_API_KEY=12345678901234567890
+  HERMES_DOC_URL=http://fake.invalid HERMES_DOC_API_KEY=0123456789abcdef
+  HERMES_DOC_PROVIDER_KEY=12345678901234567890
+  HERMES_DOC_APPROVED_GENERATION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 )
+if env "${common[@]}" DOC_WRITER_RUNTIME=hermes HERMES_DOC_PROVIDER_KEY= bin/doc-writer-server >/dev/null 2>&1; then
+  echo "FAIL: Hermes controller accepted missing provider credential" >&2; exit 1
+fi
+if env "${common[@]}" DOC_WRITER_RUNTIME=typo bin/doc-writer-server >/dev/null 2>&1; then
+  echo "FAIL: controller accepted invalid runtime" >&2; exit 1
+fi
 env "${common[@]}" bin/doc-writer-server >/dev/null
 [[ "$(q "SELECT r.status||'/'||p.state||'/'||h.state FROM requests r
   JOIN doc_publications p ON p.request_id=r.id JOIN pending_maintenance_reviews h ON h.request_id=r.id
@@ -87,8 +97,21 @@ env "${common[@]}" bin/doc-writer-server >/dev/null
 
 reconcile_id="$(q "INSERT INTO requests(kind,payload,dedupe_key) VALUES(
   'doc-write','{\"doc_type\":\"dd\",\"title\":\"Reconcile\",\"requirements\":\"r\"}','doc:reconcile') RETURNING id;")"
-env "${common[@]}" DOC_WRITER_RUNTIME=hermes bin/doc-writer-server >/dev/null
+after_guardrail_id="$(q "INSERT INTO requests(kind,payload,dedupe_key) VALUES(
+  'doc-write','{\"doc_type\":\"dd\",\"title\":\"After Guardrail\",\"requirements\":\"r\"}','doc:after-guardrail') RETURNING id;")"
+env "${common[@]}" DOC_WRITER_ONCE=false DOC_WRITER_RUNTIME=hermes \
+  bin/doc-writer-server >/dev/null
 [[ "$(q "SELECT status||'/'||fail_response FROM requests WHERE id=$reconcile_id;")" == "reconcile/fake ambiguous outcome" ]]
+[[ "$(q "SELECT status FROM requests WHERE id=$after_guardrail_id;")" == queued ]]
+q "UPDATE requests SET status='skipped',finished_at=now() WHERE id=$after_guardrail_id;" >/dev/null
+
+invalid_id="$(q "INSERT INTO requests(kind,payload,dedupe_key) VALUES('doc-write','{}','doc:invalid-cutover') RETURNING id;")"
+after_invalid_id="$(q "INSERT INTO requests(kind,payload,dedupe_key) VALUES(
+  'doc-write','{\"doc_type\":\"dd\",\"title\":\"After Invalid\",\"requirements\":\"r\"}','doc:after-invalid') RETURNING id;")"
+env "${common[@]}" DOC_WRITER_ONCE=false DOC_WRITER_RUNTIME=hermes bin/doc-writer-server >/dev/null
+[[ "$(q "SELECT status FROM requests WHERE id=$invalid_id;")" == failed ]]
+[[ "$(q "SELECT status FROM requests WHERE id=$after_invalid_id;")" == queued ]]
+q "UPDATE requests SET status='skipped',finished_at=now() WHERE id=$after_invalid_id;" >/dev/null
 
 crash_id="$(q "INSERT INTO requests(kind,payload,dedupe_key) VALUES(
   'doc-write','{\"doc_type\":\"dd\",\"title\":\"Crash\",\"requirements\":\"r\"}','doc:crash') RETURNING id;")"
@@ -136,4 +159,15 @@ env "${common[@]}" bin/doc-writer-reconcile "$absent_id" --publish-absent >/dev/
 [[ -f "$inbox/dd-2026-09-15-absent.md" ]]
 [[ "$(q "SELECT r.status||'/'||p.state FROM requests r JOIN doc_publications p ON p.request_id=r.id WHERE r.id=$absent_id;")" == done/published ]]
 
-echo "PASS: doc controller stages approval, skips model on publish, and reconciles exact targets"
+active_id="$(q "INSERT INTO requests(kind,payload,dedupe_key,status,run_nonce,lease_expires_at)
+  VALUES('doc-write','{}','doc:active-cutover','running','active',now()-interval '1 second') RETURNING id;")"
+hex="$(printf 'a%.0s' {1..64})"
+q "INSERT INTO hermes_doc_runs(request_id,phase,request_digest,runtime_generation,state,replay_until)
+  VALUES($active_id,'draft','$hex','$hex','submitting',now()+interval '23 hours');" >/dev/null
+if env "${common[@]}" DOC_WRITER_RUNTIME=hermes bin/doc-writer-server >/dev/null 2>&1; then
+  echo "FAIL: Hermes controller started beside unresolved active request" >&2; exit 1
+fi
+timeout 3 env "${common[@]}" DOC_WRITER_RUNTIME=legacy DOC_WRITER_ONCE=false bin/doc-writer-server >/dev/null || true
+[[ "$(q "SELECT r.status||'/'||h.state FROM requests r JOIN hermes_doc_runs h ON h.request_id=r.id WHERE r.id=$active_id;")" == reconcile/reconcile ]]
+
+echo "PASS: doc controller stages approval, fail-stops, quarantines rollback, and reconciles exact targets"

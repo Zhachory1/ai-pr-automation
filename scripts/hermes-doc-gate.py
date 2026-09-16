@@ -36,6 +36,7 @@ COMPONENTS = [
     "scripts/hermes-doc-gate.py",
 ]
 CHECKS = [
+    ("cutover", ["bash", "tests/test-hermes-doc-cutover.sh"]),
     ("model-seam", ["bash", "tests/test-hermes-doc-model.sh"]),
     ("request-renderer", ["python3", "tests/test-hermes-doc-request.py"]),
     ("runs-adapter", ["python3", "tests/test-hermes-run.py"]),

@@ -1,7 +1,7 @@
 # Plan: M2b Shadow And Routing
 
 - Owner: Zhach
-- Status: first shadow stopped on watchdog guardrail; retry blocked
+- Status: shadow effective; direct cutover approved
 - PRD: [`PRD-m2-doc-runtime.md`](PRD-m2-doc-runtime.md)
 - DD: [`DD-m2-doc-runtime.md`](DD-m2-doc-runtime.md)
 - Prior council: [`council-m2-doc-runtime.md`](council-m2-doc-runtime.md)
@@ -171,6 +171,27 @@ Second attempt, 2026-09-16:
 - Provider key returned to empty after stop.
 - Fix sets explicit `HERMES_API_CALL_STALE_TIMEOUT=300`.
 - Completing pairs 4–5 needs approval for up to two calls; one unused call remains from prior approval.
+
+Final attempt, 2026-09-16:
+
+- Hermes pairs 4–5 completed with both watchdogs at 300 seconds.
+- All five pairs complete.
+- Direct: 178,037 tokens, 128.52-second mean latency.
+- Hermes: 172,039 tokens, 106.17-second mean latency.
+- Hermes used 3.4% fewer tokens and was 17.4% faster.
+- Hermes output length averaged 73% of direct; human accepted effectiveness.
+- Total attempted calls across initial run and retries: 12.
+
+## Cutover Decision
+
+Human approval, 2026-09-16:
+
+- migrate `doc-write` model calls directly to Hermes;
+- keep current controller, human loop, exact-byte approval, and publisher;
+- keep legacy harness code as rollback;
+- skip more rollout scaffolding;
+- stop and return to legacy on first ambiguous or failed routed request.
+- approved cutover generation: `57323d86212c3df6f12abc1cc7473e243b6d0d2fdb72c81304bbec7221969690`.
 
 ## Review
 
