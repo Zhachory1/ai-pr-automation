@@ -1,7 +1,7 @@
 # Plan: M2b Shadow And Routing
 
 - Owner: Zhach
-- Status: first shadow stopped on watchdog guardrail; retry blocked
+- Status: shadow effective; direct cutover approved
 - PRD: [`PRD-m2-doc-runtime.md`](PRD-m2-doc-runtime.md)
 - DD: [`DD-m2-doc-runtime.md`](DD-m2-doc-runtime.md)
 - Prior council: [`council-m2-doc-runtime.md`](council-m2-doc-runtime.md)
@@ -171,6 +171,16 @@ Second attempt, 2026-09-16:
 - Provider key returned to empty after stop.
 - Fix sets explicit `HERMES_API_CALL_STALE_TIMEOUT=300`.
 - Completing pairs 4–5 needs approval for up to two calls; one unused call remains from prior approval.
+
+## Cutover Decision
+
+Human approval, 2026-09-16:
+
+- migrate `doc-write` model calls directly to Hermes;
+- keep current controller, human loop, exact-byte approval, and publisher;
+- keep legacy harness code as rollback;
+- skip more rollout scaffolding;
+- stop and return to legacy on first ambiguous or failed routed request.
 
 ## Review
 
