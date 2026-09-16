@@ -416,9 +416,9 @@ services:
       schema-migrate:
         condition: service_completed_successfully
 
-  # --- Hermes M2a: pinned zero-tool doc runtime, still disconnected from doc controller ---
+  # --- Hermes: pinned zero-tool document model runtime ---
   hermes-doc-preflight:
-    profiles: ["hermes-m0", "hermes-m2a"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
     network_mode: none
     environment:
@@ -489,7 +489,7 @@ services:
         condition: service_healthy
 
   hermes-doc-egress:
-    profiles: ["hermes-m0", "hermes-m2a"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: agent-fleet/hermes-doc-egress:m2a
     build:
       context: .
@@ -513,7 +513,7 @@ services:
       start_period: 10s
 
   hermes-doc:
-    profiles: ["hermes-m0", "hermes-m2a"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874
     command: ["gateway", "run"]
     environment:
@@ -559,15 +559,21 @@ services:
       context: .
       dockerfile: Dockerfile.doc-writer
     container_name: fleet-doc-writer-server
-    restart: unless-stopped
+    restart: "no"
+    stop_grace_period: 31m
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       REQUESTS_DB_HOST: db-requests
       REQUESTS_DB_PORT: "5432"
       REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
       REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
       DOC_WRITER_MODEL: ${DOC_WRITER_MODEL:-openai/gpt-5.6-sol}
+      DOC_WRITER_RUNTIME: ${DOC_WRITER_RUNTIME:-hermes}
+      HERMES_DOC_URL: http://hermes-doc:8642
+      HERMES_DOC_API_KEY: ${HERMES_DOC_API_KEY:-}
+      HERMES_DOC_PROVIDER_KEY: ${HERMES_DOC_OPENAI_API_KEY:-}
+      HERMES_DOC_APPROVED_GENERATION: ${HERMES_DOC_APPROVED_GENERATION:-}
       DOC_WRITER_STAGE_DIR: /work/stage
       DOC_WRITER_INBOX_DIR: /inbox
       HOME: /work
@@ -576,6 +582,9 @@ services:
       # ONLY the private-docs inbox, WRITABLE. Exact-approved docs land here for the human to file. The rest
       # of the brain is never mounted here (the curator reads it elsewhere, read-only).
       - ${DOC_WRITER_INBOX_HOST:-/var/empty}:/inbox
+    networks:
+      - default
+      - hermes-doc
     depends_on:
       db-requests:
         condition: service_healthy
@@ -587,6 +596,8 @@ services:
         condition: service_healthy
       hindsight-bank-init:
         condition: service_completed_successfully
+      hermes-doc:
+        condition: service_healthy
 
   # --- memory-curator: scheduled writer for the shared Hindsight bank ---
   # fleet-shared is read-only over MCP (agents can't self-retain junk); this is the ONE writer, over

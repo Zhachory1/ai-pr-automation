@@ -109,8 +109,30 @@ scripts/hermes-oauth.sh logout anthropic
 Anthropic shows a browser URL, then asks you to paste returned authorization code. Requested scopes:
 `org:create_api_key user:profile user:inference`.
 
-If token is exposed, revoke it from provider account before local logout. OAuth login does not enable
-Hermes document routing. Paid OAuth smoke still needs explicit human approval.
+If token is exposed, revoke it from provider account before local logout.
+
+## Document Runtime
+
+`doc-writer-server` now defaults to Hermes for draft and council model calls. Controller still owns
+queue state, questions, exact-byte approval, and publication.
+
+Set `HERMES_DOC_OPENAI_API_KEY` and the exact merged gate value in
+`HERMES_DOC_APPROVED_GENERATION`, then start:
+
+```bash
+scripts/compose.sh --profile doc-writer up -d --build doc-writer-server
+```
+
+First Hermes failure or reconciliation stops controller before another claim. Roll back without
+waiting for Hermes:
+
+```bash
+scripts/compose.sh --profile doc-writer stop doc-writer-server
+DOC_WRITER_RUNTIME=legacy scripts/compose.sh --profile doc-writer \
+  up -d --no-deps --force-recreate doc-writer-server
+```
+
+Legacy rollback expects database, Hindsight, and Coderag services already running.
 
 ## Baseline
 

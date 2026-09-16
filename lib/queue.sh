@@ -596,6 +596,12 @@ SELECT id FROM finished;
 SQL
 }
 
+hermes_doc_active_count() {
+  _psql <<'SQL'
+SELECT count(*) FROM hermes_doc_runs WHERE state='submitting';
+SQL
+}
+
 hermes_doc_quarantine() {
   _psql <<'SQL'
 BEGIN;
