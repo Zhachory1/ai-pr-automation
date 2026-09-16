@@ -160,7 +160,17 @@ Date: 2026-09-16.
 - No queue, review, or publication effect occurred.
 - Runtime provider key returned to empty after stop.
 - Fix sets pinned long-document event-stale timeout to 300 seconds.
-- Retry needs new human call-count approval.
+- First retry approved for five more calls.
+
+Second attempt, 2026-09-16:
+
+- Hermes pairs 1–3 completed.
+- Pair 4 failed before output: implicit 90-second API-call stale timeout.
+- Four of five retry calls attempted; pair 5 did not run.
+- Total attempted calls across both attempts: 10.
+- Provider key returned to empty after stop.
+- Fix sets explicit `HERMES_API_CALL_STALE_TIMEOUT=300`.
+- Completing pairs 4–5 needs approval for up to two calls; one unused call remains from prior approval.
 
 ## Review
 
