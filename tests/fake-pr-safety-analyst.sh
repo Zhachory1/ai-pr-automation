@@ -18,7 +18,10 @@ prompt="${!#}"
 identity="$(grep -m1 '^{' <<<"$prompt")"
 op="$(jq -r .operation_id <<<"$identity")"
 status="${TEST_PR_SAFETY_RESULT_STATUS:-clear}"
-case "$op" in op-success|op-invalid-result-schema|op-invalid-handoff|op-paraphrase) status=changes_requested ;; esac
+case "$op" in
+  op-success|op-invalid-result-schema|op-invalid-handoff|op-paraphrase) status=changes_requested ;;
+  op-incident|op-status-mismatch) status=incident_candidate ;;
+esac
 grep -qx changes_requested "$PR_SAFETY_POLICY_PATH" && status=changes_requested || true
 # op-paraphrase models real LLM behavior: a readable handoff that neither embeds the identity JSON
 # nor byte-copies finding claims/evidence from result.json. The agent server must stamp identity and
@@ -34,7 +37,10 @@ if [[ "$op" == op-invalid-result ]]; then
   printf '{}\n' > "$PR_SAFETY_RESULT_FILE"
 else
   jq --arg status "$status" '. + {status:$status,intent:{claimed:"",evidence:[],needed:"unknown",smaller_existing_solution:null,matches_description:"unknown",description_divergence:null,simpler_alternative:null},findings:[],coverage:{status:"unavailable",command:null,changed_executable_line_coverage_percent:null,gaps:[]},documentation:{status:"not_applicable",required_updates:[]},observability:{status:"not_applicable",recommended_metrics:[],recommended_slos_or_runbooks:[],datadog_terraform_candidate:false},incident:{candidate:false,failure_mode:null,blast_radius:null,recommended_action:null,evidence:[]},human_decisions_needed:[]}' <<<"$identity" > "$PR_SAFETY_RESULT_FILE"
-  if [[ "$op" == op-clear-with-finding ]]; then
+  if [[ "$op" == op-incident ]]; then
+    jq '.incident = {candidate:true,failure_mode:"unsafe deployment",blast_radius:"production",recommended_action:"investigate",evidence:["fixture"]}' "$PR_SAFETY_RESULT_FILE" > "$PR_SAFETY_RESULT_FILE.tmp"
+    mv "$PR_SAFETY_RESULT_FILE.tmp" "$PR_SAFETY_RESULT_FILE"
+  elif [[ "$op" == op-clear-with-finding ]]; then
     jq '.findings = [{severity:"minor",category:"tests",file:null,line:null,claim:"clear must not discard this",evidence:[{source:"test",detail:"fixture"}],risk:"finding lost",recommended_remediation:"write handoff",confidence:"high"}]' "$PR_SAFETY_RESULT_FILE" > "$PR_SAFETY_RESULT_FILE.tmp"
     mv "$PR_SAFETY_RESULT_FILE.tmp" "$PR_SAFETY_RESULT_FILE"
   elif [[ "$op" == op-invalid-result-schema ]]; then

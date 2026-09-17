@@ -3,7 +3,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 CID="m2-producer-test-$$"; PORT=55451
-cleanup(){ docker rm -f "$CID" >/dev/null 2>&1 || true; }
+CAP_A="/tmp/maint-cap-a-$$"; CAP_B="/tmp/maint-cap-b-$$"
+cleanup(){ docker rm -f "$CID" >/dev/null 2>&1 || true; rm -f "$CAP_A" "$CAP_B"; }
 trap cleanup EXIT
 docker run --rm -d --name "$CID" -e POSTGRES_PASSWORD=t -e POSTGRES_DB=fleet -p "$PORT:5432" postgres:16 >/dev/null
 for _ in $(seq 1 30); do docker exec "$CID" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
@@ -69,6 +70,20 @@ claim_r="$(queue_claim_one pr-review rr nr)"
 check "pr-review claim returns empty when only pr-maintain is queued" "[[ -z \"\$claim_r\" ]]"
 claim_m="$(queue_claim_one pr-maintain rm nm)"
 check "pr-maintain claim returns the pr-maintain row" "[[ \"\$(jq -r '.kind' <<<\"\$claim_m\")\" == pr-maintain ]]"
+
+echo "[6] pr-maintain runs cap at three per PR lineage"
+q "UPDATE requests SET status='done',lease_expires_at=NULL WHERE kind='pr-maintain' AND split_part(dedupe_key,'@',1)='o/r#1';" >/dev/null
+queue_enqueue pr-maintain '{"repo":"o/r","pr":"1"}' "o/r#1@second" >/dev/null
+q "UPDATE requests SET status='done' WHERE dedupe_key='o/r#1@second';" >/dev/null
+queue_enqueue pr-maintain '{"repo":"o/r","pr":"1"}' "o/r#1@third-a" > "$CAP_A" & cap_a=$!
+queue_enqueue pr-maintain '{"repo":"o/r","pr":"1"}' "o/r#1@third-b" > "$CAP_B" & cap_b=$!
+wait "$cap_a"; wait "$cap_b"
+check "concurrent threshold admits exactly one third run" "[[ \"\$(cat '$CAP_A' '$CAP_B' | grep -c '^1$')\" == 1 ]]"
+q "UPDATE requests SET status='done' WHERE kind='pr-maintain' AND split_part(dedupe_key,'@',1)='o/r#1';" >/dev/null
+out="$(queue_enqueue pr-maintain '{"repo":"o/r","pr":"1"}' "o/r#1@fourth")"
+rm -f "$CAP_A" "$CAP_B"
+check "fourth maintenance run is suppressed" "[[ -z \"\$out\" ]]"
+check "lineage has exactly three non-superseded runs" "q \"SELECT count(*) FROM requests WHERE kind='pr-maintain' AND split_part(dedupe_key,'@',1)='o/r#1' AND status<>'superseded';\" | grep -qx 3"
 
 echo
 [[ $fail -eq 0 ]] && echo "ALL PASS" || { echo "FAILURES"; exit 1; }

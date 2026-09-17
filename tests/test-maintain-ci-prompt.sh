@@ -22,6 +22,8 @@ want "handle review comments AND failing CI"
 want "Failing CI (CONSERVATIVE autonomy"
 want "--json statusCheckRollup"   # rendered: gh pr view "42" -R "ROKT/example" --json statusCheckRollup
 want "Buildkite MCP to fetch the failing job's log"
+want "Process at most 3 unresolved review threads"
+want "Prioritize blocking/actionable threads"
 
 # conservative fix scope (A): only code-caused/validatable classes
 want "lint / format / style violations, type-check errors, a compile/build break, or a unit test that"

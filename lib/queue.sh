@@ -292,6 +292,9 @@ queue_enqueue() {
   # a PR number can contain '@', so split_part is safe. This mirrors the merged-PR producer and
   # stops maintain/review PRs whose branch head advances each cycle from stacking duplicate rows.
   _psql -v kind="$kind" -v payload="$payload_json" -v dk="$dedupe_key" -v maxatt="$max_attempts" <<'SQL'
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('pr-maintain:'||split_part(:'dk','@',1),0))
+ WHERE :'kind' = 'pr-maintain';
 WITH request AS (
   INSERT INTO requests(kind, payload, dedupe_key)
   SELECT :'kind', :'payload'::jsonb, :'dk'
@@ -304,6 +307,12 @@ WITH request AS (
     :'maxatt' = '0'
     OR (SELECT count(*) FROM requests
           WHERE kind = :'kind' AND dedupe_key = :'dk' AND status = 'failed') < :'maxatt'::int
+  )
+  AND (
+    :'kind' <> 'pr-maintain'
+    OR (SELECT count(*) FROM requests
+          WHERE kind = 'pr-maintain' AND status <> 'superseded'
+            AND split_part(dedupe_key, '@', 1) = split_part(:'dk', '@', 1)) < 3
   )
   ON CONFLICT DO NOTHING
   RETURNING 1
@@ -319,6 +328,7 @@ WITH request AS (
   RETURNING 1
 )
 SELECT CASE WHEN EXISTS (SELECT 1 FROM request) THEN '1' ELSE '' END;
+COMMIT;
 SQL
 }
 

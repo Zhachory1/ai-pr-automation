@@ -537,6 +537,11 @@ Scheduled unattended maintenance of a PR the operator authored: handle review co
 Run the pr-review-handler skill in UNATTENDED mode, then address failing checks per the CI section below.
 $dryline
 
+Review-work cap:
+- Process at most 3 unresolved review threads in this run.
+- Prioritize blocking/actionable threads, then oldest remaining threads.
+- Leave all other threads untouched and set maintenance.needs_human_review=true.
+
 <untrusted-pr-metadata>
 - Repo: $repo
 - Number: #$pr
