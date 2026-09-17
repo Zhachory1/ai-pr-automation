@@ -14,13 +14,16 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = "hermes-doc-m2a-gate-v1"
 SECRET_MARKERS = ("KEY", "TOKEN", "PASSWORD", "SECRET")
 COMPONENTS = [
+    "Dockerfile.agent-server",
     "Dockerfile.doc-writer",
     "agent-config/hermes/doc-config.yaml",
     "bin/doc-writer",
     "bin/doc-writer-publication",
     "bin/doc-writer-reconcile",
     "bin/doc-writer-server",
+    "bin/agent-server",
     "bin/hermes-doc-model",
+    "bin/hermes-pr-review-request",
     "bin/hermes-doc-request",
     "bin/hermes-run",
     "docker/Dockerfile.hermes-doc-egress",
@@ -37,6 +40,7 @@ COMPONENTS = [
 ]
 CHECKS = [
     ("cutover", ["bash", "tests/test-hermes-doc-cutover.sh"]),
+    ("pr-review", ["python3", "tests/test-hermes-pr-review.py"]),
     ("model-seam", ["bash", "tests/test-hermes-doc-model.sh"]),
     ("request-renderer", ["python3", "tests/test-hermes-doc-request.py"]),
     ("runs-adapter", ["python3", "tests/test-hermes-run.py"]),
@@ -91,9 +95,10 @@ def topology():
     hermes = services["hermes-doc"]
     if hermes.get("ports") or hermes.get("environment", {}).get("OPENAI_API_KEY"):
         raise RuntimeError("M2a must have no published Hermes port or provider key")
-    if any("hermes-doc" in service.get("depends_on", {}) for name, service in services.items()
-           if name != "hermes-doc"):
-        raise RuntimeError("M2a must not route another service through Hermes")
+    consumers = {name for name, service in services.items()
+                 if name != "hermes-doc" and "hermes-doc" in service.get("depends_on", {})}
+    if not consumers.issubset({"agent-server-review", "doc-writer-server"}):
+        raise RuntimeError("unexpected Hermes runtime consumer")
     for service in services.values():
         environment = service.get("environment", {})
         for key in list(environment):
