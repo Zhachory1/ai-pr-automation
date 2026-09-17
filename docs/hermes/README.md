@@ -116,7 +116,6 @@ If token is exposed, revoke it from provider account before local logout.
 Set dashboard credentials in `.env`:
 
 ```bash
-HERMES_DASHBOARD=true
 HERMES_DASHBOARD_USERNAME=hermes
 HERMES_DASHBOARD_PASSWORD=<random-password>
 ```
@@ -127,8 +126,8 @@ Start the localhost-only authenticated dashboard:
 scripts/compose.sh --profile hermes-dashboard up -d hermes-dashboard-proxy
 ```
 
-Open http://127.0.0.1:9119. Credential-free proxy owns host port; Hermes remains on its internal
-network and keeps provider traffic behind egress proxy.
+Open http://127.0.0.1:9119. Dedicated dashboard reads the Hermes state volume on an internal
+network. Credential-free proxy owns host port; model gateway remains isolated behind provider egress.
 
 ## Document Runtime
 

@@ -418,7 +418,7 @@ services:
 
   # --- Hermes: pinned zero-tool document model runtime ---
   hermes-doc-preflight:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer", "hermes-dashboard"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
     network_mode: none
     environment:
@@ -489,7 +489,7 @@ services:
         condition: service_healthy
 
   hermes-doc-egress:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer", "hermes-dashboard"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: agent-fleet/hermes-doc-egress:m2a
     build:
       context: .
@@ -513,7 +513,7 @@ services:
       start_period: 10s
 
   hermes-doc:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer", "hermes-dashboard"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874
     command: ["gateway", "run"]
     environment:
@@ -527,11 +527,6 @@ services:
       HERMES_IGNORE_RULES: "1"
       HERMES_API_CALL_STALE_TIMEOUT: "300"
       HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS: "300"
-      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-false}
-      HERMES_DASHBOARD_HOST: 0.0.0.0
-      HERMES_DASHBOARD_PORT: "9119"
-      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_USERNAME:-}
-      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_PASSWORD:-}
       OPENSSL_CONF: /etc/hermes/oauth-openssl.cnf
       HTTPS_PROXY: http://hermes-doc-egress:3128
       HTTP_PROXY: http://hermes-doc-egress:3128
@@ -553,10 +548,45 @@ services:
       hermes-doc-egress:
         condition: service_healthy
 
+  hermes-dashboard-preflight:
+    profiles: ["hermes-dashboard"]
+    image: busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+    network_mode: none
+    environment:
+      USERNAME: ${HERMES_DASHBOARD_USERNAME:-}
+      PASSWORD: ${HERMES_DASHBOARD_PASSWORD:-}
+    command: ["sh", "-ec", "test -n \"$$USERNAME\" && test $${#PASSWORD} -ge 16"]
+
+  hermes-dashboard:
+    profiles: ["hermes-dashboard"]
+    image: nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--isolated"]
+    restart: unless-stopped
+    environment:
+      API_SERVER_KEY: ${HERMES_DOC_API_KEY:-}
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_USERNAME:-}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_PASSWORD:-}
+    volumes:
+      - hermes_doc_state:/opt/data
+    networks:
+      - hermes-dashboard
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 1
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; raise SystemExit(0 if urllib.request.urlopen(\"http://127.0.0.1:9119/login\",timeout=5).status==200 else 1)'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      hermes-dashboard-preflight:
+        condition: service_completed_successfully
+
   hermes-dashboard-proxy:
     profiles: ["hermes-dashboard"]
     image: alpine/socat@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
-    command: ["TCP-LISTEN:9119,fork,reuseaddr", "TCP:hermes-doc:9119"]
+    command: ["TCP-LISTEN:9119,fork,reuseaddr", "TCP:hermes-dashboard:9119"]
     restart: unless-stopped
     user: "65534:65534"
     read_only: true
@@ -568,10 +598,10 @@ services:
     ports:
       - "127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}:9119"
     networks:
-      - hermes-doc
+      - hermes-dashboard
       - hermes-dashboard-host
     depends_on:
-      hermes-doc:
+      hermes-dashboard:
         condition: service_healthy
 
   # --- doc-writer: PRD / Design Doc writer for the 'doc-write' queue kind ---
@@ -802,6 +832,8 @@ networks:
   status-internal:
     internal: true
   status-host:
+  hermes-dashboard:
+    internal: true
   hermes-dashboard-host:
   pr-safety-analyst:
     internal: true
