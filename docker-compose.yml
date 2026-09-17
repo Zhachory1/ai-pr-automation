@@ -302,7 +302,12 @@ services:
     env_file: .env                      # GH_TOKEN, OPENAI_API_KEY, REQUESTS_DB_PASSWORD, ...
     environment:
       AGENT_SERVER_KIND: pr-review
+      AGENT_SERVER_REVIEW_RUNTIME: ${AGENT_SERVER_REVIEW_RUNTIME:-hermes}
+      AGENT_SERVER_REVIEW_CHILD_GH_TOKEN: ${AGENT_SERVER_REVIEW_CHILD_GH_TOKEN:-}
       AGENT_SERVER_RUNNER: /app/bin/mewritecode-runner.sh
+      HERMES_DOC_URL: http://hermes-doc:8642
+      HERMES_DOC_API_KEY: ${HERMES_DOC_API_KEY:-}
+      HERMES_REVIEW_STAGE_ROOT: /review-state
       AGENT_SERVER_LEASE_SECONDS: ${AGENT_SERVER_LEASE_SECONDS:-120}
       AGENT_SERVER_LEASE_HEARTBEAT: ${AGENT_SERVER_LEASE_HEARTBEAT:-30}
       REQUESTS_DB_HOST: db-requests       # in-network service name, NOT localhost
@@ -318,8 +323,11 @@ services:
       # A writable tmpfs here (like pr-safety's sessions) fixes it without chowning the image.
       - /app/agent-config/sessions:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
     volumes:
-      - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw          # same path in-container so worktrees resolve
-      - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
+      - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw          # legacy rollback runner only
+      - hermes_review_state:/review-state                    # immutable requests/run IDs; controller only
+    networks:
+      - default
+      - hermes-doc
     depends_on:
       db-requests:
         condition: service_healthy
@@ -332,7 +340,9 @@ services:
       schema-migrate:
         condition: service_completed_successfully
       hindsight-bank-init:
-        condition: service_completed_successfully   # read-only shared bank before this agent can retain
+        condition: service_completed_successfully   # legacy rollback runner only
+      hermes-doc:
+        condition: service_healthy
 
   # Second kind: identical except AGENT_SERVER_KIND. maintain PRs push fix commits, so its GH_TOKEN
   # (in .env, or a kind-specific token) needs Contents:write; review's token can stay read-only.
@@ -418,7 +428,6 @@ services:
 
   # --- Hermes: pinned zero-tool document model runtime ---
   hermes-doc-preflight:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
     network_mode: none
     environment:
@@ -489,7 +498,6 @@ services:
         condition: service_healthy
 
   hermes-doc-egress:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: agent-fleet/hermes-doc-egress:m2a
     build:
       context: .
@@ -513,7 +521,6 @@ services:
       start_period: 10s
 
   hermes-doc:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
     image: nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874
     command: ["gateway", "run"]
     environment:
@@ -789,3 +796,4 @@ volumes:
   memory_curator_work:
   doc_writer_work:
   hermes_doc_state:
+  hermes_review_state:

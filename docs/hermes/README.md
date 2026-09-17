@@ -134,6 +134,24 @@ DOC_WRITER_RUNTIME=legacy scripts/compose.sh --profile doc-writer \
 
 Legacy rollback expects database, Hindsight, and Coderag services already running.
 
+## PR Review Runtime
+
+`agent-server-review` now sends immutable PR metadata, description, and capped diff to zero-tool
+Hermes. Agent server validates typed output and owns every GitHub review write. Hermes receives no
+GitHub credential or repository mount.
+
+PR-review rollback uses `--no-deps` so Compose does not start Hermes. Set
+`AGENT_SERVER_REVIEW_CHILD_GH_TOKEN` to a separate read-only token, or leave it empty to deny the
+legacy child GitHub access; `GH_TOKEN` remains the controller's publisher token.
+
+```bash
+scripts/compose.sh stop agent-server-review
+AGENT_SERVER_REVIEW_RUNTIME=legacy scripts/compose.sh \
+  up -d --no-deps --force-recreate agent-server-review
+```
+
+Database, Hindsight, Coderag, SwarmVault, and their completed preflights must already be running.
+
 ## Baseline
 
 Load request-DB settings, then collect near current time.

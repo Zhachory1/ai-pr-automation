@@ -6,7 +6,13 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 CID="m1-queue-test-$$"
-PORT=55432
+PORT="$(python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)"
 cleanup() { docker rm -f "$CID" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
@@ -66,6 +72,13 @@ ID_POSTED="$(q "SELECT id FROM requests WHERE dedupe_key='posted-1';")"
 q "UPDATE requests SET status='running', started_at=now(), side_effect_at=now(), posted_ref='head=abc', run_nonce='posted', lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$ID_POSTED;" >/dev/null
 queue_reclaim_stale pr-review >/dev/null
 check "posted running row -> done" "q \"SELECT status FROM requests WHERE id=$ID_POSTED;\" | grep -qx done"
+
+echo "[4c] reclaim: review side-effect intent without posted proof -> reconcile"
+queue_enqueue "pr-review" '{}' "ambiguous-review-1" >/dev/null
+ID_AMBIGUOUS="$(q "SELECT id FROM requests WHERE dedupe_key='ambiguous-review-1';")"
+q "UPDATE requests SET status='running', started_at=now(), side_effect_at=now(), run_nonce='ambiguous', lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$ID_AMBIGUOUS;" >/dev/null
+queue_reclaim_stale pr-review >/dev/null
+check "ambiguous review side effect reconciles" "q \"SELECT status FROM requests WHERE id=$ID_AMBIGUOUS;\" | grep -qx reconcile"
 
 echo "[5] already-posted detection via posted_ref"
 check "true for posted dedupe_key (EVIL was posted in [3])" "queue_already_posted pr-review \"\$EVIL\""

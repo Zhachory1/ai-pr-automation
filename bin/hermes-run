@@ -62,7 +62,7 @@ def validate(args):
         raise ValueError("invalid Hermes URL")
     if len(args.api_key) < 16:
         raise ValueError("Hermes API key must be at least 16 characters")
-    if not re.fullmatch(r"doc:[1-9][0-9]*:(draft|council)", args.idempotency_key):
+    if not re.fullmatch(r"(?:doc:[1-9][0-9]*:(?:draft|council)|review:[1-9][0-9]*)", args.idempotency_key):
         raise ValueError("invalid idempotency key")
     if not re.fullmatch(r"[0-9a-f]{64}", args.expected_digest):
         raise ValueError("invalid expected request digest")

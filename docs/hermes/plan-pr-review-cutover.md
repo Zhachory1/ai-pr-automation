@@ -1,7 +1,7 @@
 # Plan: Hermes PR Review Cutover
 
 - Owner: Zhach
-- Status: approved
+- Status: implemented; ready for merge
 - Source: [`../hermes-migration-roadmap.md`](../hermes-migration-roadmap.md), M3/M4
 
 ## Goal
@@ -63,6 +63,15 @@ bash tests/test-agent-server-auto-approve.sh
 bash tests/test-queue-injection.sh
 git diff --check
 ```
+
+## Evidence
+
+- fake Hermes COMMENT, REQUEST_CHANGES, and APPROVE publication: pass;
+- malformed, multiple-object, truncated approval, semantic mismatch, self-review, changed base/head, marker mismatch, and ambiguous POST guards: pass;
+- child GitHub token isolation and maintain write behavior: pass;
+- queue side-effect reconciliation: pass;
+- controller image smoke: pass;
+- final code review: approve, no blockers.
 
 ## Rollback
 

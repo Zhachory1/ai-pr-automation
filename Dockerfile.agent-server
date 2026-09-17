@@ -31,7 +31,8 @@ WORKDIR /app
 COPY bin/ ./bin/
 COPY lib/ ./lib/
 COPY agent-config/ ./agent-config/
-RUN mkdir -p /app/pr-safety-agent-config/skills /app/pr-safety-agent-config/sessions \
+RUN mkdir -p /app/pr-safety-agent-config/skills /app/pr-safety-agent-config/sessions /review-state \
+ && chmod 1777 /review-state \
  && cp -R /app/agent-config/skills/pr-safety-review /app/pr-safety-agent-config/skills/ \
  && cp /app/agent-config/pr-safety-mcp.json /app/pr-safety-agent-config/mcp.json \
  && cp /app/agent-config/pr-safety-models.json /app/pr-safety-agent-config/models.json \
