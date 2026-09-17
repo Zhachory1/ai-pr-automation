@@ -207,10 +207,13 @@ class HermesRunTest(unittest.TestCase):
         self.assertEqual(State.post_count, 0)
         self.assertIn("digest mismatch", self.payload(result)["error"])
 
-    def test_idempotency_key_is_derived_request_phase(self):
+    def test_idempotency_key_is_bound_to_supported_operation(self):
         result = self.run_adapter(None, "--idempotency-key", "arbitrary")
         self.assertEqual(result.returncode, 2)
         self.assertEqual(State.post_count, 0)
+        result = self.run_adapter(None, "--idempotency-key", "review:7")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(State.last_key, "review:7")
 
     def test_known_run_id_polls_without_post(self):
         result = self.run_adapter(None, "--run-id", "run-known")

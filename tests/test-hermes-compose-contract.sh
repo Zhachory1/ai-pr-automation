@@ -11,6 +11,7 @@ CODE_ROOT=/tmp/code
 SWARMVAULT_VAULT=/tmp/vault
 HERMES_DOC_API_KEY=0123456789abcdef0123456789abcdef
 HERMES_DOC_OPENAI_API_KEY=fake-provider-key
+AGENT_SERVER_REVIEW_CHILD_GH_TOKEN=read-only-child-token
 EOF
 mv "$tmp/.env.example" "$tmp/.env"
 
@@ -19,7 +20,7 @@ docker compose -f "$tmp/docker-compose.yml" --env-file "$tmp/.env" \
 
 jq -e '
   .services["hermes-doc"] as $h |
-  ($h.profiles == ["hermes-m0", "hermes-m2a", "doc-writer"]) and
+  ($h.profiles == null) and
   ($h.image == "nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874") and
   ($h.command == ["gateway", "run"]) and
   ($h.environment.API_SERVER_ENABLED == "true") and
@@ -59,11 +60,11 @@ jq -e '
   ($h.healthcheck.test[1] | contains("background_queues")) and
   (.volumes | has("hermes_doc_state")) and
   (.networks["hermes-doc"].internal == true) and
-  (.services["hermes-doc-preflight"].profiles == ["hermes-m0", "hermes-m2a", "doc-writer"]) and
+  (.services["hermes-doc-preflight"].profiles == null) and
   (.services["hermes-doc-preflight"].image == "busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662") and
   (.services["hermes-doc-preflight"].network_mode == "none") and
   (.services["hermes-doc-preflight"].command[2] | contains("#API_SERVER_KEY")) and
-  (.services["hermes-doc-egress"].profiles == ["hermes-m0", "hermes-m2a", "doc-writer"]) and
+  (.services["hermes-doc-egress"].profiles == null) and
   (.services["hermes-doc-egress"].image == "agent-fleet/hermes-doc-egress:m2a") and
   (.services["hermes-doc-egress"].read_only == true) and
   (.services["hermes-doc-egress"].cap_drop == ["ALL"]) and
@@ -72,9 +73,19 @@ jq -e '
   (.services["hermes-doc-egress"].healthcheck.test[1] | contains(":0C38")) and
   (.services["hermes-doc"].depends_on["hermes-doc-preflight"].condition == "service_completed_successfully") and
   (.services["hermes-doc"].depends_on["hermes-doc-egress"].condition == "service_healthy") and
-  ([.services | to_entries[] | select(.key != "hermes-doc") |
+  (.services["agent-server-review"].environment.AGENT_SERVER_REVIEW_RUNTIME == "hermes") and
+  (.services["agent-server-review"].environment.AGENT_SERVER_REVIEW_CHILD_GH_TOKEN == "read-only-child-token") and
+  (.services["agent-server-review"].environment.GH_TOKEN == "test-token") and
+  (.services["agent-server-review"].environment.HERMES_DOC_URL == "http://hermes-doc:8642") and
+  (.services["agent-server-review"].environment.HERMES_REVIEW_STAGE_ROOT == "/review-state") and
+  (.services["agent-server-review"].networks | keys == ["default","hermes-doc"]) and
+  (.services["agent-server-review"].depends_on["hermes-doc"].condition == "service_healthy") and
+  (.volumes | has("hermes_review_state")) and
+  ([.services["agent-server-review"].volumes[] | select(.source == "hermes_review_state" and .target == "/review-state" and ((.read_only // false) == false))] | length == 1) and
+  ([.services | to_entries[] | (.value.volumes // [])[]? | select(.source == "hermes_review_state")] | length == 1) and
+  ([.services | to_entries[] | select(.key != "hermes-doc" and .key != "agent-server-review" and .key != "doc-writer-server") |
     ((.value.depends_on // {}) | has("hermes-doc"))] | any | not) and
-  ([.services | to_entries[] | select(.key != "hermes-doc" and .key != "hermes-doc-egress") |
+  ([.services | to_entries[] | select(.key != "hermes-doc" and .key != "hermes-doc-egress" and .key != "agent-server-review" and .key != "doc-writer-server") |
     ((.value.networks // {}) | has("hermes-doc"))] | any | not) and
   ([.services | to_entries[] | select(.key != "hermes-doc") |
     (.value.volumes // [])[]? | select(.source == "hermes_doc_state")] | length == 0)
@@ -87,6 +98,9 @@ agent-server-maintain
 agent-server-review
 coderag
 db-requests
+hermes-doc
+hermes-doc-egress
+hermes-doc-preflight
 hindsight
 hindsight-bank-init
 hindsight-db
@@ -110,4 +124,4 @@ fi
 docker run --rm --network none -e API_SERVER_KEY=0123456789abcdef busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 \
   sh -ec 'test ${#API_SERVER_KEY} -ge 16'
 
-echo "PASS: Hermes doc runtime is pinned, zero-tool configured, egress-isolated, and not host-published"
+echo "PASS: Hermes runtime is pinned, zero-tool configured, egress-isolated, and review-connected"

@@ -35,8 +35,8 @@ UPDATE requests
 
 UPDATE requests
    SET status = 'reconcile', finished_at = clock_timestamp(), lease_expires_at = NULL,
-       fail_response = 'lease expired after maintenance side-effect intent; reconcile before retry'
- WHERE status = 'running' AND kind = 'pr-maintain'
+       fail_response = 'lease expired after PR side-effect intent; reconcile before retry'
+ WHERE status = 'running' AND kind IN ('pr-review', 'pr-maintain')
    AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())
    AND posted_ref IS NULL AND side_effect_at IS NOT NULL;
 
