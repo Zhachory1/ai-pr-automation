@@ -71,6 +71,8 @@ git diff --check
 - child GitHub token isolation and maintain write behavior: pass;
 - queue side-effect reconciliation: pass;
 - controller image smoke: pass;
+- full combined gate: pass;
+- runtime generation: `fc79544064fa35d350ffb97ca06fa2de264a6253c1bc5835c4b3757b64170c99`;
 - final code review: approve, no blockers.
 
 ## Rollback

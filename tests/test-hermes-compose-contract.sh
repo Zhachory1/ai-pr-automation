@@ -15,7 +15,10 @@ AGENT_SERVER_REVIEW_CHILD_GH_TOKEN=read-only-child-token
 EOF
 mv "$tmp/.env.example" "$tmp/.env"
 
-docker compose -f "$tmp/docker-compose.yml" --env-file "$tmp/.env" \
+GH_TOKEN=test-token CODE_ROOT=/tmp/code SWARMVAULT_VAULT=/tmp/vault \
+HERMES_DOC_API_KEY=0123456789abcdef0123456789abcdef \
+HERMES_DOC_OPENAI_API_KEY=fake-provider-key AGENT_SERVER_REVIEW_CHILD_GH_TOKEN=read-only-child-token \
+  docker compose -f "$tmp/docker-compose.yml" --env-file "$tmp/.env" \
   --profile hermes-m0 config --format json > "$tmp/config.json"
 
 jq -e '
