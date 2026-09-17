@@ -175,7 +175,6 @@ Maintenance mode prompts enforce:
 - no merge, deploy, release, force-push, history rewrite, or default-branch push by the agent
 - one initial feedback/CI snapshot
 - at most one low-risk fix pass
-- at most 3 unresolved review threads handled per run
 - at most 3 maintenance runs total per PR lineage
 - changed files must finish committed+pushed, reverted to a clean diff, or explicitly blocked by permission/head/conflict
 - fixed review comments receive commit/validation replies and are resolved when possible
