@@ -347,7 +347,7 @@ services:
   # Second kind: identical except AGENT_SERVER_KIND. maintain PRs push fix commits, so its GH_TOKEN
   # (in .env, or a kind-specific token) needs Contents:write; review's token can stay read-only.
   agent-server-maintain:
-    image: agent-fleet/agent-server:${AGENT_SERVER_VERSION:-latest}
+    image: agent-fleet/hermes-maintain:${HERMES_MAINTAIN_VERSION:-latest}
     stop_grace_period: ${AGENT_SERVER_STOP_GRACE_PERIOD:-35m}
     # Non-root (#92): run as the uid that owns the host code-root bind mount. See agent-server-review.
     user: "${FLEET_UID:-501}:${FLEET_GID:-501}"
@@ -355,12 +355,12 @@ services:
       replicas: ${AGENT_SERVER_MAINTAIN_REPLICAS:-1}
     build:
       context: .
-      dockerfile: Dockerfile.agent-server
+      dockerfile: Dockerfile.hermes-maintain
     restart: unless-stopped
     env_file: .env
     environment:
       AGENT_SERVER_KIND: pr-maintain
-      AGENT_SERVER_RUNNER: /app/bin/mewritecode-runner.sh
+      AGENT_SERVER_RUNNER: /app/bin/hermes-maintain-runner.sh
       AGENT_SERVER_LEASE_SECONDS: ${AGENT_SERVER_LEASE_SECONDS:-120}
       AGENT_SERVER_LEASE_HEARTBEAT: ${AGENT_SERVER_LEASE_HEARTBEAT:-30}
       AGENT_SERVER_WORK_ROOT: ${CODE_ROOT}/_roktcode-worktrees/agent-server
@@ -372,24 +372,14 @@ services:
       HOME: /home/agent                   # writable HOME (tmpfs) — running non-root, / is not writable
     tmpfs:
       - /home/agent:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
-      # Writable sessions dir (see agent-server-review) — non-root can't write the root-owned image dir.
-      - /app/agent-config/sessions:uid=${FLEET_UID:-501},gid=${FLEET_GID:-501},mode=0700
     volumes:
       - ${CODE_ROOT:?set CODE_ROOT}:${CODE_ROOT}:rw
       - ${CODE_ROOT}/_roktcode-worktrees:${CODE_ROOT}/_roktcode-worktrees:rw
     depends_on:
       db-requests:
         condition: service_healthy
-      hindsight:
-        condition: service_healthy
-      coderag:
-        condition: service_healthy
-      swarmvault-mcp:
-        condition: service_healthy
       schema-migrate:
         condition: service_completed_successfully
-      hindsight-bank-init:
-        condition: service_completed_successfully   # read-only shared bank before this agent can retain
 
   # --- swe-implement: serial worker for the 'swe-implement' queue kind ---
   # Claims swe-implement requests and runs the swe-implementer harness (fresh clone, implement, open a

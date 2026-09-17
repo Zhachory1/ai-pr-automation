@@ -170,6 +170,15 @@ AGENT_SERVER_REVIEW_RUNTIME=legacy scripts/compose.sh \
 
 Database, Hindsight, Coderag, SwarmVault, and their completed preflights must already be running.
 
+## PR Maintenance Runtime
+
+`agent-server-maintain` uses a dedicated pinned Hermes image with terminal and file tools. Existing
+controller still owns queue leases, three-round cap, exact PR branch/head push gate, CI policy, and
+human escalation. Hermes ignores repository rule files and gets one bounded fix pass.
+
+Rollback rebuilds `agent-server-maintain` with `Dockerfile.agent-server` and
+`mewritecode-runner.sh`; queue and round history stay unchanged.
+
 ## Baseline
 
 Load request-DB settings, then collect near current time.

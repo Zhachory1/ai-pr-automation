@@ -2,12 +2,19 @@
 # M2: producer enqueue + dedupe semantics against real Postgres.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-CID="m2-producer-test-$$"; PORT=55451
+CID="m2-producer-test-$$"; PORT="$(python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)"
 CAP_A="/tmp/maint-cap-a-$$"; CAP_B="/tmp/maint-cap-b-$$"
 cleanup(){ docker rm -f "$CID" >/dev/null 2>&1 || true; rm -f "$CAP_A" "$CAP_B"; }
 trap cleanup EXIT
 docker run --rm -d --name "$CID" -e POSTGRES_PASSWORD=t -e POSTGRES_DB=fleet -p "$PORT:5432" postgres:16 >/dev/null
 for _ in $(seq 1 30); do docker exec "$CID" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
+docker exec "$CID" pg_isready -U postgres >/dev/null
 docker cp docker/initdb/01-schema.sql "$CID:/tmp/01.sql"; docker cp docker/initdb/02-agent-server.sql "$CID:/tmp/02.sql"
 docker exec "$CID" psql -U postgres -d fleet -q -f /tmp/01.sql >/dev/null
 docker exec "$CID" psql -U postgres -d fleet -q -f /tmp/02.sql >/dev/null
