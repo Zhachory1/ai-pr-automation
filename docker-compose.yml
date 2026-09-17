@@ -418,7 +418,7 @@ services:
 
   # --- Hermes: pinned zero-tool document model runtime ---
   hermes-doc-preflight:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer", "hermes-dashboard"]
     image: busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
     network_mode: none
     environment:
@@ -489,7 +489,7 @@ services:
         condition: service_healthy
 
   hermes-doc-egress:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer", "hermes-dashboard"]
     image: agent-fleet/hermes-doc-egress:m2a
     build:
       context: .
@@ -513,7 +513,7 @@ services:
       start_period: 10s
 
   hermes-doc:
-    profiles: ["hermes-m0", "hermes-m2a", "doc-writer"]
+    profiles: ["hermes-m0", "hermes-m2a", "doc-writer", "hermes-dashboard"]
     image: nousresearch/hermes-agent@sha256:6d7285e1476d0661fc347e3d55245c99decb781d76d39d67582166d2c9561874
     command: ["gateway", "run"]
     environment:
@@ -527,6 +527,11 @@ services:
       HERMES_IGNORE_RULES: "1"
       HERMES_API_CALL_STALE_TIMEOUT: "300"
       HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS: "300"
+      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-false}
+      HERMES_DASHBOARD_HOST: 0.0.0.0
+      HERMES_DASHBOARD_PORT: "9119"
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_USERNAME:-}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_PASSWORD:-}
       OPENSSL_CONF: /etc/hermes/oauth-openssl.cnf
       HTTPS_PROXY: http://hermes-doc-egress:3128
       HTTP_PROXY: http://hermes-doc-egress:3128
@@ -546,6 +551,27 @@ services:
       hermes-doc-preflight:
         condition: service_completed_successfully
       hermes-doc-egress:
+        condition: service_healthy
+
+  hermes-dashboard-proxy:
+    profiles: ["hermes-dashboard"]
+    image: alpine/socat@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
+    command: ["TCP-LISTEN:9119,fork,reuseaddr", "TCP:hermes-doc:9119"]
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.25
+    ports:
+      - "127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}:9119"
+    networks:
+      - hermes-doc
+      - hermes-dashboard-host
+    depends_on:
+      hermes-doc:
         condition: service_healthy
 
   # --- doc-writer: PRD / Design Doc writer for the 'doc-write' queue kind ---
@@ -776,6 +802,7 @@ networks:
   status-internal:
     internal: true
   status-host:
+  hermes-dashboard-host:
   pr-safety-analyst:
     internal: true
     name: agent-fleet-pr-safety-analyst

@@ -111,6 +111,25 @@ Anthropic shows a browser URL, then asks you to paste returned authorization cod
 
 If token is exposed, revoke it from provider account before local logout.
 
+## Dashboard
+
+Set dashboard credentials in `.env`:
+
+```bash
+HERMES_DASHBOARD=true
+HERMES_DASHBOARD_USERNAME=hermes
+HERMES_DASHBOARD_PASSWORD=<random-password>
+```
+
+Start the localhost-only authenticated dashboard:
+
+```bash
+scripts/compose.sh --profile hermes-dashboard up -d hermes-dashboard-proxy
+```
+
+Open http://127.0.0.1:9119. Credential-free proxy owns host port; Hermes remains on its internal
+network and keeps provider traffic behind egress proxy.
+
 ## Document Runtime
 
 `doc-writer-server` now defaults to Hermes for draft and council model calls. Controller still owns
