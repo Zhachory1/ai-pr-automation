@@ -683,7 +683,7 @@ services:
     cpus: 2
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,mode=1777
-      - /app/pr-safety-agent-config/sessions:rw,nosuid,nodev,mode=0700
+      - /app/pr-safety-agent-config/sessions:rw,nosuid,nodev,mode=0700,uid=${FLEET_UID:-501},gid=${FLEET_GID:-501}
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GH_TOKEN: ${GH_TOKEN:-}
@@ -761,6 +761,7 @@ services:
       - doc_writer_work:/work:ro
     networks:
       - status-internal
+      - status-host
     depends_on:
       db-requests:
         condition: service_healthy
@@ -774,6 +775,7 @@ networks:
     internal: true
   status-internal:
     internal: true
+  status-host:
   pr-safety-analyst:
     internal: true
     name: agent-fleet-pr-safety-analyst

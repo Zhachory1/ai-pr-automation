@@ -10,7 +10,7 @@ for df in Dockerfile.swe-implement-server Dockerfile.doc-writer Dockerfile.memor
   check "$df drops to a non-root USER" "grep -qx 'USER fleet' '$df'"
   check "$df creates a non-root user (uid 10001)" "grep -q 'useradd .*--uid 10001 .*fleet' '$df'"
   check "$df pre-creates+chowns /work so a fresh volume is writable" \
-    "grep -qE 'mkdir -p /work' '$df' && grep -qE 'chown -R fleet:fleet /app /work' '$df'"
+    "grep -qE 'mkdir -p /work' '$df' && grep -qE 'chown -R fleet:fleet (/app )?/work' '$df'"
 done
 check "memory-curator also pre-creates /state" "grep -q 'mkdir -p /work /state' Dockerfile.memory-curator"
 
@@ -21,6 +21,8 @@ check "agent-server-maintain has compose user: FLEET_UID" \
   "grep -A6 '^  agent-server-maintain:' docker-compose.yml | grep -q 'user: \"\${FLEET_UID:-501}'"
 check "agent-server-pr-safety has compose user: FLEET_UID" \
   "grep -A6 '^  agent-server-pr-safety:' docker-compose.yml | grep -q 'user: \"\${FLEET_UID:-501}'"
+check "agent-server-pr-safety session tmpfs is owned by FLEET_UID" \
+  "grep -A35 '^  agent-server-pr-safety:' docker-compose.yml | grep -q 'sessions:.*uid=\${FLEET_UID:-501},gid=\${FLEET_GID:-501}'"
 check "FLEET_UID documented in .env.example" "grep -q '^FLEET_UID=' .env.example"
 
 (( fail == 0 ))
