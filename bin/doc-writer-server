@@ -269,6 +269,7 @@ while true; do
   if ! claim="$(queue_claim_one "$KIND" "$run_id" "$nonce" "$LEASE_SECONDS")"; then
     log "claim failed; backing off"; sleep "$POLL_INTERVAL"; continue
   fi
+  last_progress="$now"
   if [[ -z "$claim" || "$claim" == "null" ]]; then sleep "$POLL_INTERVAL"; continue; fi
 
   id="$(jq -r '.id' <<<"$claim")"

@@ -159,6 +159,11 @@ env "${common[@]}" bin/doc-writer-reconcile "$absent_id" --publish-absent >/dev/
 [[ -f "$inbox/dd-2026-09-15-absent.md" ]]
 [[ "$(q "SELECT r.status||'/'||p.state FROM requests r JOIN doc_publications p ON p.request_id=r.id WHERE r.id=$absent_id;")" == done/published ]]
 
+idle_log="$tmp/idle.log"
+timeout 6 env "${common[@]}" DOC_WRITER_RUNTIME=legacy DOC_WRITER_ONCE=false \
+  DOC_WRITER_POLL_INTERVAL=1 DOC_WRITER_LOOP_HEARTBEAT_MAX=3 bin/doc-writer-server >"$idle_log" || true
+[[ "$(grep -c 'FATAL: no loop progress' "$idle_log" || true)" == 0 ]]
+
 active_id="$(q "INSERT INTO requests(kind,payload,dedupe_key,status,run_nonce,lease_expires_at)
   VALUES('doc-write','{}','doc:active-cutover','running','active',now()-interval '1 second') RETURNING id;")"
 hex="$(printf 'a%.0s' {1..64})"
