@@ -14,7 +14,13 @@ awk '/^build_maintain_prompt\(\) \{/{p=1} p{print} p&&/^\}/{exit}' bin/agent-ser
 # shellcheck disable=SC1090
 . "$tmp"
 GITHUB_LOGIN=reviewer-bot
-PROMPT="$(build_maintain_prompt pr-maintain ROKT/example 42 https://x/42 'A title' "$(printf '%040d' 42)" nonce123 /work/root)"
+PROMPT="$(build_maintain_prompt pr-maintain ROKT/example 42 https://x/42 'A title' "$(printf '%040d' 42)" nonce123 /work/root feature/exact)"
+
+# terminal-only discovery is complete and paginated
+want 'gh api --paginate "repos/ROKT/example/pulls/42/comments"'
+want "gh api graphql --paginate"
+want 'reviewThreads(first:100,after:$endCursor)'
+want "Join REST comment id to GraphQL fullDatabaseId"
 
 # resolution is mandatory + uniform, not "MAY"
 want "Resolving addressed threads is MANDATORY, not optional"

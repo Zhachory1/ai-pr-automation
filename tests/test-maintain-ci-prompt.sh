@@ -15,13 +15,14 @@ awk '/^build_maintain_prompt\(\) \{/{p=1} p{print} p&&/^\}/{exit}' bin/agent-ser
 # shellcheck disable=SC1090
 . "$tmp"
 GITHUB_LOGIN=reviewer-bot
-PROMPT="$(build_maintain_prompt pr-maintain ROKT/example 42 https://x/42 'A title' "$(printf '%040d' 42)" nonce123 /work/root)"
+PROMPT="$(build_maintain_prompt pr-maintain ROKT/example 42 https://x/42 'A title' "$(printf '%040d' 42)" nonce123 /work/root feature/exact)"
 
 # core: it now covers CI, not just comments
 want "handle review comments AND failing CI"
 want "Failing CI (CONSERVATIVE autonomy"
 want "--json statusCheckRollup"   # rendered: gh pr view "42" -R "ROKT/example" --json statusCheckRollup
 want "Buildkite MCP to fetch the failing job's log"
+want "If Buildkite MCP is unavailable, ESCALATE"
 
 # conservative fix scope (A): only code-caused/validatable classes
 want "lint / format / style violations, type-check errors, a compile/build break, or a unit test that"
@@ -34,6 +35,8 @@ want "flaky or infrastructure/runner failures"
 # never game the check; never retry (flaky = escalate-only)
 want "NEVER make a check pass by weakening it"
 want "Do NOT re-trigger, retry, cancel, or rebuild any CI job"
+want "Do not merge or close the PR, dismiss reviews, deploy, release, or mutate CI state or CI config"
+want "Make at most ONE combined fix pass per run"
 
 # commit convention + escalation surfaced in result.json
 want "'fix(ci): ...' for a"
