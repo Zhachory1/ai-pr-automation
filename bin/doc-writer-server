@@ -263,6 +263,7 @@ while true; do
     log "FATAL: no loop progress in ${LOOP_HEARTBEAT_MAX}s; self-exiting for restart"; exit 3
   fi
   if ! db_up; then log "db unreachable; backing off"; sleep "$POLL_INTERVAL"; continue; fi
+  last_progress="$now"
 
   nonce="$(head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   run_id="$(date '+%Y%m%d-%H%M%S')-${HOSTNAME:-worker}-${nonce:0:8}"
