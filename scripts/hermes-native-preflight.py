@@ -51,6 +51,7 @@ def main():
     parser.add_argument("--install-dir", type=Path, required=True)
     parser.add_argument("--hermes-home", type=Path, required=True)
     parser.add_argument("--profile-source", type=Path, required=True)
+    parser.add_argument("--service-user")
     args = parser.parse_args()
 
     contract = {}
@@ -84,10 +85,16 @@ def main():
         fail("installed smoke profile changed")
 
     environment = os.environ | {"HOME": str(home.parent), "HERMES_HOME": str(home)}
-    version = run(str(launcher), "--version", env=environment)
+    command = (str(launcher),)
+    if args.service_user:
+        if os.geteuid() != 0:
+            fail("service-user preflight requires root")
+        command = ("sudo", "-u", args.service_user, "env", f"HOME={home.parent}", f"HERMES_HOME={home}", str(launcher))
+        environment = None
+    version = run(*command, "--version", env=environment)
     if contract["HERMES_NATIVE_VERSION"] not in version:
         fail("Hermes version output does not match contract")
-    run(str(launcher), "-p", "smoke-v1", "profile", "show", "smoke-v1", env=environment)
+    run(*command, "-p", "smoke-v1", "profile", "show", "smoke-v1", env=environment)
     print(json.dumps({"status": "ready", "version": manifest["version"], "commit": manifest["commit"],
                       "profile": "smoke-v1"}, sort_keys=True, separators=(",", ":")))
 

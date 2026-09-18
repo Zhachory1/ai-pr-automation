@@ -47,6 +47,11 @@ PY
 scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest "$tmp/manifest.json" \
   --install-dir "$tmp/install" --hermes-home "$tmp/service/.hermes" --profile-source "$tmp/source" \
   | jq -e '.status == "ready" and .profile == "smoke-v1"' >/dev/null
+if scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest "$tmp/manifest.json" \
+  --install-dir "$tmp/install" --hermes-home "$tmp/service/.hermes" --profile-source "$tmp/source" \
+  --service-user nobody >/dev/null 2>&1; then
+  echo 'FAIL: non-root service-user preflight accepted' >&2; exit 1
+fi
 printf 'changed\n' >> "$tmp/service/.hermes/profiles/smoke-v1/SOUL.md"
 if scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest "$tmp/manifest.json" \
   --install-dir "$tmp/install" --hermes-home "$tmp/service/.hermes" --profile-source "$tmp/source" >/dev/null 2>&1; then
