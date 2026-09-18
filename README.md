@@ -48,7 +48,7 @@ producers, agent-server). In brief:
 ```bash
 gh auth status
 command -v timeout || command -v gtimeout
-cp .env.example .env    # fill CODE_ROOT, passwords, GH_TOKEN, producer scope, provider key
+cp .env.example .env    # fill CODE_ROOT, DB/Fleet Controller secrets, GH_TOKEN, producer scope, provider key
 scripts/compose.sh up -d --build  # validates vault path, then builds and starts local fleet
 scripts/m0-verify.sh    # substrate checks
 scripts/verify-agent-mcps.sh  # worker -> bridge -> MCP tool-call checks
@@ -56,6 +56,20 @@ scripts/verify-agent-mcps.sh  # worker -> bridge -> MCP tool-call checks
 # Producers use PR_PRODUCER_REPOSITORIES / PR_PRODUCER_ORGS from .env.
 docker compose logs -f pr-producer-review pr-producer-maintain
 ```
+
+Generate owner-only Fleet Controller secret files outside `CODE_ROOT`, set their paths in `.env`,
+then rebuild `status`:
+
+```bash
+install -d -m 700 "$HOME/.config/ai-pr-automation"
+umask 077
+openssl rand -base64 24 > "$HOME/.config/ai-pr-automation/fleet-controller-password"
+openssl rand -hex 32 > "$HOME/.config/ai-pr-automation/fleet-controller-session-secret"
+scripts/compose.sh up -d --build --force-recreate status
+```
+
+Open http://127.0.0.1:8080 and sign in. Session lifetime defaults to 12 hours. Fleet Controller
+keeps localhost, Host, Origin, and CSRF checks in addition to login.
 
 The agent runner contract, queue fairness, and data-boundary guidance below still apply — the
 agent-server inherits them from the original design.
@@ -185,7 +199,7 @@ Maintenance mode prompts enforce:
   thresholds, no CI-config edits) — that path is an escalation, not a fix.
 - ambiguous maintenance findings AND escalated CI failures (integration/e2e, flaky/infra, timeouts,
   credential/permission, anything unvalidatable) enter the local human-review queue at
-  `http://localhost:8080`; use **Reviewed** or **Dismiss** after handling them. These controls update
+  `http://localhost:8080`; sign in, then use **Reviewed** or **Dismiss** after handling them. These controls update
   local queue state only — they never write to GitHub.
 - focused validation
 - CI-state mutations (retry/rebuild/cancel of a job) are NOT performed; flaky/infra failures are

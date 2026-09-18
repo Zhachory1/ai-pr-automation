@@ -3,7 +3,9 @@ import hashlib
 import http.client
 import importlib.util
 import json
+import os
 import pathlib
+import subprocess
 import tempfile
 from importlib.machinery import SourceFileLoader
 import threading
@@ -15,6 +17,16 @@ from urllib.parse import urlencode
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+AUTH_TMP = tempfile.TemporaryDirectory()
+PASSWORD_FILE = pathlib.Path(AUTH_TMP.name) / "password"
+SESSION_FILE = pathlib.Path(AUTH_TMP.name) / "session"
+PASSWORD_FILE.write_text("test-controller-password\n")
+SESSION_FILE.write_text("0123456789abcdef0123456789abcdef\n")
+PASSWORD_FILE.chmod(0o600)
+SESSION_FILE.chmod(0o600)
+os.environ["FLEET_CONTROLLER_USERNAME"] = "fleet"
+os.environ["FLEET_CONTROLLER_PASSWORD_FILE"] = str(PASSWORD_FILE)
+os.environ["FLEET_CONTROLLER_SESSION_SECRET_FILE"] = str(SESSION_FILE)
 loader = SourceFileLoader("status_server", str(ROOT / "bin/status-server"))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 status_server = importlib.util.module_from_spec(spec)
@@ -22,6 +34,19 @@ loader.exec_module(status_server)
 
 
 class StatusServerTest(unittest.TestCase):
+    def test_render_shows_generic_run_ids(self):
+        rows = [
+            [["7", "pr-review", "run-<active>", "repo#7@head", "00:01:02"]], [],
+            [["6", "doc-write", "done", "run-finished", "doc:6", "", "09-18 10:00"]],
+            [], [], [], [], [], [],
+        ]
+        with patch.object(status_server, "query", side_effect=rows):
+            page = status_server.render()
+        self.assertIn("Runs &amp; Queue", page)
+        self.assertIn("run-&lt;active&gt;", page)
+        self.assertIn("run-finished", page)
+        self.assertIn("run_id", page)
+
     def test_render_shows_escaped_pr_safety_human_queue_item(self):
         # query order: running, queued, recent, human_review, pending, today, capped, swe, docs
         rows = [
@@ -183,6 +208,157 @@ class StatusServerTest(unittest.TestCase):
         self.assertIn("state = 'pending'", psql.call_args.args[1])
         retain.assert_not_called()
 
+    def test_startup_rejects_missing_auth_secrets(self):
+        env = os.environ.copy()
+        env.pop("FLEET_CONTROLLER_PASSWORD_FILE", None)
+        env.pop("FLEET_CONTROLLER_SESSION_SECRET_FILE", None)
+        result = subprocess.run([
+            "python3", "-c", "import runpy; runpy.run_path('bin/status-server', run_name='status_config_test')"
+        ], cwd=ROOT, env=env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FLEET_CONTROLLER_PASSWORD_FILE", result.stderr)
+
+    def test_secret_reader_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory) / "target"
+            link = pathlib.Path(directory) / "link"
+            target.write_text("x" * 32)
+            link.symlink_to(target)
+            with patch.dict(os.environ, {"TEST_SECRET_FILE": str(link)}), \
+                    self.assertRaisesRegex(RuntimeError, "unreadable"):
+                status_server.read_secret("TEST_SECRET_FILE", 16)
+
+    def test_sessions_are_signed_bounded_and_reject_tampering(self):
+        token = status_server.issue_session(now=1000)
+        cookie = f"{status_server.SESSION_COOKIE}={token}"
+        self.assertEqual(status_server.session_actor(cookie, now=1001), "fleet")
+        self.assertIsNone(status_server.session_actor(cookie, now=1000 + status_server.SESSION_SECONDS))
+        self.assertIsNone(status_server.session_actor(cookie + "x", now=1001))
+        future = status_server.issue_session(now=2000)
+        self.assertIsNone(status_server.session_actor(
+            f"{status_server.SESSION_COOKIE}={future}", now=1000))
+
+    def test_login_is_only_anonymous_page_and_sets_secure_cookie(self):
+        server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
+        host = f"127.0.0.1:{server.server_port}"
+        origin = f"http://{host}"
+        status_server.ALLOWED_HOSTS = {host}
+        status_server.ALLOWED_ORIGINS = {origin}
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            connection.request("GET", "/login")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Cache-Control"), "no-store")
+            self.assertIn(b"Fleet Controller", response.read())
+
+            with patch.object(status_server.Handler, "cached_page") as page:
+                connection.request("GET", "/")
+                response = connection.getresponse()
+                self.assertEqual(response.status, 303)
+                self.assertEqual(response.getheader("Location"), "/login")
+                response.read()
+                page.assert_not_called()
+
+            wrong = urlencode({"username": "fleet", "password": "wrong-password-value"})
+            connection.request("POST", "/login", wrong, {
+                "Host": host, "Origin": origin, "Content-Type": "application/x-www-form-urlencoded"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 401)
+            self.assertIsNone(response.getheader("Set-Cookie"))
+            response.read()
+
+            body = urlencode({"username": "fleet", "password": "test-controller-password"})
+            connection.request("POST", "/login", body, {
+                "Host": host, "Origin": origin, "Content-Type": "application/x-www-form-urlencoded"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 303)
+            self.assertEqual(response.getheader("Location"), "/")
+            cookie = response.getheader("Set-Cookie")
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn("SameSite=Strict", cookie)
+            self.assertIn(f"Max-Age={status_server.SESSION_SECONDS}", cookie)
+            response.read()
+
+            session = cookie.split(";", 1)[0]
+            with patch.object(status_server.Handler, "cached_page", return_value=b"ok"):
+                connection.request("GET", "/", headers={"Cookie": session})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                self.assertEqual(response.read(), b"ok")
+            connection.request("POST", "/logout", urlencode({"token": status_server.CSRF_TOKEN}), {
+                "Host": host, "Origin": origin, "Cookie": session,
+                "Content-Type": "application/x-www-form-urlencoded"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 303)
+            self.assertIn("Max-Age=0", response.getheader("Set-Cookie"))
+            response.read()
+            connection.close()
+            self.assertIn("r.status===401", status_server.LIVE_JS)
+            self.assertIn("pathname==='/logout'", status_server.LIVE_JS)
+        finally:
+            server.shutdown()
+            server.server_close()
+            status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS = old_hosts, old_origins
+
+    def test_anonymous_mutation_and_tampered_cookie_are_rejected(self):
+        server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
+        origin = f"http://127.0.0.1:{server.server_port}"
+        status_server.ALLOWED_HOSTS = {f"127.0.0.1:{server.server_port}"}
+        status_server.ALLOWED_ORIGINS = {origin}
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"{origin}/cancel"
+            body = urlencode({"token": status_server.CSRF_TOKEN, "id": "7"}).encode()
+            for cookie in (None, f"{status_server.SESSION_COOKIE}=tampered"):
+                headers = {"Origin": origin}
+                if cookie:
+                    headers["Cookie"] = cookie
+                request = urllib.request.Request(url, data=body, method="POST", headers=headers)
+                with patch.object(status_server, "cancel_queued") as cancel, \
+                        self.assertRaises(urllib.error.HTTPError) as response:
+                    urllib.request.urlopen(request)
+                self.assertEqual(response.exception.code, 401)
+                response.exception.close()
+                cancel.assert_not_called()
+            connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+            connection.putrequest("POST", "/cancel", skip_host=True)
+            connection.putheader("Host", f"127.0.0.1:{server.server_port}")
+            connection.putheader("Content-Length", "-1")
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual(response.status, 413)
+            response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS = old_hosts, old_origins
+
+    def test_audit_contains_actor_action_and_outcome_only(self):
+        with patch("builtins.print") as output:
+            status_server.audit("fleet", "/cancel?token=must-not-log", "ok")
+        record = json.loads(output.call_args.args[0])
+        self.assertEqual(record["actor"], "fleet")
+        self.assertEqual(record["action"], "/cancel")
+        self.assertEqual(record["outcome"], "ok")
+        self.assertEqual(set(record), {"event", "timestamp", "actor", "action", "outcome"})
+        self.assertNotIn("must-not-log", output.call_args.args[0])
+
+    def test_mutation_result_classification_is_not_false_success(self):
+        self.assertTrue(status_server.result_succeeded("injected pr-review owner/repo#7"))
+        self.assertTrue(status_server.result_succeeded("already queued/running (deduped)"))
+        for result in ("rejected: bad input", "publish failed; retry pending-decision #19",
+                       "#19 not pending", "#7 not cancelled", "NOT queued: daily cap"):
+            with self.subTest(result=result):
+                self.assertFalse(status_server.result_succeeded(result))
+
     def test_post_changes_only_local_queue_state_from_local_origin(self):
         server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
         old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
@@ -194,14 +370,17 @@ class StatusServerTest(unittest.TestCase):
         try:
             url = f"{origin}/human-reviews/17/reviewed"
             body = urlencode({"token": status_server.CSRF_TOKEN}).encode()
-            request = urllib.request.Request(url, data=body, method="POST", headers={"Origin": origin})
+            cookie = f"{status_server.SESSION_COOKIE}={status_server.issue_session()}"
+            request = urllib.request.Request(url, data=body, method="POST", headers={
+                "Origin": origin, "Cookie": cookie})
             with patch.object(status_server, "update_human_review_state", return_value="reviewed human-review #17") as update, \
                     patch.object(status_server, "render", return_value="ok"):
                 response = urllib.request.urlopen(request)
                 self.assertEqual(response.status, 200)
                 update.assert_called_once_with(17, "reviewed")
 
-            bad_origin = urllib.request.Request(url, data=body, method="POST", headers={"Origin": "https://example.com"})
+            bad_origin = urllib.request.Request(url, data=body, method="POST", headers={
+                "Origin": "https://example.com", "Cookie": cookie})
             with patch.object(status_server, "update_human_review_state") as update:
                 with self.assertRaises(urllib.error.HTTPError) as response:
                     urllib.request.urlopen(bad_origin)
@@ -224,7 +403,9 @@ class StatusServerTest(unittest.TestCase):
         try:
             url = f"{origin}/pending-decisions/19/approve"
             body = urlencode({"token": status_server.CSRF_TOKEN}).encode()
-            request = urllib.request.Request(url, data=body, method="POST", headers={"Origin": origin})
+            cookie = f"{status_server.SESSION_COOKIE}={status_server.issue_session()}"
+            request = urllib.request.Request(url, data=body, method="POST", headers={
+                "Origin": origin, "Cookie": cookie})
             with patch.object(status_server, "approve_pending_decision", return_value="approved pending-decision #19") as approve, \
                     patch.object(status_server, "render", return_value="ok"):
                 response = urllib.request.urlopen(request)
@@ -232,7 +413,8 @@ class StatusServerTest(unittest.TestCase):
                 approve.assert_called_once_with(19)
 
             bad_token = urllib.request.Request(
-                url, data=urlencode({"token": "bad"}).encode(), method="POST", headers={"Origin": origin})
+                url, data=urlencode({"token": "bad"}).encode(), method="POST", headers={
+                    "Origin": origin, "Cookie": cookie})
             with patch.object(status_server, "approve_pending_decision") as approve:
                 with self.assertRaises(urllib.error.HTTPError) as response:
                     urllib.request.urlopen(bad_token)
@@ -243,7 +425,7 @@ class StatusServerTest(unittest.TestCase):
             connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
             with patch.object(status_server, "approve_pending_decision") as approve:
                 connection.request("POST", "/pending-decisions/19/approve", body,
-                                   {"Host": "example.com", "Origin": origin,
+                                   {"Host": "example.com", "Origin": origin, "Cookie": cookie,
                                     "Content-Type": "application/x-www-form-urlencoded"})
                 response = connection.getresponse()
                 self.assertEqual(response.status, 403)
@@ -392,20 +574,22 @@ class StatusServerTest(unittest.TestCase):
         try:
             url = f"{origin}/doc-publications/17/publish"
             body = urlencode({"token": status_server.CSRF_TOKEN}).encode()
-            request = urllib.request.Request(url, data=body, method="POST", headers={"Origin": origin})
+            cookie = f"{status_server.SESSION_COOKIE}={status_server.issue_session()}"
+            request = urllib.request.Request(url, data=body, method="POST", headers={
+                "Origin": origin, "Cookie": cookie})
             with patch.object(status_server, "doc_publication_decide", return_value="queued") as decide, \
                     patch.object(status_server, "render", return_value="ok"):
                 self.assertEqual(urllib.request.urlopen(request).status, 200)
                 decide.assert_called_once_with(17, "publish")
             bad = urllib.request.Request(url, data=urlencode({"token": "bad"}).encode(),
-                                         method="POST", headers={"Origin": origin})
+                                         method="POST", headers={"Origin": origin, "Cookie": cookie})
             with patch.object(status_server, "doc_publication_decide") as decide:
                 with self.assertRaises(urllib.error.HTTPError) as response:
                     urllib.request.urlopen(bad)
                 self.assertEqual(response.exception.code, 403)
                 response.exception.close()
                 decide.assert_not_called()
-            missing_origin = urllib.request.Request(url, data=body, method="POST")
+            missing_origin = urllib.request.Request(url, data=body, method="POST", headers={"Cookie": cookie})
             with patch.object(status_server, "doc_publication_decide") as decide:
                 with self.assertRaises(urllib.error.HTTPError) as response:
                     urllib.request.urlopen(missing_origin)
