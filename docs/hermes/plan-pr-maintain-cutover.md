@@ -1,7 +1,7 @@
 # Plan: Hermes PR Maintain Cutover
 
 - Owner: Zhach
-- Status: implemented; ready for merge
+- Status: implemented; superseded as target architecture by [`DD-host-native-agent-engine.md`](DD-host-native-agent-engine.md)
 - Source: [`../hermes-migration-roadmap.md`](../hermes-migration-roadmap.md), M6
 
 ## Goal

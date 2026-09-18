@@ -1,9 +1,11 @@
 # Hermes Migration
 
-Status: M0 merged. M2a non-routing foundation at machine-gate validation. M2b live activation and M1 blocked.
+Status: host-native autonomous migration approved; Fleet Controller auth merged; native foundation in progress.
 
 ## Artifacts
 
+- [Host-native autonomous design](DD-host-native-agent-engine.md)
+- [Host-native implementation plan](plan-host-native-autonomous-hermes.md)
 - [Roadmap](../hermes-migration-roadmap.md)
 - [Grounding brief](grounding-brief.md)
 - [PRD](PRD-m0-m2.md)
@@ -20,6 +22,29 @@ Status: M0 merged. M2a non-routing foundation at machine-gate validation. M2b li
 - [OAuth PRD](PRD-oauth-login.md)
 - [OAuth design](DD-oauth-login.md)
 - [OAuth plan](plan-oauth-login.md)
+
+## Native Foundation
+
+Pinned contract: `agent-config/hermes/native.env`. Foundation installs one headless gateway and
+`smoke-v1` profile under dedicated `hermes-agent` account. It does not create account, configure
+provider credentials, load LaunchDaemon, claim queue work, or make provider calls.
+
+After human creates `hermes-agent`, install without starting:
+
+```bash
+sudo scripts/hermes-native.sh install
+scripts/hermes-native.sh preflight
+```
+
+Operator-local Hermes may exist for CLI testing. It is not fleet runtime. Start dedicated gateway
+only after account, provider, API key, and autonomy gates are approved:
+
+```bash
+sudo scripts/hermes-native.sh start
+sudo scripts/hermes-native.sh stop
+scripts/hermes-native.sh status
+scripts/hermes-native.sh logs
+```
 
 ## M0 Pull Requests
 

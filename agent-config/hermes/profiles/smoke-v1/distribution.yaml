@@ -1,0 +1,9 @@
+name: smoke-v1
+version: 1.0.0
+description: Zero-tool synthetic profile for native Hermes health checks.
+hermes_requires: ">=0.21.3"
+distribution_owned:
+  - SOUL.md
+  - config.yaml
+  - distribution.yaml
+  - .no-bundled-skills

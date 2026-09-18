@@ -127,33 +127,18 @@ Scope:
 - add root-owned install/profile-sync command;
 - add `hermes-agent` LaunchDaemon template;
 - add maintenance, drain, start, stop, status, and logs commands;
-- add shared queue runner with fixed kind-to-profile map;
-- runner owns claim, heartbeat, profile invocation, and terminal-state check only;
-- add paused executor cron definitions;
-- add Postgres-loss watchdog that stops Hermes and alerts;
-- wire native profile and cron health into Fleet Controller generic status view;
+- report native profile, cron, gateway, and pin state through operator status command;
 - add `smoke-v1` profile;
 - keep all current workers and producers active;
 - mark old Hermes cutover plans superseded by merged DD and this plan.
-
-Boring runner shape:
-
-```text
-kind -> exact profile ID
-claim -> heartbeat -> invoke -> terminal check
-```
-
-No plugins, callbacks, factories, or role-specific effect logic in runner.
 
 Likely files:
 
 - `scripts/hermes-native.sh`;
 - `scripts/hermes-native-preflight.py`;
-- `bin/hermes-queue-runner`;
 - `launchd/com.example.ai-pr-automation-hermes.plist.template`;
 - `agent-config/hermes/profiles/smoke-v1/`;
 - `tests/test-hermes-native*`;
-- `tests/test-hermes-queue-runner.sh`;
 - `docs/hermes/README.md`;
 - old cutover plan headers.
 
@@ -164,8 +149,6 @@ Acceptance:
 - profile source and launch files are not writable by `hermes-agent`;
 - pinned runtime proves profile install/list, Runs submit/poll/stop/replay/restart, and cron `--no-agent`;
 - no-agent probe makes zero provider calls;
-- runner prevents same-kind overlap;
-- watchdog stops new claims and Hermes when Postgres is unavailable;
 - maintenance mode prevents automatic restart;
 - no production row is claimed.
 
@@ -174,7 +157,6 @@ Validation:
 - fake CLI/API/DB unit tests;
 - clean-state install and restart smoke;
 - account permission denial test;
-- Postgres-loss watchdog test;
 - synthetic profile run.
 
 Rollback: unload LaunchDaemon. Current Compose routes stay active.
@@ -198,7 +180,8 @@ Scope:
 - require active proof checked within ten minutes before enqueue or claim;
 - stop runtime reads of environment repository/org allowlists after migration;
 - preserve old broad role/functions for rollback until cleanup;
-- add credential inventory check with no secret output.
+- add credential inventory check with no secret output;
+- add Postgres-loss watchdog that stops Hermes and alerts before credentials activate.
 
 No JSON runtime allowlist. No second enrollment authority.
 
@@ -224,7 +207,8 @@ Acceptance:
 - stale nonce, cross-kind transition, and unenrolled repo calls fail;
 - enqueue and claim require active non-expired authority proof;
 - mismatch or stale proof invalidates enrollment and blocks work;
-- full denial drill reruns only when bound authority digest changes.
+- full denial drill reruns only when bound authority digest changes;
+- watchdog stops Hermes before new claims when Postgres is unavailable.
 
 Validation:
 
@@ -243,6 +227,9 @@ Goal: produce first real signal. Hermes edits, pushes, and opens draft PR in dis
 
 Scope:
 
+- add shared queue runner with fixed kind-to-profile map;
+- runner owns claim, heartbeat, profile invocation, and terminal-state check only;
+- add paused executor cron definitions and generic Fleet Controller profile/cron/run health;
 - add production-shaped `swe-implement-v1` profile;
 - map `swe-implement` in shared queue runner;
 - use current Fleet Controller task submission;
