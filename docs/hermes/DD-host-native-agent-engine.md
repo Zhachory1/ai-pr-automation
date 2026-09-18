@@ -265,7 +265,6 @@ Server-side controls must prevent Hermes from:
 
 - pushing default or protected branches;
 - bypassing branch rules;
-- merging PRs;
 - approving exact document publication;
 - changing CI workflows;
 - triggering deployments or releases;
@@ -278,7 +277,7 @@ Server-side controls must prevent Hermes from:
 
 Human retains:
 
-- merge;
+- normal merge responsibility, enforced by operating policy rather than credential scope;
 - exact document approval;
 - incident disposition;
 - paid-call and rollout approval;
@@ -293,13 +292,13 @@ Give that account only:
 
 - provider OAuth;
 - per-repository SSH deploy keys for branch pushes;
-- GitHub App token with Pull Requests write and Contents read;
+- dedicated `zhach1` GitHub credential with repository Write access;
 - CI and log read credentials;
 - approved MCP credentials;
 - Hermes worker database role;
 - Hindsight curator credential.
 
-Do not give GitHub App Contents write. Use SSH deploy key for Git pushes. This keeps PR API access separate from Git transport.
+Use SSH deploy key for Git pushes and `zhach1` for PR APIs. Full autonomy means `zhach1` can technically merge after branch requirements pass.
 
 GitHub rulesets:
 
@@ -312,7 +311,6 @@ GitHub rulesets:
 
 Repository enrollment gate:
 
-- prove Hermes cannot merge through GitHub API;
 - prove deploy key cannot update protected branch;
 - run branch-push workflows with no write token, production secret, or deployment authority;
 - reject unsafe `pull_request_target` workflows that check out agent-controlled code;
@@ -496,7 +494,7 @@ A prompt-injected tool profile can:
 
 Profiles do not isolate these credentials from each other. Dedicated OS account protects human credentials, not profile-to-profile authority.
 
-For enrolled repositories, tested server-side branch rules and credential permissions protect default branch, merge, administration, deployment, workflows, and human decisions.
+For enrolled repositories, tested server-side branch rules and credential permissions protect default branch, administration, deployment, workflows, and Fleet Controller decisions. Merge remains normal human policy, not a hard credential boundary.
 
 If this risk is not acceptable, full autonomy is wrong. Add a credential broker or return tool-heavy roles to containers.
 
@@ -610,7 +608,7 @@ Keep old schema, images, and manifests until final deletion gate.
 
 - Hermes runs as dedicated account, not human account.
 - Hermes cannot read human GitHub, SSH, Keychain, browser, or Fleet Controller credentials.
-- GitHub server rejects default-branch push, protected-branch force push, workflow change, deployment, administration, and merge.
+- GitHub server rejects default-branch push, protected-branch force push, unsafe workflow execution, deployment, and administration.
 - Allowed profile can create branch, push commit, open draft PR, and post review.
 - Cron `--no-agent` makes zero provider calls.
 - Executor cron starts one thin runner per allowed queue kind and prevents overlap.
@@ -630,7 +628,6 @@ Keep old schema, images, and manifests until final deletion gate.
 | Accept cross-profile access to all `hermes-agent` credentials? | Zhach | Native launch |
 | Which repositories receive Hermes deploy keys? | Zhach | GitHub setup |
 | Which MCP and browser credentials belong to Hermes? | Zhach | Profile install |
-| Can current GitHub rulesets prove human-only merge for Hermes credentials? | Migration owner | GitHub setup |
 | Exact native install path and pin command? | Migration owner | Foundation implementation |
 
 ## Approval Ask
@@ -643,7 +640,7 @@ Approve:
 4. Hermes cron replaces producer schedules with no-agent scripts.
 5. Fleet Controller is fleet-operations and agent-gated decision UI. GitHub remains PR merge UI.
 6. Postgres remains queue, lease, approval, round-cap, and reconciliation store.
-7. Human retains merge, exact document approval, incidents, rollout, and credential control.
+7. Human normally performs merges and retains exact document approval, incidents, rollout, and credential control.
 8. Server-side GitHub rules and scoped credentials replace Fleet Worker or Effect Gateway isolation.
 
 After approval: write dependency-ordered implementation plan. This document changes no runtime.

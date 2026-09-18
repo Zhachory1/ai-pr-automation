@@ -42,7 +42,7 @@ Non-goals:
 - Hermes runs as `hermes-agent`, never human account;
 - Fleet Controller requires authenticated human session;
 - enrolled-repository record is sole runtime repository authority;
-- GitHub capability check blocks merge, protected-branch update, unsafe CI/deployment effects, and administration;
+- GitHub capability check blocks protected-branch update, unsafe CI/deployment effects, and administration;
 - Hermes can edit, push, open draft PR, and post review in enrolled repository;
 - producer cron uses `--no-agent` and makes zero provider calls;
 - one shared queue runner owns claim, heartbeat, invoke, and terminal-state checks;
@@ -210,7 +210,7 @@ Validation:
 
 Rollback: remove repo enrollment, revoke agent credentials, keep additive schema.
 
-Stop condition: human-only merge or safe CI/deployment denial cannot be proven. Return to DD.
+Stop condition: protected-branch or safe CI/deployment denial cannot be proven. Return to DD.
 
 ## PR 4: Prove Autonomous SWE End To End
 
@@ -246,7 +246,7 @@ Acceptance:
 - only enrolled `Zhachory1/ai-pr-automation` accepted;
 - exact profile and request digests persist;
 - Hermes creates branch and draft PR;
-- default/protected branch and merge attempts fail;
+- default/protected branch push attempts fail;
 - agent branch workflow gets no write token, production secret, deployment, release, or unsafe `pull_request_target` path;
 - allowed actions push unprotected branch, open draft PR, and post review;
 - created PR points at expected commit;
@@ -320,7 +320,7 @@ Validation:
 
 Rollback: pause review producer/executor, drain/reconcile, restart old producer and review worker.
 
-Stop condition: producer parity differs or review can merge/protected-write.
+Stop condition: producer parity differs or review can protected-write.
 
 ## PR 6: Move Document Writing
 
@@ -586,7 +586,6 @@ Implementation loop:
 
 Return to DD when:
 
-- human-only merge cannot be enforced;
 - unsafe CI/deployment effect cannot be denied;
 - dedicated account can read human credentials;
 - exact-byte approval weakens;
@@ -603,8 +602,8 @@ No unrelated cleanup.
 | `hermes-agent` account creation | Zhach | PR 2 activation |
 | Fleet Controller operator secret | Zhach | PR 1 activation |
 | Hermes-specific write credential for `Zhachory1/ai-pr-automation` | Zhach | PR 4 live validation |
-| GitHub App and deploy keys | Zhach | PR 3 activation |
-| Human-only merge and safe CI proof | Zhach | PR 4 activation |
+| `zhach1` write credential and deploy key | Zhach | PR 3 activation |
+| Protected-branch and safe CI proof | Zhach | PR 4 activation |
 | Profile-specific MCP/browser allowlist | Zhach | Each profile activation |
 
 Merged DD records acceptance of cross-profile access to `hermes-agent` credentials. No further architecture approval needed unless capability checks fail.

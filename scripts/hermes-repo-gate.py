@@ -7,7 +7,7 @@ import stat
 from datetime import datetime, timedelta, timezone
 
 HEX = {"credential_fingerprint", "ruleset_digest", "workflow_digest", "environment_policy_digest"}
-DENIALS = {"api_merge", "protected_push", "unsafe_workflow_execution", "deployment", "administration"}
+DENIALS = {"protected_push", "unsafe_workflow_execution", "deployment", "administration"}
 ALLOWED = {"unprotected_push", "draft_pr", "review"}
 
 

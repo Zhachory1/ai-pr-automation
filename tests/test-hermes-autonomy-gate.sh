@@ -29,12 +29,12 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({
  "schema_version":1,"repo":"owner/repo","checked_at":sys.argv[2],
  "credential_fingerprint":"a"*64,"ruleset_digest":"b"*64,"workflow_digest":"c"*64,
  "environment_policy_digest":"d"*64,
- "denials":{"api_merge":True,"protected_push":True,"unsafe_workflow_execution":True,"deployment":True,"administration":True},
+ "denials":{"protected_push":True,"unsafe_workflow_execution":True,"deployment":True,"administration":True},
  "allowed":{"unprotected_push":True,"draft_pr":True,"review":True}}))
 PY
 proof="$(scripts/hermes-repo-gate.py "$tmp/evidence.json" | jq -r .proof_digest)"
 [[ "$proof" =~ ^[0-9a-f]{64}$ ]]
-jq '.denials.api_merge=false' "$tmp/evidence.json" > "$tmp/bad.json"
+jq '.denials.protected_push=false' "$tmp/evidence.json" > "$tmp/bad.json"
 if scripts/hermes-repo-gate.py "$tmp/bad.json" >/dev/null 2>&1; then echo 'FAIL: failed denial accepted' >&2; exit 1; fi
 jq '.checked_at="2020-01-01T00:00:00Z"' "$tmp/evidence.json" > "$tmp/stale.json"
 if scripts/hermes-repo-gate.py "$tmp/stale.json" >/dev/null 2>&1; then echo 'FAIL: stale evidence accepted' >&2; exit 1; fi
