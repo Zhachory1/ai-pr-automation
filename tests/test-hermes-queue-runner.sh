@@ -34,6 +34,8 @@ PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK
 grep -Fxq -- '-p' "$tmp/hermes.args"
 grep -Fxq 'swe-implement-v1' "$tmp/hermes.args"
 grep -q 'hermes_settle_swe_request' "$tmp/settle.sql"
+grep -Fq 'provider: openai-codex' agent-config/hermes/profiles/swe-implement-v1/config.yaml
+grep -Fq 'default: gpt-5.6-sol' agent-config/hermes/profiles/swe-implement-v1/config.yaml
 if PATH="$tmp/bin:$PATH" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK_ROOT="$tmp/work" \
   REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake bin/hermes-queue-runner unknown >/dev/null 2>&1; then
   echo 'FAIL: unknown kind accepted' >&2; exit 1
