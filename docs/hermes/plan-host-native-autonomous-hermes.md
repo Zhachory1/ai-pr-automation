@@ -74,7 +74,7 @@ graph TD
 
 PRs 5–9 are technically independent. Preferred activation order: review, documents, maintenance, memory, PR safety.
 
-Approved-DD sequencing exception proposed: PR 4 runs one disposable SWE autonomy pilot before document/review cutover. Plan approval approves this exception. No production repository enters pilot.
+Approved-DD sequencing exception: PR 4 runs one SWE autonomy pilot against `Zhachory1/ai-pr-automation` before document/review cutover. Human approved this repository as pilot target.
 
 ## PR 1: Authenticate Fleet Controller
 
@@ -214,11 +214,11 @@ Stop condition: human-only merge or safe CI/deployment denial cannot be proven. 
 
 ## PR 4: Prove Autonomous SWE End To End
 
-Goal: produce first real signal. Hermes edits, pushes, and opens draft PR in disposable repository.
+Goal: produce first real signal. Hermes edits, pushes, and opens draft PR in `Zhachory1/ai-pr-automation`.
 
 Scope:
 
-- run disposable live repository capability check with human approval;
+- run live `Zhachory1/ai-pr-automation` capability check with human approval;
 - add no-agent policy watcher that refreshes or invalidates enrollment when authority digests change;
 - add Postgres-loss watchdog that stops Hermes before credentials activate;
 - add shared queue runner with fixed kind-to-profile map;
@@ -243,7 +243,7 @@ Likely files:
 
 Acceptance:
 
-- only disposable enrolled repository accepted;
+- only enrolled `Zhachory1/ai-pr-automation` accepted;
 - exact profile and request digests persist;
 - Hermes creates branch and draft PR;
 - default/protected branch and merge attempts fail;
@@ -260,7 +260,7 @@ Activation:
 1. Stop old SWE worker.
 2. Drain or reconcile active SWE row.
 3. Start native SWE executor only.
-4. Manually enqueue disposable task.
+4. Manually enqueue a bounded task for `Zhachory1/ai-pr-automation`.
 5. Verify one claimant.
 6. After pilot, pause native executor and restore old worker by default.
 
@@ -269,7 +269,7 @@ After successful pilot, production activation is separate human operation. Reuse
 Validation:
 
 - fake Git/GitHub end-to-end;
-- one live disposable-repository run;
+- one live `Zhachory1/ai-pr-automation` run;
 - lease-loss and unknown-effect tests;
 - authority proof digest unchanged from PR 3.
 
@@ -551,8 +551,8 @@ Gate:
 - Fleet Controller authenticated;
 - native engine and watchdog healthy;
 - autonomy capability check approved;
-- one disposable edit-to-draft-PR run succeeds;
-- no production repository routed.
+- one `Zhachory1/ai-pr-automation` edit-to-draft-PR run succeeds;
+- no other repository routed.
 
 ### Wave 2: Role Cutovers
 
@@ -602,7 +602,7 @@ No unrelated cleanup.
 | Exact native install path and binary pin | Zhach | PR 2 implementation |
 | `hermes-agent` account creation | Zhach | PR 2 activation |
 | Fleet Controller operator secret | Zhach | PR 1 activation |
-| Disposable GitHub repository | Zhach | PR 3 live validation |
+| Hermes-specific write credential for `Zhachory1/ai-pr-automation` | Zhach | PR 4 live validation |
 | GitHub App and deploy keys | Zhach | PR 3 activation |
 | Human-only merge and safe CI proof | Zhach | PR 4 activation |
 | Profile-specific MCP/browser allowlist | Zhach | Each profile activation |
