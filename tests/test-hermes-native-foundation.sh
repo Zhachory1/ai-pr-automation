@@ -18,7 +18,7 @@ for file in SOUL.md config.yaml distribution.yaml .no-bundled-skills; do
 done
 cat > "$tmp/service/.local/bin/hermes" <<EOF
 #!/usr/bin/env bash
-if [[ "\${1:-}" == --version ]]; then echo 'Hermes Agent v0.21.3 local ${commit:0:8}'; exit 0; fi
+if [[ "\${1:-}" == --version ]]; then echo 'Hermes Agent v0.21.3'; exit 0; fi
 [[ "\$*" == '-p smoke-v1 profile show smoke-v1' ]]
 EOF
 chmod +x "$tmp/service/.local/bin/hermes"

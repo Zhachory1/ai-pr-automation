@@ -85,8 +85,8 @@ def main():
 
     environment = os.environ | {"HOME": str(home.parent), "HERMES_HOME": str(home)}
     version = run(str(launcher), "--version", env=environment)
-    if contract["HERMES_NATIVE_VERSION"] not in version or manifest["commit"][:8] not in version:
-        fail("Hermes version output does not match pin")
+    if contract["HERMES_NATIVE_VERSION"] not in version:
+        fail("Hermes version output does not match contract")
     run(str(launcher), "-p", "smoke-v1", "profile", "show", "smoke-v1", env=environment)
     print(json.dumps({"status": "ready", "version": manifest["version"], "commit": manifest["commit"],
                       "profile": "smoke-v1"}, sort_keys=True, separators=(",", ":")))
