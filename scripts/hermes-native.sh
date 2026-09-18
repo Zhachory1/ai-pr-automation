@@ -98,7 +98,7 @@ PY
 preflight() {
   python3 "$ROOT/scripts/hermes-native-preflight.py" --contract "$ROOT/agent-config/hermes/native.env" \
     --manifest "$MANIFEST" --install-dir "$INSTALL_DIR" --hermes-home "$HERMES_HOME" \
-    --profile-source "$PROFILE_ROOT/smoke-v1"
+    --profile-source "$PROFILE_ROOT/smoke-v1" --service-user "$SERVICE_USER"
 }
 
 case "${1:-}" in

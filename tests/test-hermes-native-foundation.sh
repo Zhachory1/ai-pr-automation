@@ -18,7 +18,7 @@ for file in SOUL.md config.yaml distribution.yaml .no-bundled-skills; do
 done
 cat > "$tmp/service/.local/bin/hermes" <<EOF
 #!/usr/bin/env bash
-if [[ "\${1:-}" == --version ]]; then echo 'Hermes Agent v0.21.3 local ${commit:0:8}'; exit 0; fi
+if [[ "\${1:-}" == --version ]]; then echo 'Hermes Agent v0.21.3'; exit 0; fi
 [[ "\$*" == '-p smoke-v1 profile show smoke-v1' ]]
 EOF
 chmod +x "$tmp/service/.local/bin/hermes"
@@ -47,6 +47,11 @@ PY
 scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest "$tmp/manifest.json" \
   --install-dir "$tmp/install" --hermes-home "$tmp/service/.hermes" --profile-source "$tmp/source" \
   | jq -e '.status == "ready" and .profile == "smoke-v1"' >/dev/null
+if scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest "$tmp/manifest.json" \
+  --install-dir "$tmp/install" --hermes-home "$tmp/service/.hermes" --profile-source "$tmp/source" \
+  --service-user nobody >/dev/null 2>&1; then
+  echo 'FAIL: non-root service-user preflight accepted' >&2; exit 1
+fi
 printf 'changed\n' >> "$tmp/service/.hermes/profiles/smoke-v1/SOUL.md"
 if scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest "$tmp/manifest.json" \
   --install-dir "$tmp/install" --hermes-home "$tmp/service/.hermes" --profile-source "$tmp/source" >/dev/null 2>&1; then
