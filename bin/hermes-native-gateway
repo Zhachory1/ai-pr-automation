@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${HERMES_HOME:?}"
+: "${HERMES_BIN:?}"
+: "${HERMES_MAINTENANCE_FILE:?}"
+[[ ! -e "$HERMES_MAINTENANCE_FILE" ]] || exit 0
+exec "$HERMES_BIN" gateway run
