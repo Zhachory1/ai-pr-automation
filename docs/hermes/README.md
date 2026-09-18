@@ -46,6 +46,23 @@ scripts/hermes-native.sh status
 scripts/hermes-native.sh logs
 ```
 
+## Autonomy Enrollment
+
+Native Hermes can enqueue or claim repository work only through `hermes_worker` database functions.
+Those functions require active repository proof checked within ten minutes. Existing Compose workers
+keep their old queue API only for rollback.
+
+Validate human-produced denial evidence, then enroll with existing fleet DB credentials:
+
+```bash
+scripts/hermes-repo-gate.py evidence.json
+scripts/hermes-repo-enroll.py evidence.json
+```
+
+Evidence binds repository, credential, ruleset, workflow, environment policy, required denials, and
+allowed actions. This foundation creates no credential, evidence, enrollment, or live GitHub probe.
+PR 4 performs disposable-repository denial and allowed-action probes before native credentials start.
+
 ## M0 Pull Requests
 
 | Work | PR | State |
