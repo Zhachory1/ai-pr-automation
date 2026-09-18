@@ -54,6 +54,9 @@ if scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest 
 fi
 
 plutil -lint launchd/com.example.ai-pr-automation-hermes.plist.template >/dev/null
+grep -Fq 'mktemp /private/tmp/hermes-install.XXXXXX' scripts/hermes-native.sh
+# shellcheck disable=SC2016
+grep -Fq 'chmod 0444 "$installer"' scripts/hermes-native.sh
 mkdir -p "$tmp/runtime"
 cat > "$tmp/fake-hermes" <<'SH'
 #!/usr/bin/env bash
