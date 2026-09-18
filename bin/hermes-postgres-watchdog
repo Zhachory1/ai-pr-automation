@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${REQUESTS_DB_HOST:=127.0.0.1}"
+: "${REQUESTS_DB_PORT:=5432}"
+: "${HERMES_MAINTENANCE_FILE:?}"
+: "${HERMES_LAUNCHD_LABEL:=com.example.ai-pr-automation-hermes}"
+failures=0
+while sleep "${HERMES_DB_WATCHDOG_INTERVAL:-10}"; do
+  if pg_isready -q -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT"; then
+    failures=0
+    continue
+  fi
+  failures=$((failures + 1))
+  (( failures >= 2 )) || continue
+  install -m 0444 /dev/null "$HERMES_MAINTENANCE_FILE"
+  launchctl bootout "system/$HERMES_LAUNCHD_LABEL" 2>/dev/null || true
+  osascript -e 'display notification "Postgres unavailable; Hermes stopped" with title "AI PR Automation"' \
+    >/dev/null 2>&1 || true
+  exit 1
+done

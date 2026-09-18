@@ -7,7 +7,7 @@ import stat
 from datetime import datetime, timedelta, timezone
 
 HEX = {"credential_fingerprint", "ruleset_digest", "workflow_digest", "environment_policy_digest"}
-DENIALS = {"api_merge", "protected_push", "workflow_write", "deployment", "administration"}
+DENIALS = {"api_merge", "protected_push", "unsafe_workflow_execution", "deployment", "administration"}
 ALLOWED = {"unprotected_push", "draft_pr", "review"}
 
 
@@ -50,7 +50,8 @@ def main():
     now = datetime.now(timezone.utc)
     if checked.tzinfo is None or checked > now + timedelta(seconds=30) or now - checked > timedelta(minutes=10):
         fail("evidence is stale")
-    canonical = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+    authority = {key: value for key, value in evidence.items() if key != "checked_at"}
+    canonical = json.dumps(authority, sort_keys=True, separators=(",", ":")).encode()
     result = {**evidence, "proof_digest": hashlib.sha256(canonical).hexdigest()}
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 

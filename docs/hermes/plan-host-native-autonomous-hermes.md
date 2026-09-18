@@ -34,7 +34,7 @@ Non-goals:
 - automatic merge;
 - big-bang cutover;
 - generic publisher platform;
-- repeat full GitHub denial drill when credential and repository policy did not change.
+- repeat full GitHub capability check when credential and repository policy did not change.
 
 ## Success Criteria
 
@@ -42,7 +42,7 @@ Non-goals:
 - Hermes runs as `hermes-agent`, never human account;
 - Fleet Controller requires authenticated human session;
 - enrolled-repository record is sole runtime repository authority;
-- GitHub denial gate blocks merge, protected-branch update, unsafe CI/deployment effects, and administration;
+- GitHub capability check blocks merge, protected-branch update, unsafe CI/deployment effects, and administration;
 - Hermes can edit, push, open draft PR, and post review in enrolled repository;
 - producer cron uses `--no-agent` and makes zero provider calls;
 - one shared queue runner owns claim, heartbeat, invoke, and terminal-state checks;
@@ -171,7 +171,7 @@ Scope:
 
 - add `hermes_repository_enrollments` table as sole runtime repository authority;
 - store repo, credential fingerprint, ruleset digest, workflow digest, environment-policy digest, proof digest, and approval time;
-- add read-only GitHub denial checker;
+- add read-only GitHub capability checker;
 - add human-only enrollment command that imports successful proof;
 - add Hermes database role and restricted enqueue/claim/lease/result/reconcile functions;
 - add native enqueue and claim functions that require active proof checked within ten minutes;
@@ -218,7 +218,7 @@ Goal: produce first real signal. Hermes edits, pushes, and opens draft PR in dis
 
 Scope:
 
-- run disposable live repository denial matrix with human approval;
+- run disposable live repository capability check with human approval;
 - add no-agent policy watcher that refreshes or invalidates enrollment when authority digests change;
 - add Postgres-loss watchdog that stops Hermes before credentials activate;
 - add shared queue runner with fixed kind-to-profile map;
@@ -550,7 +550,7 @@ Gate:
 
 - Fleet Controller authenticated;
 - native engine and watchdog healthy;
-- autonomy denial matrix approved;
+- autonomy capability check approved;
 - one disposable edit-to-draft-PR run succeeds;
 - no production repository routed.
 
@@ -569,7 +569,7 @@ Per-role gate:
 7. Reverse route once to prove rollback.
 8. Restore new route only after clean rollback.
 
-Full GitHub denial matrix reruns only when repository, credential, ruleset, workflow, or environment-policy digest changes.
+Full GitHub capability check reruns only when repository, credential, ruleset, workflow, or environment-policy digest changes.
 
 ### Wave 3: Cleanup
 
@@ -607,7 +607,7 @@ No unrelated cleanup.
 | Human-only merge and safe CI proof | Zhach | PR 4 activation |
 | Profile-specific MCP/browser allowlist | Zhach | Each profile activation |
 
-Merged DD records acceptance of cross-profile access to `hermes-agent` credentials. No further architecture approval needed unless denial gates fail.
+Merged DD records acceptance of cross-profile access to `hermes-agent` credentials. No further architecture approval needed unless capability checks fail.
 
 ## Handoff
 
