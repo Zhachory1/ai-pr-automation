@@ -1,12 +1,13 @@
 # DD: Host-Native Autonomous Hermes Fleet
 
-- status: draft; full-autonomy direction selected
+- status: approved; full-autonomy direction selected
 - responsible owner: Zhach
 - reviewers: architecture, reliability, security
 - decision date: 2026-09-17
 - supersedes if approved: Compose-owned Hermes runtime in [`docs/hermes-migration-roadmap.md`](../hermes-migration-roadmap.md)
 - related designs: [`DD-m0-m2.md`](DD-m0-m2.md), [`DD-m2-doc-runtime.md`](DD-m2-doc-runtime.md)
-- next gate: human acceptance of autonomy boundary, then implementation plan
+- implementation plan: [`plan-host-native-autonomous-hermes.md`](plan-host-native-autonomous-hermes.md)
+- next gate: approve implementation plan
 
 ## Decision
 
