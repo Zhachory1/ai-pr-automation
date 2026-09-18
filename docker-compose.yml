@@ -785,8 +785,8 @@ services:
         condition: service_healthy
 
   # --- status: local web view (M3) ---
-  # Renders running/queued/recent plus the human-review queue. Queue controls only update local
-  # maintenance-review state; the port stays bound to LOCALHOST because there is no auth.
+  # Renders running/queued/recent plus human-review queues. Operator session, CSRF, Origin, Host,
+  # and localhost binding protect every control action.
   status:
     image: agent-fleet/status:${STATUS_VERSION:-latest}
     build:
@@ -810,6 +810,19 @@ services:
       HINDSIGHT_URL: http://hindsight:8888
       HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against PR-safety server paths
       STATUS_BIND: 0.0.0.0
+      FLEET_CONTROLLER_PUBLIC_PORT: ${STATUS_PORT:-8080}
+      FLEET_CONTROLLER_USERNAME: ${FLEET_CONTROLLER_USERNAME:-fleet}
+      FLEET_CONTROLLER_PASSWORD_FILE: /run/secrets/fleet_controller_password
+      FLEET_CONTROLLER_SESSION_SECRET_FILE: /run/secrets/fleet_controller_session_secret
+      FLEET_CONTROLLER_TLS_CERT_FILE: /run/secrets/fleet_controller_tls_cert
+      FLEET_CONTROLLER_TLS_KEY_FILE: /run/secrets/fleet_controller_tls_key
+      FLEET_CONTROLLER_SESSION_SECONDS: ${FLEET_CONTROLLER_SESSION_SECONDS:-43200}
+    secrets:
+      - fleet_controller_tls_ca_cert
+      - fleet_controller_password
+      - fleet_controller_session_secret
+      - fleet_controller_tls_cert
+      - fleet_controller_tls_key
     volumes:
       - doc_writer_work:/work:ro
     networks:
@@ -846,3 +859,15 @@ volumes:
   doc_writer_work:
   hermes_doc_state:
   hermes_review_state:
+
+secrets:
+  fleet_controller_tls_ca_cert:
+    file: ${FLEET_CONTROLLER_TLS_CA_CERT_FILE:?set FLEET_CONTROLLER_TLS_CA_CERT_FILE}
+  fleet_controller_password:
+    file: ${FLEET_CONTROLLER_PASSWORD_FILE:?set FLEET_CONTROLLER_PASSWORD_FILE}
+  fleet_controller_session_secret:
+    file: ${FLEET_CONTROLLER_SESSION_SECRET_FILE:?set FLEET_CONTROLLER_SESSION_SECRET_FILE}
+  fleet_controller_tls_cert:
+    file: ${FLEET_CONTROLLER_TLS_CERT_FILE:?set FLEET_CONTROLLER_TLS_CERT_FILE}
+  fleet_controller_tls_key:
+    file: ${FLEET_CONTROLLER_TLS_KEY_FILE:?set FLEET_CONTROLLER_TLS_KEY_FILE}

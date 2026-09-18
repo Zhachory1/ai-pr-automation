@@ -7,13 +7,14 @@ or retain an approved stored decision to configured Hindsight shared memory — 
 GitHub actions. All dynamic values
 are HTML-escaped (request data is attacker-influenced).
 
-Binds 127.0.0.1 in-code (not just compose). No auth by design (localhost single-user); writes are
+Binds 127.0.0.1 in-code (not just compose). Fleet Controller requires one operator login; writes are
 CSRF-guarded (POST + custom header + Origin + Host + per-render token). Config from env:
 REQUESTS_DB_HOST/PORT/USER/NAME + PGPASSWORD; PR_PRODUCER_ORGS/REPOSITORIES/ALLOW_ALL_REPOS reuse the
 producer's repo allowlist so inject cannot target an out-of-scope repo; HINDSIGHT_URL configures
 memory promotion to fleet-shared.
 """
 import hashlib
+import hmac
 import html
 import json
 import os
@@ -21,9 +22,12 @@ import pathlib
 import re
 import stat
 import secrets
+import socket
+import ssl
 import subprocess
 import threading
 import time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote
 from urllib.request import Request, urlopen
@@ -55,7 +59,7 @@ LIVE_JS = (
     "document.querySelectorAll('.navlink').forEach(function(a){a.classList.toggle('active',a.dataset.tab===t);});}"
     "async function refresh(){"
     "try{var r=await fetch('/fragment',{cache:'no-store'});"
-    "if(!r.ok)return;var h=await r.text();"
+    "if(r.status===401){location.href='/login';return;}if(!r.ok)return;var h=await r.text();"
     "document.getElementById('live').innerHTML=h;applyTab();}catch(e){}}"
     "async function tick(){if(document.hidden||busy())return;await refresh();}"
     "setInterval(tick,ms);"
@@ -76,6 +80,8 @@ LIVE_JS = (
     "function undo(){btns.forEach(function(b){b.disabled=false;});}"
     "try{var r=await fetch(form.action,{method:'POST',headers:{'X-Requested-With':'fetch'},"
     "body:new URLSearchParams(new FormData(form))});"
+    "if(new URL(form.action).pathname==='/logout'){location.href=r.url;return;}"
+    "if(r.status===401){location.href='/login';return;}"
     "var d={};try{d=await r.json();}catch(e){}"
     "flash(d.flash||(r.ok?'done':'request failed'),r.ok&&d.ok!==false);"
     "if(r.ok&&d.ok!==false&&form.reset)form.reset();"
@@ -95,8 +101,109 @@ KINDS = {"pr-review", "pr-maintain"}
 HANDOFF_ROOT = os.environ.get("HANDOFF_ROOT", "")   # for validating swe-implement handoff submissions
 DOC_WRITER_STAGE_DIR = os.environ.get("DOC_WRITER_STAGE_DIR", "/work/stage")
 CSRF_TOKEN = secrets.token_urlsafe(32)          # per-process; page embeds it, POST must echo it
-ALLOWED_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
-ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
+AUTH_USERNAME = os.environ.get("FLEET_CONTROLLER_USERNAME", "fleet")
+SESSION_SECONDS = int(os.environ.get("FLEET_CONTROLLER_SESSION_SECONDS", "43200"))
+SESSION_COOKIE = "__Host-fleet_controller_session"
+MAX_FORM_BYTES = 1024 * 1024
+MAX_LOGIN_BYTES = 8192
+MAX_HTTP_WORKERS = 16
+REQUEST_TIMEOUT_SECONDS = 5
+REQUEST_DEADLINE_SECONDS = 10
+ACTIVE_SESSIONS = {}
+SESSION_LOCK = threading.Lock()
+PUBLIC_PORT = int(os.environ.get("FLEET_CONTROLLER_PUBLIC_PORT", str(PORT)))
+ALLOWED_HOSTS = {f"127.0.0.1:{PUBLIC_PORT}", f"localhost:{PUBLIC_PORT}"}
+ALLOWED_ORIGINS = {f"https://127.0.0.1:{PUBLIC_PORT}", f"https://localhost:{PUBLIC_PORT}"}
+
+
+def read_secret(name: str, minimum: int) -> str:
+    path = os.environ.get(name, "")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise RuntimeError(f"{name} must name a regular file")
+            raw = source.read(4097)
+    except (OSError, TypeError) as error:
+        raise RuntimeError(f"{name} is unreadable") from error
+    if len(raw) > 4096:
+        raise RuntimeError(f"{name} exceeds 4096 bytes")
+    try:
+        value = raw.decode().strip()
+    except UnicodeDecodeError as error:
+        raise RuntimeError(f"{name} must be UTF-8") from error
+    if len(value) < minimum:
+        raise RuntimeError(f"{name} is too short")
+    return value
+
+
+AUTH_PASSWORD = read_secret("FLEET_CONTROLLER_PASSWORD_FILE", 16)
+SESSION_SECRET = read_secret("FLEET_CONTROLLER_SESSION_SECRET_FILE", 32)
+if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", AUTH_USERNAME):
+    raise RuntimeError("FLEET_CONTROLLER_USERNAME is invalid")
+if not 300 <= SESSION_SECONDS <= 86400:
+    raise RuntimeError("FLEET_CONTROLLER_SESSION_SECONDS must be between 300 and 86400")
+
+
+def issue_session(now: int | None = None) -> str:
+    issued = int(time.time() if now is None else now)
+    nonce = secrets.token_hex(16)
+    payload = f"{issued}.{nonce}"
+    token = f"{payload}.{hmac.new(SESSION_SECRET.encode(), payload.encode(), 'sha256').hexdigest()}"
+    with SESSION_LOCK:
+        for old, expires in list(ACTIVE_SESSIONS.items()):
+            if expires <= issued:
+                del ACTIVE_SESSIONS[old]
+        ACTIVE_SESSIONS[token] = issued + SESSION_SECONDS
+    return token
+
+
+def session_actor(cookie_header: str, now: int | None = None) -> str | None:
+    try:
+        cookie = SimpleCookie(cookie_header)
+        token = cookie[SESSION_COOKIE].value
+        issued_raw, nonce, signature = token.split(".", 2)
+        payload = f"{issued_raw}.{nonce}"
+        if (len(token) > 192 or len(nonce) != 32 or not hmac.compare_digest(
+                signature, hmac.new(SESSION_SECRET.encode(), payload.encode(), "sha256").hexdigest())):
+            return None
+        issued = int(issued_raw)
+        current = int(time.time() if now is None else now)
+        with SESSION_LOCK:
+            expires = ACTIVE_SESSIONS.get(token)
+            if issued > current + 30 or expires is None or expires <= current:
+                ACTIVE_SESSIONS.pop(token, None)
+                return None
+        return AUTH_USERNAME
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def revoke_session(cookie_header: str) -> None:
+    try:
+        token = SimpleCookie(cookie_header)[SESSION_COOKIE].value
+    except (KeyError, TypeError):
+        return
+    with SESSION_LOCK:
+        ACTIVE_SESSIONS.pop(token, None)
+
+
+def audit(actor: str, action: str, outcome: str) -> None:
+    action = action.split("?", 1)[0][:128]
+    print(json.dumps({"event": "fleet_controller_action", "timestamp": int(time.time()),
+                      "actor": actor, "action": action, "outcome": outcome},
+                     sort_keys=True, separators=(",", ":")), flush=True)
+
+
+def render_login(error: str = "") -> str:
+    message = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    return f"""<!doctype html><html><head><meta charset=utf-8><title>Fleet Controller login</title>
+<style>body{{font:16px system-ui;max-width:24rem;margin:10vh auto;background:#0f1117;color:#e6e8ee}}
+form{{display:grid;gap:.75rem}}input,button{{font:inherit;padding:.6rem}}.error{{color:#ff8095}}</style></head><body>
+<h1>Fleet Controller</h1>{message}<form method=post action=/login>
+<label>Username <input name=username autocomplete=username required></label>
+<label>Password <input name=password type=password autocomplete=current-password required></label>
+<button type=submit>Sign in</button></form></body></html>"""
 
 
 def repo_allowed(repo: str) -> bool:
@@ -687,7 +794,7 @@ def table(title: str, headers: list[str], rows: list[list[str]], empty: str) -> 
 def render(flash: str = "", fragment: bool = False) -> str:
     try:
         running = query(
-            "SELECT id, kind, dedupe_key, "
+            "SELECT id, kind, coalesce(run_id,'') AS run_id, dedupe_key, "
             "to_char(now()-started_at,'HH24:MI:SS') AS elapsed "
             "FROM requests WHERE status='running' ORDER BY started_at")
         # Detailed queued list (id shown) so each row gets a cancel button.
@@ -695,7 +802,7 @@ def render(flash: str = "", fragment: bool = False) -> str:
             "SELECT id, kind, dedupe_key, to_char(created_at,'MM-DD HH24:MI') AS queued_at "
             "FROM requests WHERE status='queued' ORDER BY id")
         recent = query(
-            "SELECT id, kind, status, dedupe_key, coalesce(fail_response,''), "
+            "SELECT id, kind, status, coalesce(run_id,'') AS run_id, dedupe_key, coalesce(fail_response,''), "
             "to_char(finished_at,'MM-DD HH24:MI') "
             "FROM requests WHERE status IN ('done','failed','reconcile') "
             "ORDER BY finished_at DESC NULLS LAST LIMIT 20")
@@ -778,8 +885,8 @@ def render(flash: str = "", fragment: bool = False) -> str:
     tabs = [
         ("review", f"Review" + (f" ({need_review})" if need_review else ""),
          f'{human_review_table(human_review)}{pending_decision_table(pending)}'),
-        ("queue", f"Queue" + (f" ({len(running)+len(queued)})" if (running or queued) else ""),
-         f'{table("Running now", ["id","kind","dedupe_key","elapsed"], running, "nothing running")}'
+        ("queue", f"Runs & Queue" + (f" ({len(running)+len(queued)})" if (running or queued) else ""),
+         f'{table("Running now", ["id","kind","run_id","dedupe_key","elapsed"], running, "nothing running")}'
          f'{queued_html}'
          f'{recent_table(recent)}'
          f'{table(f"Capped — stopped retrying ({len(capped)})", ["kind","dedupe_key","fails","last_fail"], capped, "none capped")}'
@@ -840,7 +947,8 @@ def render(flash: str = "", fragment: bool = False) -> str:
  .navlink.active{{color:var(--fg);background:var(--card);border-color:var(--line)}}
  .tabpanel{{display:none}} .tabpanel.active{{display:block}}
 </style></head><body>
-<h1><span style="color:var(--acc)">◉</span> agent-fleet <span class=sub>live · updates {REFRESH_SECONDS}s</span></h1>
+<h1><span style="color:var(--acc)">◉</span> Fleet Controller <span class=sub>live · updates {REFRESH_SECONDS}s</span></h1>
+<form class=inline method=post action=/logout><input type=hidden name=token value="{e(CSRF_TOKEN)}"><button>Sign out {e(AUTH_USERNAME)}</button></form>
 {banner}{flash_html}
 <div id=live>{inner}</div>
 <script>{LIVE_JS}</script>
@@ -941,10 +1049,86 @@ def recent_table(rows) -> str:
         return "<section><h2>Recent (last 20)</h2><p class=empty>no completed runs</p></section>"
     body = "".join(
         "<tr>" + f"<td>{e(r[0])}</td><td>{e(r[1])}</td><td>{chip(r[2])}</td>"
-        + f"<td>{e(r[3])}</td><td>{e(r[4])}</td><td>{e(r[5])}</td></tr>" for r in rows)
+        + f"<td>{e(r[3])}</td><td>{e(r[4])}</td><td>{e(r[5])}</td><td>{e(r[6])}</td></tr>" for r in rows)
     return ("<section><h2>Recent (last 20)</h2><table><thead><tr>"
-            "<th>id</th><th>kind</th><th>status</th><th>dedupe_key</th><th>fail_response</th><th>finished</th>"
+            "<th>id</th><th>kind</th><th>status</th><th>run_id</th><th>dedupe_key</th><th>fail_response</th><th>finished</th>"
             f"</tr></thead><tbody>{body}</tbody></table></section>")
+
+
+def tls_context() -> ssl.SSLContext:
+    cert = os.environ.get("FLEET_CONTROLLER_TLS_CERT_FILE", "")
+    key = os.environ.get("FLEET_CONTROLLER_TLS_KEY_FILE", "")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        context.load_cert_chain(cert, key)
+    except (OSError, ssl.SSLError) as error:
+        raise RuntimeError("Fleet Controller TLS certificate or key is invalid") from error
+    return context
+
+
+def result_succeeded(result: str) -> bool:
+    value = result.lower()
+    return not (value.startswith(("rejected:", "publish failed", "not enqueued", "not queued"))
+                or " not cancelled" in value or " not pending" in value
+                or " not publishing" in value or " not queued" in value)
+
+
+class BoundedHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, *args, tls=None, **kwargs):
+        self._workers = threading.BoundedSemaphore(MAX_HTTP_WORKERS)
+        self._tls = tls
+        self._deadline_lock = threading.Lock()
+        self._deadlines = {}
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, address = super().get_request()
+        request.settimeout(REQUEST_TIMEOUT_SECONDS)
+        if self._tls is not None:
+            request = self._tls.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+        return request, address
+
+    def process_request(self, request, client_address):
+        if not self._workers.acquire(blocking=False):
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._workers.release()
+            raise
+
+    def _expire_request(self, request):
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        request.close()
+
+    def cancel_request_deadline(self, request):
+        with self._deadline_lock:
+            timer = self._deadlines.pop(id(request), None)
+        if timer is not None:
+            timer.cancel()
+
+    def process_request_thread(self, request, client_address):
+        timer = threading.Timer(REQUEST_DEADLINE_SECONDS, self._expire_request, (request,))
+        timer.daemon = True
+        with self._deadline_lock:
+            self._deadlines[id(request)] = timer
+        timer.start()
+        try:
+            if isinstance(request, ssl.SSLSocket):
+                request.do_handshake()
+            super().process_request_thread(request, client_address)
+        except (OSError, ssl.SSLError):
+            self.shutdown_request(request)
+        finally:
+            self.cancel_request_deadline(request)
+            self._workers.release()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -974,7 +1158,52 @@ class Handler(BaseHTTPRequestHandler):
                 cls._frag_ts = now
             return cls._frag
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(REQUEST_TIMEOUT_SECONDS)
+
+    def _send_html(self, status: int, body: str, *headers: tuple[str, str]):
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.send_header("content-length", str(len(data)))
+        self.send_header("cache-control", "no-store")
+        for key, value in headers:
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _redirect_to(self, location: str, *headers: tuple[str, str]):
+        self.send_response(303)
+        self.send_header("location", location)
+        self.send_header("cache-control", "no-store")
+        for key, value in headers:
+            self.send_header(key, value)
+        self.end_headers()
+
+    def _actor(self) -> str | None:
+        return session_actor(self.headers.get("Cookie", ""))
+
+    def _host_origin_ok(self) -> bool:
+        return (self.headers.get("Host", "") in ALLOWED_HOSTS
+                and self.headers.get("Origin") in ALLOWED_ORIGINS)
+
     def do_GET(self):
+        self.server.cancel_request_deadline(self.connection)
+        actor = self._actor()
+        if self.path == "/login":
+            if actor:
+                self._redirect_to("/")
+            else:
+                self._send_html(200, render_login())
+            return
+        if not actor:
+            audit("anonymous", self.path, "auth_denied")
+            if self.path in ("/fragment", "/fragment.html"):
+                self.send_response(401); self.end_headers()
+            else:
+                self._redirect_to("/login")
+            return
         if self.path in ("/fragment", "/fragment.html"):
             try:
                 frag = self.cached_fragment()
@@ -984,6 +1213,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(frag)))
+            self.send_header("cache-control", "no-store")
             self.end_headers()
             self.wfile.write(frag); return
         if self.path not in ("/", "/index.html"):
@@ -996,19 +1226,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("content-type", "text/html; charset=utf-8")
         self.send_header("content-length", str(len(page)))
+        self.send_header("cache-control", "no-store")
         self.end_headers()
         self.wfile.write(page)
 
-    # --- writes (M4). CSRF-guarded: Host + Origin allowlist + per-process token. No auth by design
-    # (localhost single-user). GET never mutates; only these two POST actions do. ---
+    # GET never mutates. POST requires operator session plus Host, Origin, and CSRF checks.
     def _csrf_ok(self, params) -> bool:
-        host = self.headers.get("Host", "")
-        if host not in ALLOWED_HOSTS:
-            return False
-        origin = self.headers.get("Origin")
-        if origin not in ALLOWED_ORIGINS:
-            return False
-        return secrets.compare_digest(params.get("token", [""])[0], CSRF_TOKEN)
+        return (self._host_origin_ok()
+                and secrets.compare_digest(params.get("token", [""])[0], CSRF_TOKEN))
 
     def _redirect(self, flash: str):
         # Re-render fresh (bypass cache) with a flash message, invalidate both caches so the next
@@ -1020,15 +1245,50 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("content-type", "text/html; charset=utf-8")
         self.send_header("content-length", str(len(page)))
+        self.send_header("cache-control", "no-store")
         self.end_headers(); self.wfile.write(page)
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", "0") or "0")
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            length = MAX_FORM_BYTES + 1
+        maximum = MAX_LOGIN_BYTES if self.path == "/login" else MAX_FORM_BYTES
+        if not 0 <= length <= maximum:
+            self.server.cancel_request_deadline(self.connection)
+            self.send_response(413); self.end_headers(); return
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+        self.server.cancel_request_deadline(self.connection)
         params = parse_qs(body)
+        if self.path == "/login":
+            if not self._host_origin_ok():
+                audit("anonymous", "/login", "origin_denied")
+                self.send_response(403); self.end_headers(); return
+            username = params.get("username", [""])[0]
+            password = params.get("password", [""])[0]
+            if not (hmac.compare_digest(username, AUTH_USERNAME)
+                    and hmac.compare_digest(password, AUTH_PASSWORD)):
+                audit("anonymous", "/login", "credentials_denied")
+                self._send_html(401, render_login("Invalid credentials"))
+                return
+            audit(AUTH_USERNAME, "/login", "ok")
+            cookie = (f"{SESSION_COOKIE}={issue_session()}; Path=/; Secure; HttpOnly; SameSite=Strict; "
+                      f"Max-Age={SESSION_SECONDS}")
+            self._redirect_to("/", ("set-cookie", cookie))
+            return
+        actor = self._actor()
+        if not actor:
+            audit("anonymous", self.path, "auth_denied")
+            self.send_response(401); self.end_headers(); return
         if not self._csrf_ok(params):
+            audit(actor, self.path, "csrf_denied")
             self.send_response(403); self.end_headers()
             self.wfile.write(b"forbidden (csrf)"); return
+        if self.path == "/logout":
+            revoke_session(self.headers.get("Cookie", ""))
+            audit(actor, "/logout", "ok")
+            self._redirect_to("/login", ("set-cookie", f"{SESSION_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"))
+            return
         try:
             if self.path == "/cancel":
                 rid = int(params.get("id", [""])[0])
@@ -1070,18 +1330,18 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         result = reject_pending_decision(decision_id)
                 else:
+                    audit(actor, self.path, "unknown_action")
                     self.send_response(404); self.end_headers(); return
         except (ValueError, RuntimeError) as ex:
             result = f"rejected: {ex}"
-        # Audit trail (single line, stderr) — mutating a work queue should not be silent.
-        print(f"WRITE {self.path} {result}", flush=True)
+        succeeded = result_succeeded(result)
+        audit(actor, self.path, "ok" if succeeded else "rejected")
         # AJAX submit (button click without a page reload): return a small JSON result and let the
         # client refresh the live region. A normal form post still gets the full-page redirect.
         if self.headers.get("X-Requested-With") == "fetch":
             with Handler._lock:
                 Handler._cache = None; Handler._frag = None   # next /fragment reflects this write
-            payload = json.dumps({"ok": not result.lower().startswith("rejected"),
-                                  "flash": result}).encode()
+            payload = json.dumps({"ok": succeeded, "flash": result}).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(payload)))
@@ -1095,4 +1355,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     # Compose explicitly sets 0.0.0.0 so its localhost-only port-map can reach this process.
     # Direct runs default to loopback; Host/Origin/CSRF provide defense in depth for POSTs.
-    ThreadingHTTPServer((os.environ.get("STATUS_BIND", "127.0.0.1"), PORT), Handler).serve_forever()
+    server = BoundedHTTPServer((os.environ.get("STATUS_BIND", "127.0.0.1"), PORT), Handler,
+                               tls=tls_context())
+    server.serve_forever()

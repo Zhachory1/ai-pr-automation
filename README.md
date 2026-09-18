@@ -27,7 +27,7 @@ Fair, bounded automation for GitHub pull-request review and maintenance — as a
 | `maintain` | Open PRs authored by `@me` | Handle review feedback and CI with one bounded fix pass |
 
 ```bash
-docker compose up -d --build \
+scripts/compose.sh up -d --build \
   pr-producer-review pr-producer-maintain agent-server-review agent-server-maintain
 ```
 
@@ -48,14 +48,85 @@ producers, agent-server). In brief:
 ```bash
 gh auth status
 command -v timeout || command -v gtimeout
-cp .env.example .env    # fill CODE_ROOT, passwords, GH_TOKEN, producer scope, provider key
+cp .env.example .env    # fill CODE_ROOT, DB/Fleet Controller secrets, GH_TOKEN, producer scope, provider key
 scripts/compose.sh up -d --build  # validates vault path, then builds and starts local fleet
 scripts/m0-verify.sh    # substrate checks
 scripts/verify-agent-mcps.sh  # worker -> bridge -> MCP tool-call checks
 
 # Producers use PR_PRODUCER_REPOSITORIES / PR_PRODUCER_ORGS from .env.
-docker compose logs -f pr-producer-review pr-producer-maintain
+scripts/compose.sh logs -f pr-producer-review pr-producer-maintain
 ```
+
+Generate owner-only Fleet Controller secret files outside `CODE_ROOT`, set their paths in `.env`,
+then rebuild `status`:
+
+```bash
+install -d -m 700 "$HOME/.config/ai-pr-automation"
+umask 077
+openssl rand -base64 24 > "$HOME/.config/ai-pr-automation/fleet-controller-password"
+openssl rand -hex 32 > "$HOME/.config/ai-pr-automation/fleet-controller-session-secret"
+openssl genrsa -out "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" 3072
+openssl req -x509 -new -sha256 -days 3650 \
+  -key "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" \
+  -out "$HOME/.config/ai-pr-automation/fleet-controller-ca.crt" \
+  -subj '/CN=Fleet Controller Local CA' \
+  -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign'
+cert_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fleet-controller.XXXXXX")"
+chmod 700 "$cert_tmp"
+trap 'rm -rf "$cert_tmp"' EXIT
+openssl req -new -newkey rsa:3072 -nodes \
+  -keyout "$HOME/.config/ai-pr-automation/fleet-controller.key" \
+  -out "$cert_tmp/fleet-controller.csr" -subj '/CN=localhost'
+cat > "$cert_tmp/fleet-controller.ext" <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:localhost,IP:127.0.0.1
+EOF
+openssl x509 -req -sha256 -days 365 -in "$cert_tmp/fleet-controller.csr" \
+  -CA "$HOME/.config/ai-pr-automation/fleet-controller-ca.crt" \
+  -CAkey "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" -CAcreateserial \
+  -out "$HOME/.config/ai-pr-automation/fleet-controller.crt" \
+  -extfile "$cert_tmp/fleet-controller.ext"
+rm -rf "$cert_tmp"
+trap - EXIT
+chmod 600 "$HOME/.config/ai-pr-automation/fleet-controller.key"
+rm -f "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" \
+  "$HOME/.config/ai-pr-automation/fleet-controller-ca.srl"
+security add-trusted-cert -r trustRoot -k "$HOME/Library/Keychains/login.keychain-db" \
+  "$HOME/.config/ai-pr-automation/fleet-controller-ca.crt"
+git archive b7fe7ed Dockerfile.status bin/status-server \
+  | docker build -f Dockerfile.status -t agent-fleet/status:pre-auth-b7fe7ed -
+scripts/compose.sh up -d --build --force-recreate status
+```
+
+Trusting the CA certificate changes the human login Keychain and remains an explicit operator action.
+The command destroys the CA signing key after issuing one leaf, so it cannot mint other trusted identities.
+Never mount or configure a CA key in Compose. Set all five
+`FLEET_CONTROLLER_*_FILE` paths from `.env.example` before `scripts/compose.sh up`.
+
+Open https://127.0.0.1:8080 and sign in. Session lifetime defaults to 12 hours. Fleet Controller
+keeps localhost, Host, Origin, and CSRF checks in addition to login.
+
+Rollback does not depend on valid new TLS material. Use direct Compose only for this retained-image
+recovery path:
+
+```bash
+FLEET_CONTROLLER_PASSWORD_FILE=/dev/null \
+FLEET_CONTROLLER_SESSION_SECRET_FILE=/dev/null \
+FLEET_CONTROLLER_TLS_CA_CERT_FILE=/dev/null \
+FLEET_CONTROLLER_TLS_CERT_FILE=/dev/null \
+FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null \
+FLEET_CONTROLLER_ROLLBACK_VERSION=pre-auth-b7fe7ed \
+  docker compose -f docker-compose.yml -f docker-compose.status-rollback.yml \
+  up -d --no-deps --no-build --force-recreate status
+test "$(curl -sS -o /tmp/fleet-controller-rollback.html -w '%{http_code}' \
+  http://127.0.0.1:8080/)" = 200
+grep -q 'agent-fleet' /tmp/fleet-controller-rollback.html
+```
+
+This rollback restores anonymous HTTP Fleet Controller. Stop browser-enabled Hermes before using it.
 
 The agent runner contract, queue fairness, and data-boundary guidance below still apply — the
 agent-server inherits them from the original design.
@@ -185,7 +256,7 @@ Maintenance mode prompts enforce:
   thresholds, no CI-config edits) — that path is an escalation, not a fix.
 - ambiguous maintenance findings AND escalated CI failures (integration/e2e, flaky/infra, timeouts,
   credential/permission, anything unvalidatable) enter the local human-review queue at
-  `http://localhost:8080`; use **Reviewed** or **Dismiss** after handling them. These controls update
+  `https://localhost:8080`; sign in, then use **Reviewed** or **Dismiss** after handling them. These controls update
   local queue state only — they never write to GitHub.
 - focused validation
 - CI-state mutations (retry/rebuild/cancel of a job) are NOT performed; flaky/infra failures are

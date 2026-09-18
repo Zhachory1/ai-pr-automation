@@ -5,7 +5,11 @@ cd "$(dirname "$0")/.."
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cp docker-compose.yml .env.example "$TMP/"
-printf '\nGH_TOKEN=test-token\nCODE_ROOT=/tmp/code\nSWARMVAULT_VAULT=/tmp/vault\nAGENT_SERVER_MAINTAIN_REPLICAS=3\n' >> "$TMP/.env.example"
+printf 'test-controller-password\n' > "$TMP/controller-password"
+printf '0123456789abcdef0123456789abcdef\n' > "$TMP/controller-session"
+printf 'test-cert\n' > "$TMP/controller.crt"
+printf 'test-key\n' > "$TMP/controller.key"
+printf '\nGH_TOKEN=test-token\nCODE_ROOT=/tmp/code\nSWARMVAULT_VAULT=/tmp/vault\nAGENT_SERVER_MAINTAIN_REPLICAS=3\nFLEET_CONTROLLER_PASSWORD_FILE=%s\nFLEET_CONTROLLER_SESSION_SECRET_FILE=%s\nFLEET_CONTROLLER_TLS_CERT_FILE=%s\nFLEET_CONTROLLER_TLS_KEY_FILE=%s\n' "$TMP/controller-password" "$TMP/controller-session" "$TMP/controller.crt" "$TMP/controller.key" >> "$TMP/.env.example"
 mv "$TMP/.env.example" "$TMP/.env"
 
 docker compose -f "$TMP/docker-compose.yml" --env-file "$TMP/.env" config --format json > "$TMP/config.json"
@@ -19,6 +23,20 @@ jq -e '
   (.services["agent-server-maintain"].deploy.replicas == 3) and
   (.services.status.environment.DOC_WRITE_DAILY_CAP == "30") and
   (.services.status.environment.DOC_WRITER_STAGE_DIR == "/work/stage") and
+  (.services.status.environment.FLEET_CONTROLLER_PUBLIC_PORT == "8080") and
+  (.services.status.environment.FLEET_CONTROLLER_USERNAME == "fleet") and
+  (.services.status.environment.FLEET_CONTROLLER_PASSWORD_FILE == "/run/secrets/fleet_controller_password") and
+  (.services.status.environment.FLEET_CONTROLLER_SESSION_SECRET_FILE == "/run/secrets/fleet_controller_session_secret") and
+  (.services.status.environment.FLEET_CONTROLLER_TLS_CERT_FILE == "/run/secrets/fleet_controller_tls_cert") and
+  (.services.status.environment.FLEET_CONTROLLER_TLS_KEY_FILE == "/run/secrets/fleet_controller_tls_key") and
+  (.services.status.environment.FLEET_CONTROLLER_SESSION_SECONDS == "43200") and
+  ([.services.status.secrets[] | select(.source == "fleet_controller_password" and .target == "/run/secrets/fleet_controller_password")] | length == 1) and
+  ([.services.status.secrets[] | select(.source == "fleet_controller_session_secret" and .target == "/run/secrets/fleet_controller_session_secret")] | length == 1) and
+  ([.services.status.secrets[] | select(.source == "fleet_controller_tls_cert" and .target == "/run/secrets/fleet_controller_tls_cert")] | length == 1) and
+  ([.services.status.secrets[] | select(.source == "fleet_controller_tls_key" and .target == "/run/secrets/fleet_controller_tls_key")] | length == 1) and
+  ([.services.status.secrets[] | select(.source == "fleet_controller_tls_ca_cert" and .target == "/run/secrets/fleet_controller_tls_ca_cert")] | length == 1) and
+  ([.services | to_entries[] | select(.key != "status") | (.value.environment // {}) | to_entries[] | select(.value == "test-controller-password" or .value == "0123456789abcdef0123456789abcdef")] | length == 0) and
+  ([.services | to_entries[] | select(.key != "status") | (.value.secrets // [])[] | select(.source | startswith("fleet_controller_"))] | length == 0) and
   ([.services.status.volumes[] | select(.source == "doc_writer_work" and .target == "/work" and .read_only == true)] | length == 1) and
   (.services.status.networks | keys == ["status-host", "status-internal"]) and
   (.services["db-requests"].networks | has("status-internal")) and

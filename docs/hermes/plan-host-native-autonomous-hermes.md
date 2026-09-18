@@ -86,7 +86,7 @@ Scope:
 - add bounded authenticated session;
 - retain CSRF, Origin, Host, and fixed-action checks;
 - audit actor and action;
-- add one generic profile/cron/run status view;
+- add one generic run status view using existing request run IDs;
 - keep localhost bind;
 - add no Hermes session UI.
 
@@ -105,14 +105,14 @@ Acceptance:
 - authenticated human can perform every current action;
 - session secret unavailable to future `hermes-agent` account;
 - current document and incident actions still work;
-- generic status view needs no role-specific UI code.
+- generic run status view needs no role-specific UI code.
 
 Validation:
 
 - login, expiry, CSRF, Origin, Host, audit, and current-action tests;
 - localhost browser smoke.
 
-Rollback: restore old status image. Do not activate browser-enabled Hermes while old anonymous UI runs.
+Rollback: restore retained `agent-fleet/status:pre-auth` with `docker-compose.status-rollback.yml`; verify HTTP status. Do not activate browser-enabled Hermes while old anonymous UI runs.
 
 Stop condition: authentication breaks exact-byte or incident decision flow.
 
@@ -131,6 +131,7 @@ Scope:
 - runner owns claim, heartbeat, profile invocation, and terminal-state check only;
 - add paused executor cron definitions;
 - add Postgres-loss watchdog that stops Hermes and alerts;
+- wire native profile and cron health into Fleet Controller generic status view;
 - add `smoke-v1` profile;
 - keep all current workers and producers active;
 - mark old Hermes cutover plans superseded by merged DD and this plan.

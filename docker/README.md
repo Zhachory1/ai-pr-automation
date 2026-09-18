@@ -18,8 +18,8 @@ First lease upgrade is a stop-the-world worker cutover: stop old agent-server co
 Scale maintain capacity without partition config:
 
 ```bash
-docker compose up -d --scale agent-server-maintain=3
-docker compose up -d --scale agent-server-maintain=1  # scale back down
+scripts/compose.sh up -d --scale agent-server-maintain=3
+scripts/compose.sh up -d --scale agent-server-maintain=1  # scale back down
 ```
 
 Each worker renews its Postgres lease. Different PR lineages run in parallel; one partial unique
@@ -40,7 +40,7 @@ Use one audited transaction after inspecting request ID and remote PR:
 --   WHERE id=123 AND status='reconcile';
 ```
 
-Open `http://localhost:8080` for agent status. Blocked `pr-maintain` findings appear in its
+Open `https://localhost:8080` for agent status. Blocked `pr-maintain` findings appear in its
 human-review queue with an **Open PR** link, agent summary, findings, and local **Reviewed** /
 **Dismiss** controls. These controls do not write to GitHub.
 
@@ -150,7 +150,7 @@ drain the queue through leased claims.
 Configure `PR_PRODUCER_REPOSITORIES` or `PR_PRODUCER_ORGS` in `.env`, then inspect discovery logs:
 
 ```bash
-docker compose logs -f pr-producer-review pr-producer-maintain
+scripts/compose.sh logs -f pr-producer-review pr-producer-maintain
 ```
 
 Before enabling these services on an existing host, unload legacy launchd/systemd producer jobs to
