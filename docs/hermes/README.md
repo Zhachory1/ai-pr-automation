@@ -33,7 +33,7 @@ After human creates `hermes-agent`, install without starting:
 
 ```bash
 sudo scripts/hermes-native.sh install
-scripts/hermes-native.sh preflight
+sudo scripts/hermes-native.sh preflight
 ```
 
 Operator-local Hermes may exist for CLI testing. It is not fleet runtime. Start dedicated gateway

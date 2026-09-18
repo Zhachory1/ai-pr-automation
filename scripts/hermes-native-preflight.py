@@ -70,9 +70,10 @@ def main():
     install = args.install_dir.resolve()
     home = args.hermes_home.resolve()
     launcher = regular(home.parent / ".local/bin/hermes")
-    if run("git", "-C", str(install), "rev-parse", "HEAD").strip() != manifest["commit"]:
+    git = ("git", "-c", f"safe.directory={install}", "-C", str(install))
+    if run(*git, "rev-parse", "HEAD").strip() != manifest["commit"]:
         fail("installed checkout commit changed")
-    if run("git", "-C", str(install), "status", "--porcelain", "--untracked-files=no").strip():
+    if run(*git, "status", "--porcelain", "--untracked-files=no").strip():
         fail("installed checkout has tracked changes")
     if digest(launcher) != manifest["launcher_sha256"]:
         fail("Hermes launcher digest changed")
