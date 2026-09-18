@@ -174,14 +174,10 @@ Scope:
 - add read-only GitHub denial checker;
 - add human-only enrollment command that imports successful proof;
 - add Hermes database role and restricted enqueue/claim/lease/result/reconcile functions;
-- make producer and claim paths query enrollment table;
-- add no-agent policy watcher that recomputes credential, ruleset, workflow, and environment-policy digests at startup and every five minutes;
-- invalidate enrollment immediately when current digest differs from approved proof;
-- require active proof checked within ten minutes before enqueue or claim;
-- stop runtime reads of environment repository/org allowlists after migration;
+- add native enqueue and claim functions that require active proof checked within ten minutes;
+- keep old environment allowlists only for rollback workers;
 - preserve old broad role/functions for rollback until cleanup;
-- add credential inventory check with no secret output;
-- add Postgres-loss watchdog that stops Hermes and alerts before credentials activate.
+- add credential inventory check with no secret output.
 
 No JSON runtime allowlist. No second enrollment authority.
 
@@ -199,21 +195,16 @@ Acceptance:
 
 - unenrolled repo cannot enqueue, claim, or run;
 - proof binds exact credential and GitHub policy identities;
-- GitHub API merge fails;
-- deploy key cannot update protected branch;
-- agent branch workflow gets no write token, production secret, deployment, release, or unsafe `pull_request_target` path;
-- allowed synthetic action can push unprotected branch, open draft PR, and post review;
+- gate rejects stale evidence or any failed required denial/allowed probe;
 - Hermes DB role cannot approve human action or use arbitrary table DML;
 - stale nonce, cross-kind transition, and unenrolled repo calls fail;
 - enqueue and claim require active non-expired authority proof;
-- mismatch or stale proof invalidates enrollment and blocks work;
-- full denial drill reruns only when bound authority digest changes;
-- watchdog stops Hermes before new claims when Postgres is unavailable.
+- stale proof blocks native enqueue and claim;
+- full denial drill reruns only when bound authority digest changes.
 
 Validation:
 
-- fake GitHub and Postgres tests;
-- disposable live repository denial matrix with human approval;
+- evidence-schema and Postgres tests;
 - credential-output redaction test;
 - old worker compatibility test against expanded schema.
 
@@ -227,6 +218,9 @@ Goal: produce first real signal. Hermes edits, pushes, and opens draft PR in dis
 
 Scope:
 
+- run disposable live repository denial matrix with human approval;
+- add no-agent policy watcher that refreshes or invalidates enrollment when authority digests change;
+- add Postgres-loss watchdog that stops Hermes before credentials activate;
 - add shared queue runner with fixed kind-to-profile map;
 - runner owns claim, heartbeat, profile invocation, and terminal-state check only;
 - add paused executor cron definitions and generic Fleet Controller profile/cron/run health;
@@ -253,6 +247,8 @@ Acceptance:
 - exact profile and request digests persist;
 - Hermes creates branch and draft PR;
 - default/protected branch and merge attempts fail;
+- agent branch workflow gets no write token, production secret, deployment, release, or unsafe `pull_request_target` path;
+- allowed actions push unprotected branch, open draft PR, and post review;
 - created PR points at expected commit;
 - created PR enters review queue;
 - unknown push or PR-create outcome reconciles by read-back;
