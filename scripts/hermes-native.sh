@@ -46,9 +46,10 @@ install_native() {
   need_root; need_user
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME"
-  local installer; installer="$(mktemp)"
+  local installer; installer="$(mktemp /private/tmp/hermes-install.XXXXXX)"
   trap 'rm -f "$installer"' RETURN
   curl -fsSL "$HERMES_INSTALLER_URL" -o "$installer"
+  chmod 0444 "$installer"
   [[ "$(shasum -a 256 "$installer" | awk '{print $1}')" == "$HERMES_INSTALLER_SHA256" ]] \
     || { echo "Hermes installer digest mismatch" >&2; exit 2; }
   sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
