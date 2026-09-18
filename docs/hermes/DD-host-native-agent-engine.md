@@ -36,7 +36,7 @@ Use native Hermes:
 - local read-only MCP connections;
 - session and run state.
 
-Run deterministic controllers under separate unprivileged `fleet-controller` account. Controllers keep Postgres leases, validation, workspace setup, approval enforcement, and external writes.
+Run deterministic workers under separate unprivileged `fleet-worker` account. Fleet Workers keep Postgres leases, validation, workspace setup, approval enforcement, and external writes.
 
 Keep Docker Compose for support services:
 
@@ -44,7 +44,7 @@ Keep Docker Compose for support services:
 - Hindsight and Coderag;
 - read-only MCP bridge;
 - deterministic memory writer;
-- lightweight authenticated human queue UI.
+- lightweight authenticated Fleet Controller UI.
 
 Remove Hermes dashboard from required architecture.
 
@@ -62,7 +62,7 @@ Hermes v0.21.3 supports named profile routing at `/p/<profile>/...`. Local pinne
 
 Hermes cron supports `--script --no-agent`. Producer schedules can run existing deterministic scripts without model calls.
 
-Earlier roadmap made Compose sole deployment manifest. This design replaces that decision. Compose remains support manifest. `launchd` owns host Hermes and controllers.
+Earlier roadmap made Compose sole deployment manifest. This design replaces that decision. Compose remains support manifest. `launchd` owns host Hermes and workers.
 
 ## Goals
 
@@ -72,9 +72,46 @@ Earlier roadmap made Compose sole deployment manifest. This design replaces that
 | Native integrations | Approved profiles use host OAuth, disposable browser, and authenticated read-only MCP. |
 | Cheap producers | Hermes cron runs producer scripts with `--no-agent`; no inference call. |
 | Small human surface | One localhost UI handles approve, reject, retry, cancel, and reconcile. |
-| Preserved authority | Postgres, controllers, and humans retain current policy decisions. |
-| Brokered model output | Hermes gets no human or GitHub write credential. Controller validates before effect. |
-| Simple operation | One Hermes LaunchDaemon, controller jobs, one Compose support stack, no Hermes UI. |
+| Preserved authority | Postgres, workers, and humans retain current policy decisions. |
+| Brokered model output | Hermes gets no human or GitHub write credential. Fleet Worker validates before effect. |
+| Simple operation | One Hermes LaunchDaemon, worker jobs, one Compose support stack, no Hermes UI. |
+
+## User Experience
+
+The fleet has one user interface: **Fleet Controller**.
+
+| Component | User interface? | Purpose |
+|---|---|---|
+| Fleet Controller | Yes | Shows queues. Accepts human decisions and manual requests. |
+| Hermes Agent Engine | No | Runs profiles, models, browser lookups, MCP reads, and cron schedules. |
+| Fleet Worker | No | Claims work, validates model output, and performs allowed effects. |
+| Compose support services | No | Store queue state, memory, and code indexes. |
+
+The user opens Fleet Controller in a browser. The user does not open Hermes to review fleet work. Hermes dashboard is not deployed.
+
+Hermes CLI remains available for engine administration. It can show profiles, cron jobs, runs, and health. It cannot approve fleet actions.
+
+## Use Cases
+
+| Use case | Trigger | Hermes Agent Engine | Fleet Worker | Fleet Controller |
+|---|---|---|---|---|
+| Review a PR | Hermes cron finds eligible PR | `pr-review` returns verdict and findings | Validates head and posts GitHub review | Shows merge-ready or blocked result |
+| Maintain a PR | Unresolved review threads | `pr-maintain` edits detached snapshot and returns patch | Validates and pushes exact PR branch | Shows escalation or round-cap stop |
+| Implement a task | User submits issue, handoff, or prompt | `swe-implement` returns patch and PR proposal | Validates, pushes branch, opens draft PR | Accepts task and shows result |
+| Write a document | User submits title and requirements | `doc-write` drafts, refines, and critiques | Stages and publishes exact approved bytes | Collects answers and approval |
+| Run PR safety review | New immutable safety snapshot | `pr-safety` returns typed safety result | Validates snapshot and writes handoff | Shows incident candidates only |
+| Curate memory | Scheduled source scan | `memory-curator` proposes memories | Validates and records approved memory intent | Shows only decisions that need a human |
+| Operate fleet | User opens Fleet Controller | No action | Supplies status and executes approved control action | Shows queues, failures, and reconciliation |
+
+Common interaction:
+
+1. The user opens Fleet Controller.
+2. Fleet Controller reads Postgres state.
+3. The user approves, rejects, retries, cancels, or reconciles an item.
+4. A Fleet Worker performs the allowed deterministic action.
+5. Fleet Controller shows the final state.
+
+Hermes does not receive the user's Fleet Controller session or approval credential.
 
 ## Non-Goals
 
@@ -90,68 +127,47 @@ Earlier roadmap made Compose sole deployment manifest. This design replaces that
 
 ```mermaid
 flowchart LR
-    subgraph Agent[hermes-agent account]
-      HC[Hermes cron]
-      HP[Named profiles]
-      HG[Hermes gateway]
-      HB[Disposable browser]
-      AW[Agent-owned detached workspaces]
-      HC --> PS[Producer scripts]
-      HP --> HG
-      HP --> HB
-      HP --> AW
-    end
+    YOU[You] --> FC[Fleet Controller<br/>Only user interface]
+    FC -->|read queue and record decisions| DB[(Postgres)]
 
-    subgraph Control[fleet-controller account]
-      C[Existing controllers]
-      W[Clean controller-owned checkouts]
-      C --> W
-      C -->|profile Runs API| HG
-    end
+    CRON[Hermes cron<br/>No model] --> PROD[Producer scripts]
+    PROD -->|enqueue eligible work| DB
 
-    subgraph Support[Docker Compose]
-      DB[(Postgres)]
-      UI[Authenticated queue UI]
-      RO[Read-only MCP bridge]
-      MEM[Hindsight]
-      CR[Coderag]
-      MW[Deterministic memory writer]
-      RO --> MEM
-      MW --> MEM
-      RO --> CR
-      UI --> DB
-    end
+    DB -->|claim with lease| FW[Fleet Worker<br/>Headless deterministic service]
+    FW -->|run named profile| H[Hermes Agent Engine<br/>Headless model service]
+    H -->|typed result or patch| FW
 
-    PS -->|read-only GitHub + enqueue-only DB role| DB
-    HG -->|authenticated read only| RO
-    C --> DB
-    C -->|validated effects| G[GitHub / inbox / handoff]
-    C -->|approved memory intent| DB
-    DB --> MW
+    H --> MCP[Read-only MCP]
+    H --> WEB[Disposable browser]
+    H --> MODEL[Model provider]
+
+    FW -->|validated write| OUT[GitHub / inbox / handoff]
+    FW -->|state and memory intent| DB
+    DB --> MEM[Deterministic memory writer]
 ```
 
-Notice:
+What to notice:
 
-- OS accounts, not profiles, separate model from controller credentials;
-- Hermes can research and edit only exposed workspaces;
-- controller remains final validator and effect owner;
-- support services stay containerized;
-- no Hermes dashboard in control path.
+- You interact only with Fleet Controller.
+- Hermes Agent Engine has no fleet UI.
+- Fleet Worker has no UI. It validates Hermes output and performs allowed writes.
+- Postgres connects Fleet Controller, producers, and workers.
+- OS accounts separate Hermes credentials from worker credentials.
 
 ## Authority Table
 
 | Principal | Has | Must not have |
 |---|---|---|
 | `hermes-agent` | Provider OAuth, read-only GitHub discovery, enqueue-only DB role, read-only MCP, browser, detached operation workspaces | Human login, GitHub write, approval, publisher, broad DB role |
-| `fleet-controller` | Worker DB role, gateway key, scoped GitHub write, worktree ownership, publication paths | Human approval authority |
-| Human UI | Actor-bound approval/reject/retry/cancel/reconcile functions | GitHub token, Hermes profile secret, arbitrary SQL |
-| Support services | Service-local state, read-only MCP, authenticated UI, deterministic memory writer | Host home, controller credentials |
+| `fleet-worker` | Worker DB role, gateway key, scoped GitHub write, clean checkout ownership, publication paths | Human approval authority |
+| Fleet Controller | Actor-bound approval/reject/retry/cancel/reconcile functions | GitHub token, Hermes profile secret, arbitrary SQL |
+| Support services | Service-local state, read-only MCP, authenticated UI, deterministic memory writer | Host home, worker credentials |
 
-Canonical rule: model output is data. Controller decision code converts validated data into an effect.
+Canonical rule: model output is data. Fleet Worker decision code converts validated data into an effect.
 
 ## OS And Filesystem Boundary
 
-`hermes-agent` and `fleet-controller` use separate homes, state, logs, and credentials.
+`hermes-agent` and `fleet-worker` use separate homes, state, logs, and credentials.
 
 Root owns:
 
@@ -167,19 +183,19 @@ Root owns:
 - temporary profile sessions;
 - explicit operation workspace only.
 
-`fleet-controller` owns:
+`fleet-worker` owns:
 
 - queue credentials;
 - GitHub write credentials;
 - exact publication paths;
-- controller state;
+- worker state;
 - clean checkouts and validated patch artifacts.
 
-No ACL grants `hermes-agent` access to human GitHub config, SSH keys, login-account Keychain items, private-docs root, controller home, or UI credentials.
+No ACL grants `hermes-agent` access to human GitHub config, SSH keys, login-account Keychain items, private-docs root, worker home, or UI credentials.
 
 ## Profiles
 
-| Profile | Tools | Read context | Controller-owned result |
+| Profile | Tools | Read context | Fleet Worker-owned result |
 |---|---|---|---|
 | `doc-write` | none; optional web lookup | request packet, handbook, read-only memory/code context | typed draft or critique |
 | `pr-review` | none by default | immutable metadata/diff, optional read-only CI/code context | typed verdict/findings |
@@ -197,7 +213,7 @@ Rules:
 - profile credentials read-only except provider use;
 - browser uses disposable profile with no human cookies or authenticated business session;
 - repository instructions, browser pages, and MCP output are untrusted evidence;
-- immutable repo, PR, head, base, policy, and content digests come from controller.
+- immutable repo, PR, head, base, policy, and content digests come from worker.
 
 ## Producer Scheduling
 
@@ -222,13 +238,13 @@ Producer contract:
 
 Tradeoff: all profiles share `hermes-agent`, so tool-enabled model runs can reach producer read/enqueue credentials. This is accepted low authority. Enqueue never grants effect.
 
-Controller must recheck repo allowlist, current head, eligibility, retry cap, round cap, and queue-rate cap before paid execution. SQL dedupe blocks duplicate operation identity. Cutover still stops old producer before enabling cron.
+Fleet Worker must recheck repo allowlist, current head, eligibility, retry cap, round cap, and queue-rate cap before paid execution. SQL dedupe blocks duplicate operation identity. Cutover still stops old producer before enabling cron.
 
-## Controller Flow
+## Fleet Worker Flow
 
 1. Claim Postgres row with lease and nonce.
 2. Revalidate immutable operation identity.
-3. Build immutable request packet or source snapshot with no remote, hooks, credentials, or controller Git metadata.
+3. Build immutable request packet or source snapshot with no remote, hooks, credentials, or worker Git metadata.
 4. Invoke exact Hermes profile through loopback Runs API.
 5. Persist operation ID, exact profile ID/digest, Hermes binary digest, request/result schema versions, run ID, and request digest.
 6. Validate typed result and artifact.
@@ -249,7 +265,7 @@ Submit, poll, stop, and replay use original immutable profile route. Prior profi
 
 ### Documents
 
-Keep current exact-byte approval and publication. Hermes returns text only. Controller stages, hashes, routes human approval, then publishes approved bytes.
+Keep current exact-byte approval and publication. Hermes returns text only. Fleet Worker stages, hashes, routes human approval, then publishes approved bytes.
 
 ### PR Review
 
@@ -259,26 +275,26 @@ Keep current immutable request, result schema, head recheck, GitHub marker, even
 
 Change only push ownership:
 
-- controller exports exact-head source snapshot into agent inbox;
-- Hermes edits agent-owned detached workspace with no remote or controller Git metadata;
-- controller copies patch into controller-owned inbox and validates copied bytes, never mutable source;
-- controller validates changed paths, result schema, current head, exact branch, lease, and three-round cap;
-- controller applies patch in clean controller-owned checkout with hooks, filters, and credential helpers disabled;
-- controller pushes exact refspec with pinned force-with-lease only when required.
+- worker exports exact-head source snapshot into agent inbox;
+- Hermes edits agent-owned detached workspace with no remote or worker Git metadata;
+- worker copies patch into worker-owned inbox and validates copied bytes, never mutable source;
+- worker validates changed paths, result schema, current head, exact branch, lease, and three-round cap;
+- worker applies patch in clean worker-owned checkout with hooks, filters, and credential helpers disabled;
+- worker pushes exact refspec with pinned force-with-lease only when required.
 
 ### SWE Implement
 
 Same split as maintain:
 
 - Hermes edits detached snapshot and creates patch, not PR;
-- controller copies and validates patch, then applies it in clean checkout;
-- controller validates branch and base;
-- controller pushes and opens draft PR;
+- worker copies and validates patch, then applies it in clean checkout;
+- worker validates branch and base;
+- worker pushes and opens draft PR;
 - created PR enters `pr-review` queue.
 
 ### Memory Curator
 
-Hermes proposes candidate memories. Controller validates source, retention policy, sensitivity, and approval rule, then records approved memory intent in Postgres. Compose-internal deterministic memory writer performs Hindsight write. Hermes and host controller never receive raw Hindsight write access.
+Hermes proposes candidate memories. Fleet Worker validates source, retention policy, sensitivity, and approval rule, then records approved memory intent in Postgres. Compose-internal deterministic memory writer performs Hindsight write. Hermes and host worker never receive raw Hindsight write access.
 
 ### PR Safety
 
@@ -304,7 +320,7 @@ Browser:
 - no UI credential;
 - browser evidence cannot change operation identity or grant effect authority.
 
-## Human UI
+## Fleet Controller
 
 Keep existing status UI shape. Remove general fleet/dashboard ambition.
 
@@ -331,7 +347,7 @@ Required views:
 Supervision:
 
 - LaunchDaemon `ai-pr-automation.hermes-gateway` runs as `hermes-agent`;
-- controller LaunchDaemons run as `fleet-controller`;
+- worker LaunchDaemons run as `fleet-worker`;
 - separate stop and restart controls;
 - root-owned maintenance flag disables automatic restart during drain;
 - binary version and SHA-256 checked before start;
@@ -342,8 +358,8 @@ Failure behavior:
 | Failure | Behavior |
 |---|---|
 | Hermes down | Producer/model work pauses. DB, UI, and completed effects remain. |
-| Controller down | Leases expire under current rules. Unknown effects reconcile. |
-| Postgres down | Producers/controllers stop. Hermes stays idle. |
+| Fleet Worker down | Leases expire under current rules. Unknown effects reconcile. |
+| Postgres down | Producers/workers stop. Hermes stays idle. |
 | MCP/browser down | Optional lookup skipped or explicit blocked result. No invented evidence. |
 | UI down | Human-gated work waits. Automated safe work can continue. |
 
@@ -362,11 +378,11 @@ Residual risk:
 - prompt injection can cause unwanted read or public network activity;
 - browser can perform anonymous web actions.
 
-No privileged business effect follows unless controller accepts validated result. If dedicated account is still too broad for a role, keep that role containerized. Do not claim profile isolation.
+No privileged business effect follows unless worker accepts validated result. If dedicated account is still too broad for a role, keep that role containerized. Do not claim profile isolation.
 
 ## Observability
 
-Light UI and logs show:
+Fleet Controller and logs show:
 
 - queue depth and oldest age by kind/status;
 - active lease and stale reclaim;
@@ -394,9 +410,9 @@ Use no-agent watchdog cron for local notification when gateway, producer, or rec
 
 ### 1. Native Foundation
 
-- create `hermes-agent` and `fleet-controller` accounts;
+- create `hermes-agent` and `fleet-worker` accounts;
 - install pinned Hermes and committed profiles;
-- install gateway/controller LaunchDaemons;
+- install gateway/worker LaunchDaemons;
 - add authenticated UI and read-only MCP bridge;
 - prove profile submit, poll, stop, replay, restart, OAuth, browser, and MCP;
 - keep current routing active.
@@ -414,7 +430,7 @@ For each kind:
 ### 3. Read-Only Roles
 
 - move `doc-write` and `pr-review` model execution to native profiles;
-- keep current controllers and effects;
+- keep current workers and effects;
 - drain old Hermes run IDs before route change;
 - remove Compose Hermes document/review runtime after both work.
 
@@ -422,7 +438,7 @@ For each kind:
 
 - move `pr-maintain`, then `swe-implement`;
 - remove GitHub write credential from agent execution;
-- add controller patch capture, clean apply, validation, and publication;
+- add worker patch capture, clean apply, validation, and publication;
 - preserve current rollback image until both work.
 
 ### 5. Remaining Roles And Deletion
@@ -450,13 +466,13 @@ Keep old schema, grants, images, and manifests until final deletion gate. Native
 
 ## Validation Gates
 
-- OS-account test: Hermes cannot read human/controller/UI/GitHub-write credentials.
+- OS-account test: Hermes cannot read human/worker/UI/GitHub-write credentials.
 - profile route test against pinned native Hermes.
 - cron `--no-agent` test proves zero provider call.
 - existing producer dedupe and three-round tests pass unchanged.
 - result schemas reject malformed profile output.
 - review/document effect tests pass unchanged.
-- maintain/SWE patch cannot push without controller.
+- maintain/SWE patch cannot push without worker.
 - clean-checkout publisher ignores agent hooks/config/credential helpers.
 - raw Hindsight write API unreachable from Hermes; MCP methods read-only.
 - disposable browser has no authenticated human session.
@@ -477,10 +493,10 @@ Keep old schema, grants, images, and manifests until final deletion gate. Native
 Approve:
 
 1. Hermes leaves Docker Compose and runs natively under dedicated `hermes-agent` account.
-2. Existing deterministic controllers run separately as `fleet-controller`.
+2. Existing deterministic workers run separately as `fleet-worker`.
 3. Hermes dashboard leaves required architecture.
 4. Hermes cron replaces producer schedules with `--script --no-agent`.
-5. Compose remains for Postgres, memory/code services, read-only MCP bridge, and authenticated queue UI.
+5. Compose remains for Postgres, memory/code services, read-only MCP bridge, and authenticated Fleet Controller UI.
 6. GitHub writes, approvals, exact publication, and shared-memory writes stay outside Hermes.
 7. Tool-enabled profiles accept dedicated-account read/network exposure; container fallback remains allowed.
 
