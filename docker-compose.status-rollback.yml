@@ -1,0 +1,4 @@
+services:
+  status:
+    image: agent-fleet/status:${FLEET_CONTROLLER_ROLLBACK_VERSION:-pre-auth-b7fe7ed}
+    secrets: !reset []

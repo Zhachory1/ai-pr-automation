@@ -56,7 +56,7 @@ doc-writer-server: run the persona (PRD or DD) + bundled Rokt handbook → draft
 - An absent/malformed open-questions block is treated as "needs human", never a silent finalize.
 
 ## Run it
-`docker compose --profile doc-writer up -d --build doc-writer-server` (set `DOC_WRITER_INBOX_HOST` in
+`scripts/compose.sh --profile doc-writer up -d --build doc-writer-server` (set `DOC_WRITER_INBOX_HOST` in
 `.env`). Then use the **Documents** section of the status UI.
 
 ## Known follow-up

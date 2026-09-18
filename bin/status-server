@@ -22,6 +22,8 @@ import pathlib
 import re
 import stat
 import secrets
+import socket
+import ssl
 import subprocess
 import threading
 import time
@@ -101,11 +103,17 @@ DOC_WRITER_STAGE_DIR = os.environ.get("DOC_WRITER_STAGE_DIR", "/work/stage")
 CSRF_TOKEN = secrets.token_urlsafe(32)          # per-process; page embeds it, POST must echo it
 AUTH_USERNAME = os.environ.get("FLEET_CONTROLLER_USERNAME", "fleet")
 SESSION_SECONDS = int(os.environ.get("FLEET_CONTROLLER_SESSION_SECONDS", "43200"))
-SESSION_COOKIE = "fleet_controller_session"
+SESSION_COOKIE = "__Host-fleet_controller_session"
 MAX_FORM_BYTES = 1024 * 1024
+MAX_LOGIN_BYTES = 8192
+MAX_HTTP_WORKERS = 16
+REQUEST_TIMEOUT_SECONDS = 5
+REQUEST_DEADLINE_SECONDS = 10
+ACTIVE_SESSIONS = {}
+SESSION_LOCK = threading.Lock()
 PUBLIC_PORT = int(os.environ.get("FLEET_CONTROLLER_PUBLIC_PORT", str(PORT)))
 ALLOWED_HOSTS = {f"127.0.0.1:{PUBLIC_PORT}", f"localhost:{PUBLIC_PORT}"}
-ALLOWED_ORIGINS = {f"http://127.0.0.1:{PUBLIC_PORT}", f"http://localhost:{PUBLIC_PORT}"}
+ALLOWED_ORIGINS = {f"https://127.0.0.1:{PUBLIC_PORT}", f"https://localhost:{PUBLIC_PORT}"}
 
 
 def read_secret(name: str, minimum: int) -> str:
@@ -138,26 +146,46 @@ if not 300 <= SESSION_SECONDS <= 86400:
 
 
 def issue_session(now: int | None = None) -> str:
-    issued = str(int(time.time() if now is None else now))
-    signature = hmac.new(SESSION_SECRET.encode(), issued.encode(), "sha256").hexdigest()
-    return f"{issued}.{signature}"
+    issued = int(time.time() if now is None else now)
+    nonce = secrets.token_hex(16)
+    payload = f"{issued}.{nonce}"
+    token = f"{payload}.{hmac.new(SESSION_SECRET.encode(), payload.encode(), 'sha256').hexdigest()}"
+    with SESSION_LOCK:
+        for old, expires in list(ACTIVE_SESSIONS.items()):
+            if expires <= issued:
+                del ACTIVE_SESSIONS[old]
+        ACTIVE_SESSIONS[token] = issued + SESSION_SECONDS
+    return token
 
 
 def session_actor(cookie_header: str, now: int | None = None) -> str | None:
     try:
         cookie = SimpleCookie(cookie_header)
         token = cookie[SESSION_COOKIE].value
-        issued_raw, signature = token.split(".", 1)
-        if len(token) > 128 or not hmac.compare_digest(
-                signature, hmac.new(SESSION_SECRET.encode(), issued_raw.encode(), "sha256").hexdigest()):
+        issued_raw, nonce, signature = token.split(".", 2)
+        payload = f"{issued_raw}.{nonce}"
+        if (len(token) > 192 or len(nonce) != 32 or not hmac.compare_digest(
+                signature, hmac.new(SESSION_SECRET.encode(), payload.encode(), "sha256").hexdigest())):
             return None
         issued = int(issued_raw)
         current = int(time.time() if now is None else now)
-        if issued > current + 30 or current - issued >= SESSION_SECONDS:
-            return None
+        with SESSION_LOCK:
+            expires = ACTIVE_SESSIONS.get(token)
+            if issued > current + 30 or expires is None or expires <= current:
+                ACTIVE_SESSIONS.pop(token, None)
+                return None
         return AUTH_USERNAME
     except (KeyError, ValueError, TypeError):
         return None
+
+
+def revoke_session(cookie_header: str) -> None:
+    try:
+        token = SimpleCookie(cookie_header)[SESSION_COOKIE].value
+    except (KeyError, TypeError):
+        return
+    with SESSION_LOCK:
+        ACTIVE_SESSIONS.pop(token, None)
 
 
 def audit(actor: str, action: str, outcome: str) -> None:
@@ -1027,11 +1055,80 @@ def recent_table(rows) -> str:
             f"</tr></thead><tbody>{body}</tbody></table></section>")
 
 
+def tls_context() -> ssl.SSLContext:
+    cert = os.environ.get("FLEET_CONTROLLER_TLS_CERT_FILE", "")
+    key = os.environ.get("FLEET_CONTROLLER_TLS_KEY_FILE", "")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        context.load_cert_chain(cert, key)
+    except (OSError, ssl.SSLError) as error:
+        raise RuntimeError("Fleet Controller TLS certificate or key is invalid") from error
+    return context
+
+
 def result_succeeded(result: str) -> bool:
     value = result.lower()
     return not (value.startswith(("rejected:", "publish failed", "not enqueued", "not queued"))
                 or " not cancelled" in value or " not pending" in value
                 or " not publishing" in value or " not queued" in value)
+
+
+class BoundedHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, *args, tls=None, **kwargs):
+        self._workers = threading.BoundedSemaphore(MAX_HTTP_WORKERS)
+        self._tls = tls
+        self._deadline_lock = threading.Lock()
+        self._deadlines = {}
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, address = super().get_request()
+        request.settimeout(REQUEST_TIMEOUT_SECONDS)
+        if self._tls is not None:
+            request = self._tls.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+        return request, address
+
+    def process_request(self, request, client_address):
+        if not self._workers.acquire(blocking=False):
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._workers.release()
+            raise
+
+    def _expire_request(self, request):
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        request.close()
+
+    def cancel_request_deadline(self, request):
+        with self._deadline_lock:
+            timer = self._deadlines.pop(id(request), None)
+        if timer is not None:
+            timer.cancel()
+
+    def process_request_thread(self, request, client_address):
+        timer = threading.Timer(REQUEST_DEADLINE_SECONDS, self._expire_request, (request,))
+        timer.daemon = True
+        with self._deadline_lock:
+            self._deadlines[id(request)] = timer
+        timer.start()
+        try:
+            if isinstance(request, ssl.SSLSocket):
+                request.do_handshake()
+            super().process_request_thread(request, client_address)
+        except (OSError, ssl.SSLError):
+            self.shutdown_request(request)
+        finally:
+            self.cancel_request_deadline(request)
+            self._workers.release()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1061,6 +1158,10 @@ class Handler(BaseHTTPRequestHandler):
                 cls._frag_ts = now
             return cls._frag
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(REQUEST_TIMEOUT_SECONDS)
+
     def _send_html(self, status: int, body: str, *headers: tuple[str, str]):
         data = body.encode()
         self.send_response(status)
@@ -1088,6 +1189,7 @@ class Handler(BaseHTTPRequestHandler):
                 and self.headers.get("Origin") in ALLOWED_ORIGINS)
 
     def do_GET(self):
+        self.server.cancel_request_deadline(self.connection)
         actor = self._actor()
         if self.path == "/login":
             if actor:
@@ -1151,9 +1253,12 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
             length = MAX_FORM_BYTES + 1
-        if not 0 <= length <= MAX_FORM_BYTES:
+        maximum = MAX_LOGIN_BYTES if self.path == "/login" else MAX_FORM_BYTES
+        if not 0 <= length <= maximum:
+            self.server.cancel_request_deadline(self.connection)
             self.send_response(413); self.end_headers(); return
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+        self.server.cancel_request_deadline(self.connection)
         params = parse_qs(body)
         if self.path == "/login":
             if not self._host_origin_ok():
@@ -1167,7 +1272,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_html(401, render_login("Invalid credentials"))
                 return
             audit(AUTH_USERNAME, "/login", "ok")
-            cookie = (f"{SESSION_COOKIE}={issue_session()}; Path=/; HttpOnly; SameSite=Strict; "
+            cookie = (f"{SESSION_COOKIE}={issue_session()}; Path=/; Secure; HttpOnly; SameSite=Strict; "
                       f"Max-Age={SESSION_SECONDS}")
             self._redirect_to("/", ("set-cookie", cookie))
             return
@@ -1180,8 +1285,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(403); self.end_headers()
             self.wfile.write(b"forbidden (csrf)"); return
         if self.path == "/logout":
+            revoke_session(self.headers.get("Cookie", ""))
             audit(actor, "/logout", "ok")
-            self._redirect_to("/login", ("set-cookie", f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"))
+            self._redirect_to("/login", ("set-cookie", f"{SESSION_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0"))
             return
         try:
             if self.path == "/cancel":
@@ -1249,4 +1355,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     # Compose explicitly sets 0.0.0.0 so its localhost-only port-map can reach this process.
     # Direct runs default to loopback; Host/Origin/CSRF provide defense in depth for POSTs.
-    ThreadingHTTPServer((os.environ.get("STATUS_BIND", "127.0.0.1"), PORT), Handler).serve_forever()
+    server = BoundedHTTPServer((os.environ.get("STATUS_BIND", "127.0.0.1"), PORT), Handler,
+                               tls=tls_context())
+    server.serve_forever()

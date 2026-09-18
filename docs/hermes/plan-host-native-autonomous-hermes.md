@@ -112,7 +112,7 @@ Validation:
 - login, expiry, CSRF, Origin, Host, audit, and current-action tests;
 - localhost browser smoke.
 
-Rollback: restore old status image. Do not activate browser-enabled Hermes while old anonymous UI runs.
+Rollback: restore retained `agent-fleet/status:pre-auth` with `docker-compose.status-rollback.yml`; verify HTTP status. Do not activate browser-enabled Hermes while old anonymous UI runs.
 
 Stop condition: authentication breaks exact-byte or incident decision flow.
 

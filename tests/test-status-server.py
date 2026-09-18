@@ -218,6 +218,17 @@ class StatusServerTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("FLEET_CONTROLLER_PASSWORD_FILE", result.stderr)
 
+    def test_http_server_worker_count_is_bounded(self):
+        server = status_server.BoundedHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        try:
+            for _ in range(status_server.MAX_HTTP_WORKERS):
+                self.assertTrue(server._workers.acquire(blocking=False))
+            self.assertFalse(server._workers.acquire(blocking=False))
+        finally:
+            for _ in range(status_server.MAX_HTTP_WORKERS):
+                server._workers.release()
+            server.server_close()
+
     def test_secret_reader_rejects_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
             target = pathlib.Path(directory) / "target"
@@ -239,10 +250,10 @@ class StatusServerTest(unittest.TestCase):
             f"{status_server.SESSION_COOKIE}={future}", now=1000))
 
     def test_login_is_only_anonymous_page_and_sets_secure_cookie(self):
-        server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        server = status_server.BoundedHTTPServer(("127.0.0.1", 0), status_server.Handler)
         old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
         host = f"127.0.0.1:{server.server_port}"
-        origin = f"http://{host}"
+        origin = f"https://{host}"
         status_server.ALLOWED_HOSTS = {host}
         status_server.ALLOWED_ORIGINS = {origin}
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -278,6 +289,8 @@ class StatusServerTest(unittest.TestCase):
             self.assertEqual(response.status, 303)
             self.assertEqual(response.getheader("Location"), "/")
             cookie = response.getheader("Set-Cookie")
+            self.assertTrue(cookie.startswith("__Host-fleet_controller_session="))
+            self.assertIn("Secure", cookie)
             self.assertIn("HttpOnly", cookie)
             self.assertIn("SameSite=Strict", cookie)
             self.assertIn(f"Max-Age={status_server.SESSION_SECONDS}", cookie)
@@ -297,6 +310,7 @@ class StatusServerTest(unittest.TestCase):
             self.assertEqual(response.status, 303)
             self.assertIn("Max-Age=0", response.getheader("Set-Cookie"))
             response.read()
+            self.assertIsNone(status_server.session_actor(session))
             connection.close()
             self.assertIn("r.status===401", status_server.LIVE_JS)
             self.assertIn("pathname==='/logout'", status_server.LIVE_JS)
@@ -306,15 +320,15 @@ class StatusServerTest(unittest.TestCase):
             status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS = old_hosts, old_origins
 
     def test_anonymous_mutation_and_tampered_cookie_are_rejected(self):
-        server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        server = status_server.BoundedHTTPServer(("127.0.0.1", 0), status_server.Handler)
         old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
-        origin = f"http://127.0.0.1:{server.server_port}"
+        origin = f"https://127.0.0.1:{server.server_port}"
         status_server.ALLOWED_HOSTS = {f"127.0.0.1:{server.server_port}"}
         status_server.ALLOWED_ORIGINS = {origin}
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            url = f"{origin}/cancel"
+            url = f"http://127.0.0.1:{server.server_port}/cancel"
             body = urlencode({"token": status_server.CSRF_TOKEN, "id": "7"}).encode()
             for cookie in (None, f"{status_server.SESSION_COOKIE}=tampered"):
                 headers = {"Origin": origin}
@@ -360,15 +374,15 @@ class StatusServerTest(unittest.TestCase):
                 self.assertFalse(status_server.result_succeeded(result))
 
     def test_post_changes_only_local_queue_state_from_local_origin(self):
-        server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        server = status_server.BoundedHTTPServer(("127.0.0.1", 0), status_server.Handler)
         old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
-        origin = f"http://127.0.0.1:{server.server_port}"
+        origin = f"https://127.0.0.1:{server.server_port}"
         status_server.ALLOWED_HOSTS = {f"127.0.0.1:{server.server_port}"}
         status_server.ALLOWED_ORIGINS = {origin}
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            url = f"{origin}/human-reviews/17/reviewed"
+            url = f"http://127.0.0.1:{server.server_port}/human-reviews/17/reviewed"
             body = urlencode({"token": status_server.CSRF_TOKEN}).encode()
             cookie = f"{status_server.SESSION_COOKIE}={status_server.issue_session()}"
             request = urllib.request.Request(url, data=body, method="POST", headers={
@@ -393,15 +407,15 @@ class StatusServerTest(unittest.TestCase):
             status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS = old_hosts, old_origins
 
     def test_pending_decision_post_is_csrf_guarded(self):
-        server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        server = status_server.BoundedHTTPServer(("127.0.0.1", 0), status_server.Handler)
         old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
-        origin = f"http://127.0.0.1:{server.server_port}"
+        origin = f"https://127.0.0.1:{server.server_port}"
         status_server.ALLOWED_HOSTS = {f"127.0.0.1:{server.server_port}"}
         status_server.ALLOWED_ORIGINS = {origin}
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            url = f"{origin}/pending-decisions/19/approve"
+            url = f"http://127.0.0.1:{server.server_port}/pending-decisions/19/approve"
             body = urlencode({"token": status_server.CSRF_TOKEN}).encode()
             cookie = f"{status_server.SESSION_COOKIE}={status_server.issue_session()}"
             request = urllib.request.Request(url, data=body, method="POST", headers={
@@ -564,15 +578,15 @@ class StatusServerTest(unittest.TestCase):
         self.assertIn("state='dismissed'", invalidation)
 
     def test_publication_post_is_csrf_guarded(self):
-        server = status_server.ThreadingHTTPServer(("127.0.0.1", 0), status_server.Handler)
+        server = status_server.BoundedHTTPServer(("127.0.0.1", 0), status_server.Handler)
         old_hosts, old_origins = status_server.ALLOWED_HOSTS, status_server.ALLOWED_ORIGINS
-        origin = f"http://127.0.0.1:{server.server_port}"
+        origin = f"https://127.0.0.1:{server.server_port}"
         status_server.ALLOWED_HOSTS = {f"127.0.0.1:{server.server_port}"}
         status_server.ALLOWED_ORIGINS = {origin}
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            url = f"{origin}/doc-publications/17/publish"
+            url = f"http://127.0.0.1:{server.server_port}/doc-publications/17/publish"
             body = urlencode({"token": status_server.CSRF_TOKEN}).encode()
             cookie = f"{status_server.SESSION_COOKIE}={status_server.issue_session()}"
             request = urllib.request.Request(url, data=body, method="POST", headers={
