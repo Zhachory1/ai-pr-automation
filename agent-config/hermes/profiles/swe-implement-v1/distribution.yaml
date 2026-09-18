@@ -1,0 +1,5 @@
+name: swe-implement-v1
+version: 1.0.0
+description: Autonomously implements an enrolled task and opens a draft pull request.
+hermes_requires: ">=0.21.3"
+distribution_owned: [SOUL.md, config.yaml, distribution.yaml, .no-bundled-skills]

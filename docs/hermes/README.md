@@ -61,7 +61,15 @@ scripts/hermes-repo-enroll.py evidence.json
 
 Evidence binds repository, credential, ruleset, workflow, environment policy, required denials, and
 allowed actions. This foundation creates no credential, evidence, enrollment, or live GitHub probe.
-PR 4 performs disposable-repository denial and allowed-action probes before native credentials start.
+PR 4 performs one `Zhachory1/ai-pr-automation` autonomy capability check before native credentials start.
+The check proves both allowed work (feature push, draft PR, review) and human-reserved boundaries
+(merge, protected branch, unsafe workflow/deployment, administration). Workflow files may still be
+edited in a feature branch; `unsafe_workflow_execution` means agent-push runs get no dangerous
+secret, write token, deployment, or release authority.
+
+`bin/hermes-queue-runner` and `swe-implement-v1` are installed paused. Live activation still requires
+`hermes-agent`, enrollment for this repository, GitHub credentials, fresh authority evidence, and
+explicit human approval. No Fleet Worker or Effect Gateway is introduced.
 
 ## M0 Pull Requests
 

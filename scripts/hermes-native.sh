@@ -23,14 +23,23 @@ need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
 
 sync_profile() {
-  local source="$ROOT/agent-config/hermes/profiles/smoke-v1" target="$HERMES_HOME/profiles/smoke-v1"
-  install -d -m 700 -o "$SERVICE_USER" "$HERMES_HOME/profiles" "$target" "$PROFILE_ROOT/smoke-v1"
-  for file in SOUL.md config.yaml distribution.yaml .no-bundled-skills; do
-    install -m 0444 "$source/$file" "$PROFILE_ROOT/smoke-v1/$file"
-    install -m 0444 "$source/$file" "$target/$file"
+  local source name target canonical file relative mode
+  install -d -m 700 -o "$SERVICE_USER" "$HERMES_HOME/profiles"
+  for source in "$ROOT"/agent-config/hermes/profiles/*; do
+    [[ -d "$source" ]] || continue
+    name="${source##*/}"; target="$HERMES_HOME/profiles/$name"; canonical="$PROFILE_ROOT/$name"
+    install -d -m 700 -o "$SERVICE_USER" "$target"
+    install -d -m 755 "$canonical"
+    while IFS= read -r file; do
+      relative="${file#"$source"/}"; mode=0444
+      [[ -x "$file" ]] && mode=0555
+      install -d -m 755 "$(dirname "$target/$relative")" "$(dirname "$canonical/$relative")"
+      install -m "$mode" "$file" "$target/$relative"
+      install -m "$mode" "$file" "$canonical/$relative"
+    done < <(find "$source" -type f -print | sort)
+    chown "$SERVICE_USER" "$target"
   done
   chown -R root:wheel "$PROFILE_ROOT"
-  chown "$SERVICE_USER" "$HERMES_HOME/profiles" "$target"
 }
 
 install_native() {
@@ -47,6 +56,8 @@ install_native() {
       --non-interactive --no-skills --dir "$INSTALL_DIR" --hermes-home "$HERMES_HOME"
   sync_profile
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
+  [[ ! -x "$ROOT/bin/hermes-queue-runner" ]] || install -m 0555 "$ROOT/bin/hermes-queue-runner" "$SUPPORT_ROOT/hermes-queue-runner"
+  [[ ! -x "$ROOT/bin/hermes-postgres-watchdog" ]] || install -m 0555 "$ROOT/bin/hermes-postgres-watchdog" "$SUPPORT_ROOT/hermes-postgres-watchdog"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-hermes.plist.template" "$PLIST" \
     "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$LAUNCHER" "$WRAPPER" "$MAINTENANCE_FILE" "$LOG_ROOT" <<'PY'
 import os, pathlib, sys
