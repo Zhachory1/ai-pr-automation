@@ -132,8 +132,11 @@ kind→profile map is fixed. `bin/hermes-postgres-watchdog` stops the gateway be
 against a missing queue.
 
 Mapped kinds: `swe-implement` → `swe-implement-v1` (typed SWE settle, draft-PR URL); `pr-review` →
-`pr-review-v1` (generic settle, exact-head marker). `pr-review-v1` resolves the head, refuses to
-approve an incomplete or superseded diff, and posts one review per head; branch protection keeps merge
+`pr-review-v1` (generic settle, exact-head marker); `pr-maintain` → `pr-maintain-v1` (generic settle,
+pushed head). `pr-review-v1` resolves the head, refuses to approve an incomplete or superseded diff,
+and posts one review per head. `pr-maintain-v1` works the exact claim head, makes one bounded fix pass,
+pushes with force-with-lease, and resolves addressed threads; the three-round cap and stale-head
+supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
 human-owned.
 
 ## Autonomy Capability Check
