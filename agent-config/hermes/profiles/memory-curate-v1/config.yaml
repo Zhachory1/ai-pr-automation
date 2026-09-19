@@ -1,0 +1,15 @@
+model:
+  provider: anthropic
+  default: claude-sonnet-4-6
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+auxiliary:
+  background_review:
+    enabled: false
+skills:
+  creation_nudge_interval: 0
+agent:
+  max_turns: 40
+  run_budget_seconds: 1200
+  api_max_retries: 0

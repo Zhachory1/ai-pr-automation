@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# Host-native memory curator. Claims one memory-curate request, gathers recent source material since
+# the watermark, asks the memory-curate Hermes profile what is worth remembering (strict JSON), then
+# DETERMINISTICALLY filters, dedups, and writes the keepers to the shared Hindsight bank over REST.
+#
+# The model only PROPOSES. This runner is the gate that writes: a reject-shape filter drops
+# completion/verdict/provenance-only/secret/too-short/too-long content, and a recall-based near-dup
+# check runs, before anything reaches the world-readable bank. The Postgres claim/lease/settle path
+# matches bin/hermes-queue-runner; the deterministic filter/dedup/write path matches the retired
+# bin/memory-curator. Watermark advances only on a successful model run.
+set -euo pipefail
+umask 077
+
+: "${HERMES_BIN:=hermes}"
+profile=memory-curate-v1
+: "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
+: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
+HS="${HINDSIGHT_URL:-http://127.0.0.1:8888}"
+BANK="${HINDSIGHT_SHARED_BANK:-fleet-shared}"
+CURATOR_VERSION="curator/v1"
+TASKS_DIR="${MEMORY_CURATOR_TASKS_DIR:-$HOME/.mewrite/agent/tasks}"
+PRIVATE_DOCS="${MEMORY_CURATOR_PRIVATE_DOCS:-$HOME/private-docs}"
+STATE_DIR="${MEMORY_CURATOR_STATE_DIR:-$HOME/.local/share/ai-pr-automation/curator}"
+WATERMARK="$STATE_DIR/last-run"
+MAX_MEMORIES="${MEMORY_CURATOR_MAX_MEMORIES:-15}"
+MAX_SOURCE_DOCS="${MEMORY_CURATOR_MAX_SOURCE_DOCS:-40}"
+LOOKBACK_HOURS="${MEMORY_CURATOR_LOOKBACK_HOURS:-24}"
+PROMPT_MAX_BYTES="${MEMORY_CURATOR_PROMPT_MAX_BYTES:-96000}"
+PER_DOC_BYTES="${MEMORY_CURATOR_PER_DOC_BYTES:-8000}"
+lease="${HERMES_QUEUE_LEASE_SECONDS:-1200}"
+nonce="$(openssl rand -hex 16)"; run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$nonce"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need jq; need curl; need find; need python3
+log() { printf '%s memory-curate %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
+psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || { log "WARN: cannot stat $1; epoch 0"; echo 0; }; }
+mkdir -p "$STATE_DIR"
+
+claim="$(psqlq -c "SELECT hermes_claim_request('memory-curate','$run_id','$nonce',$lease);")"
+[[ -n "$claim" ]] || exit 0
+id="$(jq -r .id <<<"$claim")"
+srcdir="$(mktemp -d)"; trap 'rm -rf "$srcdir"' EXIT
+
+(
+  while sleep "$((lease / 4))"; do
+    [[ "$(psqlq -c "SELECT hermes_renew_request($id,'$nonce',$lease);")" == t ]] || { kill -TERM "$PPID"; exit 1; }
+  done
+) & heartbeat=$!
+stop_heartbeat() { kill "$heartbeat" 2>/dev/null || true; wait "$heartbeat" 2>/dev/null || true; }
+
+settle() { # $1 status  $2 detail
+  stop_heartbeat
+  psqlq -v detail="$2" <<<"SELECT hermes_settle_request($id,'$nonce','$1',:'detail');" >/dev/null
+  echo "request=$id status=$1"
+}
+
+# --- gather bounded source slice since the watermark ---------------------------------------------
+since_epoch=0
+[[ -f "$WATERMARK" ]] && since_epoch="$(cat "$WATERMARK" 2>/dev/null || echo 0)"
+[[ "$since_epoch" =~ ^[0-9]+$ ]] || since_epoch=0
+(( since_epoch == 0 )) && since_epoch="$(python3 -c "import time;print(int(time.time())-$LOOKBACK_HOURS*3600)")"
+now_epoch="$(date +%s)"
+manifest="$srcdir/manifest.txt"; : >"$manifest"
+cand="$srcdir/cand.txt"; : >"$cand"
+since_ref="$srcdir/.since"
+touch -t "$(python3 -c "import time;print(time.strftime('%Y%m%d%H%M.%S', time.localtime($since_epoch)))")" "$since_ref"
+add_cand() { local f="$1"; [[ -f "$f" ]] || return 0; printf '%s\t%s\n' "$(mtime_of "$f")" "$f" >>"$cand"; }
+if [[ -d "$TASKS_DIR" ]]; then
+  while IFS= read -r f; do add_cand "$f"; done < <(
+    find "$TASKS_DIR" -type f -name 'final.txt' -newer "$since_ref" 2>/dev/null | grep -v -- '-memory-curat')
+fi
+if [[ -d "$PRIVATE_DOCS" ]]; then
+  if git -C "$PRIVATE_DOCS" rev-parse --git-dir >/dev/null 2>&1; then
+    while IFS= read -r f; do add_cand "$f"; done < <(
+      git -C "$PRIVATE_DOCS" log --since="@$since_epoch" --name-only --pretty=format: -- '*.md' 2>/dev/null \
+        | awk 'NF' | sort -u | sed "s#^#$PRIVATE_DOCS/#")
+  else
+    while IFS= read -r f; do add_cand "$f"; done < <(
+      find "$PRIVATE_DOCS" -type f -name '*.md' -newer "$since_ref" 2>/dev/null)
+  fi
+fi
+total_cand="$(grep -c . "$cand" 2>/dev/null | head -1 || echo 0)"; [[ "$total_cand" =~ ^[0-9]+$ ]] || total_cand=0
+sort -rn "$cand" | head -n "$MAX_SOURCE_DOCS" | cut -f2- >"$manifest"
+watermark_cap="$now_epoch"
+if (( total_cand > MAX_SOURCE_DOCS )); then
+  watermark_cap="$(sort -rn "$cand" | head -n "$MAX_SOURCE_DOCS" | tail -1 | cut -f1)"
+fi
+sort -u "$manifest" -o "$manifest"
+n_src="$(grep -c . "$manifest" 2>/dev/null | head -1 || echo 0)"; [[ "$n_src" =~ ^[0-9]+$ ]] || n_src=0
+if (( n_src == 0 )); then
+  echo "$now_epoch" >"$WATERMARK"
+  settle skipped "no new source material since $since_epoch"
+  exit 0
+fi
+
+# --- build the prompt: source material only; profile SOUL carries the curation contract ----------
+prompt="$srcdir/prompt.md"; result="$srcdir/proposals.json"
+{
+  printf 'Source material for this run. Consider ONLY these documents; cite each by its id.\n\n'
+} >"$prompt"
+included=0
+while IFS= read -r f; do
+  [[ -f "$f" ]] || continue
+  (( $(wc -c <"$prompt") >= PROMPT_MAX_BYTES )) && break
+  { printf '## id: %s\n\n```\n' "$f"; head -c "$PER_DOC_BYTES" "$f" 2>/dev/null; printf '\n```\n\n'; } >>"$prompt"
+  included=$((included+1))
+done <"$manifest"
+printf 'Write ONLY the JSON object {"memories":[...]} to %s. Empty is fine.\n' "$result" >>"$prompt"
+
+# --- run the curate profile (proposes only; no write authority) ----------------------------------
+agent_ok=1
+HERMES_WRITE_SAFE_ROOT="$srcdir" "$HERMES_BIN" -p "$profile" chat --query-file "$prompt" --oneshot \
+  --toolsets file --max-turns 40 --run-budget 1200 --ignore-rules --yolo --in "$srcdir" >/dev/null 2>&1 || agent_ok=0
+if (( agent_ok == 0 )) || [[ ! -f "$result" ]]; then
+  settle reconcile "curate model run failed; watermark held for retry"
+  exit 0
+fi
+json="$(python3 -c '
+import sys,re,json
+try: s=open(sys.argv[1]).read()
+except OSError: print("{\"memories\":[]}"); sys.exit()
+m=re.search(r"\{.*\}", s, re.S)
+if not m: print("{\"memories\":[]}"); sys.exit()
+try: print(json.dumps(json.loads(m.group(0))))
+except Exception: print("{\"memories\":[]}")
+' "$result")"
+
+# --- deterministic filter + dedup + write (the gate; model output is never trusted verbatim) ------
+reject_shape() {
+  local c="$1"; local len=${#c}
+  (( len < 40 || len > 1200 )) && return 0
+  printf '%s' "$c" | grep -Eqi 'reviewed with (a )?verdict|verdict (of|was) (comment|approve|request)|head (commit|sha) (is|=)|run (id|identifier) (is|=)|^PR [^ ]+#[0-9]+ (reviewed|approved|merged)' && return 0
+  printf '%s' "$c" | grep -Eqi \
+    'gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|ddpat_[A-Za-z0-9]|xox[baprs]-|slack-|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.|-----BEGIN|x-access-token:|https?://[^ ]*:[^ @]*@|(secret|token|password|api[_-]?key|bearer)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9/_+.-]{12,}' && return 0
+  return 1
+}
+written=0; rejected=0; deduped=0
+count="$(printf '%s' "$json" | jq '.memories | length' 2>/dev/null || echo 0)"
+[[ "$count" =~ ^[0-9]+$ ]] || count=0
+for (( i=0; i<count; i++ )); do
+  (( written >= MAX_MEMORIES )) && break
+  item="$(printf '%s' "$json" | jq -c ".memories[$i]" 2>/dev/null)" || continue
+  content="$(printf '%s' "$item" | jq -r '.content // empty')"
+  [[ -n "$content" ]] || continue
+  is_conv="$(printf '%s' "$item" | jq -r '.convention // false')"
+  n_sources="$(printf '%s' "$item" | jq -r '(.sources // []) | length')"
+  if [[ "$is_conv" == "true" && "${n_sources:-0}" -lt 2 ]]; then rejected=$((rejected+1)); continue; fi
+  if reject_shape "$content"; then rejected=$((rejected+1)); continue; fi
+  hits="$(curl -fsS -X POST "$HS/v1/default/banks/$BANK/memories/recall" -H 'content-type: application/json' \
+        -d "$(jq -cn --arg q "$content" '{query:$q,limit:5}')" 2>/dev/null \
+        | jq -r '((.results // .memories // [])[].text // empty)' 2>/dev/null || echo "")"
+  if [[ -n "$hits" ]] && printf '%s' "$hits" | python3 -c '
+import sys
+cand=set(sys.argv[1].lower().split())
+for line in sys.stdin:
+    b=set(line.lower().split())
+    if b and len(cand&b)/max(1,len(cand|b))>=0.6: sys.exit(0)
+sys.exit(1)
+' "$content"; then deduped=$((deduped+1)); continue; fi
+  doc="curator-$(printf '%s' "$content" | python3 -c 'import sys,hashlib;print(hashlib.sha1(sys.stdin.buffer.read()).hexdigest()[:12])')"
+  body="$(jq -cn --arg c "$content" --arg d "$doc" --arg wa "$now_epoch" --arg ver "$CURATOR_VERSION" \
+    --argjson src "$(printf '%s' "$item" | jq -c '.sources // []')" '
+    {async:false, items:[{content:$c, document_id:$d, update_mode:"replace",
+      tags:["curator", $ver], metadata:{curator_version:$ver, written_at:$wa, source_docs:($src|join(","))}}]}')"
+  resp="$(curl -fsS -X POST "$HS/v1/default/banks/$BANK/memories" -H 'content-type: application/json' -d "$body" 2>/dev/null || echo '{}')"
+  if [[ "$(printf '%s' "$resp" | jq -r '.success // false' 2>/dev/null)" == "true" ]]; then
+    written=$((written+1))
+  fi
+done
+
+# Watermark advances only because the model actually ran; writes are idempotent (stable doc_id).
+[[ -n "$watermark_cap" ]] && echo "$watermark_cap" >"$WATERMARK"
+settle done "written=$written rejected=$rejected deduped=$deduped from $n_src docs"
