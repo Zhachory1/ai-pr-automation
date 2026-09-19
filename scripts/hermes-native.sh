@@ -105,6 +105,12 @@ preflight() {
 case "${1:-}" in
   install) install_native ;;
   sync-profiles) need_root; need_user; sync_profile; preflight ;;
+  sync-cron)
+    need_root; need_user
+    sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+      HERMES_BIN="$LAUNCHER" HERMES_NATIVE_SUPPORT_ROOT="$SUPPORT_ROOT" \
+      python3 "$ROOT/scripts/hermes-cron-sync.py" "${2:-}"
+    ;;
   preflight) preflight ;;
   start)
     need_root; preflight; rm -f "$MAINTENANCE_FILE"
@@ -116,5 +122,5 @@ case "${1:-}" in
     ;;
   status) launchctl print "system/$LABEL" ;;
   logs) tail -n 200 "$LOG_ROOT"/gateway.*.log ;;
-  *) echo "usage: $0 install|sync-profiles|preflight|start|stop|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-profiles|sync-cron [--apply]|preflight|start|stop|status|logs" >&2; exit 2 ;;
 esac

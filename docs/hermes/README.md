@@ -169,6 +169,30 @@ the write gate. A deterministic filter drops secret, provenance, wrong-shape, to
 unsourced-convention, and near-duplicate content before any Hindsight write, and the watermark
 advances only on a successful model run. The model never holds the write path.
 
+## Executor Cron
+
+The LaunchDaemon runs the Hermes gateway. Queue execution is driven by Hermes' built-in scheduler:
+one `--no-agent` cron job per role runs the installed executor, which claims one request, invokes the
+role profile, and settles. Register the jobs (created PAUSED) with:
+
+```bash
+sudo scripts/hermes-native.sh sync-cron           # dry run
+sudo scripts/hermes-native.sh sync-cron --apply    # create paused jobs
+```
+
+Sync is idempotent: it creates missing jobs, never edits or resumes an existing one. Resume a role
+only when its preconditions hold:
+
+```bash
+sudo -u hermes-agent hermes cron resume ai-pr-automation-memory-curate
+```
+
+`memory-curate` uses the `local/fleet` sentinel and can self-refresh its freshness, so it is safe to
+resume standalone. The repo-scoped roles (`pr-review`, `pr-maintain`) require enrollment proof
+refreshed within ten minutes of every claim, and that proof re-query needs the operator GitHub token
+that `hermes-agent` does not hold. Do not resume them until an operator-side evidence producer keeps
+their enrollment fresh; otherwise every claim fails the freshness gate.
+
 ## Per-Role Activation
 
 Each role activates behind the same exclusive cutover:
