@@ -163,6 +163,12 @@ apply. They authorize through a reserved `local/fleet` sentinel enrollment creat
 split both ways: a local kind must use the sentinel, and the sentinel cannot authorize a repo-scoped
 kind. The same ten-minute freshness, security-definer API, and no-direct-DML rules apply.
 
+`bin/hermes-memory-curate` runs the `memory-curate-v1` profile as a proposer only: it gathers source
+material since the watermark, the profile proposes durable memories as strict JSON, and the runner is
+the write gate. A deterministic filter drops secret, provenance, wrong-shape, too-short/long,
+unsourced-convention, and near-duplicate content before any Hindsight write, and the watermark
+advances only on a successful model run. The model never holds the write path.
+
 ## Per-Role Activation
 
 Each role activates behind the same exclusive cutover:
