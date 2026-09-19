@@ -8,11 +8,18 @@ cat > "$tmp/bin/psql" <<'SH'
 set -euo pipefail
 args="$*"; input="$(cat || true)"
 if [[ "$args" == *hermes_claim_request* ]]; then
-  jq -cn '{id:7,kind:"swe-implement",payload:{repo:"owner/repo",source:"prompt",prompt:"change"},dedupe_key:"swe:test"}'
+  if [[ "$args" == *pr-review* ]]; then
+    jq -cn '{id:8,kind:"pr-review",payload:{repo:"owner/repo",number:9},dedupe_key:"owner/repo#9@head"}'
+  else
+    jq -cn '{id:7,kind:"swe-implement",payload:{repo:"owner/repo",source:"prompt",prompt:"change"},dedupe_key:"swe:test"}'
+  fi
 elif [[ "$args" == *hermes_renew_request* ]]; then
   echo t
 elif [[ "$input" == *hermes_settle_swe_request* ]]; then
   printf '%s\n' "$input" > "$TEST_STATE/settle.sql"
+  echo t
+elif [[ "$input" == *hermes_settle_request* ]]; then
+  printf '%s\n' "$input" > "$TEST_STATE/settle-generic.sql"
   echo t
 else
   exit 2
@@ -36,8 +43,18 @@ grep -Fxq 'swe-implement-v1' "$tmp/hermes.args"
 grep -q 'hermes_settle_swe_request' "$tmp/settle.sql"
 grep -Fq 'provider: anthropic' agent-config/hermes/profiles/swe-implement-v1/config.yaml
 grep -Fq 'default: claude-sonnet-4-6' agent-config/hermes/profiles/swe-implement-v1/config.yaml
+
+rm -f "$tmp/hermes.args"
+PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK_ROOT="$tmp/work" \
+  HERMES_QUEUE_LEASE_SECONDS=120 REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake \
+  bin/hermes-queue-runner pr-review | grep -q 'request=8 status=done'
+grep -Fxq 'pr-review-v1' "$tmp/hermes.args"
+grep -q 'hermes_settle_request' "$tmp/settle-generic.sql"
+grep -q 'untrusted-pr-data' "$tmp/work/8-"*/prompt.md
+grep -Fq 'provider: anthropic' agent-config/hermes/profiles/pr-review-v1/config.yaml
+
 if PATH="$tmp/bin:$PATH" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK_ROOT="$tmp/work" \
   REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake bin/hermes-queue-runner unknown >/dev/null 2>&1; then
   echo 'FAIL: unknown kind accepted' >&2; exit 1
 fi
-echo 'PASS: shared Hermes queue runner maps SWE and settles typed result'
+echo 'PASS: shared Hermes queue runner maps SWE and PR-review and settles typed results'

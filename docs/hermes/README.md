@@ -131,6 +131,11 @@ matching immutable profile, does the work in an ephemeral worktree, and settles 
 kind→profile map is fixed. `bin/hermes-postgres-watchdog` stops the gateway before it can claim
 against a missing queue.
 
+Mapped kinds: `swe-implement` → `swe-implement-v1` (typed SWE settle, draft-PR URL); `pr-review` →
+`pr-review-v1` (generic settle, exact-head marker). `pr-review-v1` resolves the head, refuses to
+approve an incomplete or superseded diff, and posts one review per head; branch protection keeps merge
+human-owned.
+
 ## Autonomy Capability Check
 
 Before activating credentials, prove the boundary once against a live repository. Generate evidence,
