@@ -98,194 +98,89 @@ M0 focused validation passed after merge. No M0 PR activates Hermes.
 
 No M2a PR routes a doc request through Hermes or makes a paid provider call.
 
-## Static Compose Check
-
-Static validation only:
-
-```bash
-scripts/compose.sh --profile hermes-m0 config --quiet
-```
-
-This renders opt-in service shape. Do not run `up` with real provider credentials yet.
-
-M2a adds reviewed zero-tool config and a dedicated OpenAI-only egress proxy. Validate without a
-real provider key:
-
-```bash
-bash tests/test-hermes-compose-contract.sh
-bash tests/test-hermes-doc-egress.sh
-bash tests/test-hermes-doc-spikes.sh
-bash tests/test-hermes-doc-quarantine.sh
-bash tests/test-hermes-doc-gate.sh
-```
-
-Generate the owner-only M2a evidence report after focused checks pass:
-
-```bash
-scripts/hermes-doc-gate.py run
-```
-
-The report proves the non-routing foundation only. It cannot approve a real provider key, paid call,
-or Hermes-routed document request.
-
 ## Account OAuth
 
-Use supported lifecycle wrapper only. Login stops Hermes and leaves it stopped.
-
-OpenAI Codex:
-
-```bash
-scripts/hermes-oauth.sh login openai-codex
-scripts/hermes-oauth.sh status openai-codex
-scripts/hermes-oauth.sh start
-```
-
-Open shown device URL in browser and enter shown code. Token stays in `hermes_doc_state`; it is not
-stored in `.env`. Check or remove login with:
+Provider credentials live in the `hermes-agent` account's `~/.hermes/.env`, never in repo `.env`.
+Log the service account into a provider before activating any paid role:
 
 ```bash
-scripts/hermes-oauth.sh status openai-codex
-scripts/hermes-oauth.sh logout openai-codex
+sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
+  /Users/hermes-agent/.local/bin/hermes auth add anthropic --type oauth --no-browser
+sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
+  /Users/hermes-agent/.local/bin/hermes auth status anthropic
 ```
 
-Claude Pro/Max:
+OpenAI Codex uses the same flow with `openai-codex`. If a token is exposed, revoke it at the provider
+before local logout. Each immutable profile pins its own `model.provider` / `model.default`.
+
+## Host-Native Runtime
+
+One pinned Hermes runs every role under `hermes-agent`. Install and manage the gateway with:
 
 ```bash
-scripts/hermes-oauth.sh login anthropic
-scripts/hermes-oauth.sh status anthropic
-scripts/hermes-oauth.sh start
-scripts/hermes-oauth.sh logout anthropic
+sudo scripts/hermes-native.sh install         # pinned Hermes for the service account
+sudo scripts/hermes-native.sh sync-profiles    # install immutable profiles
+sudo scripts/hermes-native.sh start            # load LaunchDaemon (after gates approved)
+sudo scripts/hermes-native.sh stop             # maintenance mode; stops the gateway
+scripts/hermes-native.sh status
+scripts/hermes-native.sh logs
 ```
 
-Anthropic shows a browser URL, then asks you to paste returned authorization code. Requested scopes:
-`org:create_api_key user:profile user:inference`.
+`bin/hermes-queue-runner <kind>` claims one request, renders it as untrusted task data into the
+matching immutable profile, does the work in an ephemeral worktree, and settles a typed result. The
+kind→profile map is fixed. `bin/hermes-postgres-watchdog` stops the gateway before it can claim
+against a missing queue.
 
-If token is exposed, revoke it from provider account before local logout.
+## Autonomy Capability Check
 
-## Dashboard
-
-Set dashboard credentials in `.env`:
+Before activating credentials, prove the boundary once against a live repository. Generate evidence,
+validate denials, and enroll:
 
 ```bash
-HERMES_DASHBOARD_USERNAME=hermes
-HERMES_DASHBOARD_PASSWORD=<random-password>
+scripts/hermes-repo-gate.py evidence.json      # server-side denials hold
+scripts/hermes-repo-enroll.py evidence.json    # record runtime repository authority
 ```
 
-Start the localhost-only authenticated dashboard:
+Evidence binds repository, credential fingerprint, ruleset, workflow, and environment-policy digests,
+required denials (protected push, unsafe workflow execution, deployment, administration), and allowed
+actions (unprotected push, draft PR, review). Enrollment proof must be refreshed within ten minutes of
+an enqueue or claim; `scripts/hermes-authority-watch.py` refreshes it or invalidates enrollment when
+an authority digest changes. Merge stays a human GitHub decision, not a hard credential boundary.
 
-```bash
-scripts/compose.sh --profile hermes-dashboard up -d hermes-dashboard-proxy
-```
+## Per-Role Activation
 
-Open http://127.0.0.1:9119. Dedicated dashboard reads the Hermes state volume on an internal
-network. Credential-free proxy owns host port; model gateway remains isolated behind provider egress.
+Each role activates behind the same exclusive cutover:
 
-## Document Runtime
-
-`doc-writer-server` now defaults to Hermes for draft and council model calls. Controller still owns
-queue state, questions, exact-byte approval, and publication.
-
-Set `HERMES_DOC_OPENAI_API_KEY` and the exact merged gate value in
-`HERMES_DOC_APPROVED_GENERATION`, then start:
-
-```bash
-scripts/compose.sh --profile doc-writer up -d --build doc-writer-server
-```
-
-First Hermes failure or reconciliation stops controller before another claim. Roll back without
-waiting for Hermes:
-
-```bash
-scripts/compose.sh --profile doc-writer stop doc-writer-server
-DOC_WRITER_RUNTIME=legacy scripts/compose.sh --profile doc-writer \
-  up -d --no-deps --force-recreate doc-writer-server
-```
-
-Legacy rollback expects database, Hindsight, and Coderag services already running.
-
-## PR Review Runtime
-
-`agent-server-review` now sends immutable PR metadata, description, and capped diff to zero-tool
-Hermes. Agent server validates typed output and owns every GitHub review write. Hermes receives no
-GitHub credential or repository mount.
-
-PR-review rollback uses `--no-deps` so Compose does not start Hermes. Set
-`AGENT_SERVER_REVIEW_CHILD_GH_TOKEN` to a separate read-only token, or leave it empty to deny the
-legacy child GitHub access; `GH_TOKEN` remains the controller's publisher token.
-
-```bash
-scripts/compose.sh stop agent-server-review
-AGENT_SERVER_REVIEW_RUNTIME=legacy scripts/compose.sh \
-  up -d --no-deps --force-recreate agent-server-review
-```
-
-Database, Hindsight, Coderag, SwarmVault, and their completed preflights must already be running.
-
-## PR Maintenance Runtime
-
-`agent-server-maintain` uses a dedicated pinned Hermes image with terminal and file tools. Existing
-controller still owns queue leases, three-round cap, exact PR branch/head push gate, CI policy, and
-human escalation. Hermes ignores repository rule files and gets one bounded fix pass.
-
-Rollback rebuilds `agent-server-maintain` with `Dockerfile.agent-server` and
-`mewritecode-runner.sh`; queue and round history stay unchanged.
-
-## Baseline
-
-Load request-DB settings, then collect near current time.
-
-macOS:
-
-```bash
-set -a; . ./.env; set +a
-export PGPASSWORD="$REQUESTS_DB_PASSWORD"
-end="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-start="$(date -u -v-14d '+%Y-%m-%dT%H:%M:%SZ')"
-scripts/hermes-baseline.py --start "$start" --end "$end"
-```
-
-Linux:
-
-```bash
-set -a; . ./.env; set +a
-export PGPASSWORD="$REQUESTS_DB_PASSWORD"
-end="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-start="$(date -u -d '14 days ago' '+%Y-%m-%dT%H:%M:%SZ')"
-scripts/hermes-baseline.py --start "$start" --end "$end"
-```
-
-Collector uses current queue/pending state, so `--end` must be within five minutes of collection. Duplicate-effect and missed-eligible audits remain `unavailable` until later target inventory exists.
+1. Confirm the queue has no in-flight row for the kind.
+2. Enroll the target repository with fresh evidence.
+3. Enqueue one bounded task through the security-definer queue function.
+4. Run `bin/hermes-queue-runner <kind>` once and verify a single claimant, the typed result, and the
+   expected draft PR or review.
+5. Leave the executor paused until standing activation is approved.
 
 ## Validation
 
-After M0 PRs merge:
-
 ```bash
-bash tests/test-hermes-compose-contract.sh
-bash tests/test-compose-producers.sh
-python3 tests/test-hermes-baseline.py
+bash tests/test-hermes-queue-runner.sh
+bash tests/test-hermes-autonomy-gate.sh
+bash tests/test-hermes-native-foundation.sh
 bash tests/test-hermes-state-roundtrip.sh
+python3 tests/test-status-server.py
 ```
 
-## M0 Limits
+## Boundaries
 
-M0 proves:
+The runtime proves:
 
-- exact Hermes image pin;
-- profile-gated Compose shape;
-- unchanged default service set;
-- read-only baseline metrics;
-- isolated state-volume archive integrity.
+- exact Hermes image and native commit pin;
+- immutable profile per queue kind;
+- enrollment as sole runtime repository authority;
+- least-privilege security-definer queue API;
+- server-side denial of protected push, merge, unsafe workflow execution, deployment, administration.
 
-M0 does not prove:
+The runtime does not grant:
 
-- safe Hermes model execution;
-- no-tools or memory-disabled profile;
-- provider-only egress;
-- production backup or clean-host restore;
-- route cutover or 15-minute rollback;
-- run-attempt ownership;
-- document-effect recovery;
-- scheduler slot accounting or route fencing.
-
-Execute M2a non-routing plan next. M2b paid shadow/live pilot needs separate plan-to-launch and human approval. M1 follows M2 evidence.
+- human GitHub token, SSH, Keychain, or Fleet Controller secret access;
+- protected-branch or default-branch push;
+- API merge, deployment, release, or administration;
+- exact-byte document publication without human approval.

@@ -1,35 +1,31 @@
-# M0 — Agent fleet substrate
+# Agent fleet support substrate
 
-One `docker-compose.yml` (repo root) + this dir. Stands up the services the leased agent workers
-(M1) depend on. **Inert until M1 wires them** — merging M0 changes no behavior.
+One `docker-compose.yml` (repo root) + this dir. Compose renders **support services only**: the
+Postgres request queue, Hindsight memory, coderag, swarmvault, and the Fleet Controller UI. AI
+execution runs host-native under the `hermes-agent` account (see
+[`../docs/hermes/README.md`](../docs/hermes/README.md)); no AI worker runs in Compose.
 
 ## Bring it up
 
 ```bash
-cp .env.example .env      # then edit: CODE_ROOT, passwords, provider, producer repo/org scope
-scripts/compose.sh up -d --build  # validates vault path, then builds producers, workers, and substrate
-scripts/m0-verify.sh      # runs the six exit checks
-scripts/verify-agent-mcps.sh # verifies worker MCP client -> bridge -> tool calls
+cp .env.example .env      # then edit: CODE_ROOT, passwords, Hindsight provider, vault path
+scripts/compose.sh up -d --build  # validates vault path, then builds and starts support services
+scripts/m0-verify.sh      # substrate checks (Postgres, Hindsight, swarmvault, coderag)
 ```
 
-First lease upgrade is a stop-the-world worker cutover: stop old agent-server containers, run
-`schema-migrate`, then start only the new image. Do not overlap pre-lease and lease-aware workers.
+Schema upgrades for an existing database volume run through the `schema-migrate` service, which
+reapplies additive `docker/initdb/0[2-9]-*.sql` migrations. `01-schema.sql` is the immutable
+fresh-install baseline.
 
-Scale maintain capacity without partition config:
+## Queue and reconciliation
 
-```bash
-scripts/compose.sh up -d --scale agent-server-maintain=3
-scripts/compose.sh up -d --scale agent-server-maintain=1  # scale back down
-```
-
-Each worker renews its Postgres lease. Different PR lineages run in parallel; one partial unique
-index prevents two workers from maintaining the same PR. Scale-down drains active work for up to
-`stop_grace_period`. After abrupt worker removal, untouched work becomes claimable when
-`AGENT_SERVER_LEASE_SECONDS` expires. Work that crossed the maintenance side-effect boundary enters
-`reconcile` instead of replaying a possible push or reply. Lease duration must cover two heartbeat
-plus DB-timeout windows; defaults are 120s/30s/10s. `reconcile` rows appear in status Recent list. Verify GitHub state before manually
-marking one `done` or returning it to `queued`; automatic producer retries stay blocked for that head.
-Use one audited transaction after inspecting request ID and remote PR:
+The host-native runtime claims requests with a renewable Postgres lease. Different PR lineages run in
+parallel; a partial unique index prevents two claimants working the same head. After an abrupt stop,
+untouched work becomes claimable when the lease expires. Work that crossed a side-effect boundary
+enters `reconcile` instead of replaying a possible push or reply. `reconcile` rows appear in the Fleet
+Controller Recent list. Verify GitHub state before manually marking one `done` or returning it to
+`queued`; automatic retries stay blocked for that head. Use one audited transaction after inspecting
+the request ID and remote PR:
 
 ```sql
 -- Effects landed: UPDATE requests SET status='done', posted_ref='manually-reconciled',
@@ -40,24 +36,14 @@ Use one audited transaction after inspecting request ID and remote PR:
 --   WHERE id=123 AND status='reconcile';
 ```
 
-Open `https://localhost:8080` for agent status. Blocked `pr-maintain` findings appear in its
+Open `https://127.0.0.1:8080` for the Fleet Controller. Blocked `pr-maintain` findings appear in its
 human-review queue with an **Open PR** link, agent summary, findings, and local **Reviewed** /
 **Dismiss** controls. These controls do not write to GitHub.
 
-Agents use the Hindsight MCP endpoint bound to `fleet-shared`; no human approval is required.
-Prompts default to no retain call and allow only durable, non-obvious conclusions that could change
-a future agent's action, such as decisions with rationale, recurring root causes, undocumented
-conventions, or cross-run gotchas. Review completion, verdicts, run status, clean/test results, PR
-provenance, one-off findings, raw PR text, comments, secrets, personal data, and recalled content are
-excluded.
+## What runs as a service
 
-Pending decisions created by older workers remain visible. Their **Approve**, **Reject**, and
-**Retry** controls stay available for draining that legacy queue.
-
-## What runs as a service vs. what does not
-
-Verified 2026-09-02 by reading each upstream repo. **All memory services are persistent + shared
-across agents** — the transport differs but none is spawned-fresh-per-agent-with-private-state:
+**All memory services are persistent + shared across agents** — the transport differs but none is
+spawned fresh per agent with private state:
 
 | Service | Shared how | In compose? |
 |---|---|---|
@@ -66,29 +52,26 @@ across agents** — the transport differs but none is spawned-fresh-per-agent-wi
 | coderag (codebase-memory-mcp) | **shared coordination daemon** + per-agent thin stdio frontend | yes, `up` (daemon) |
 | swarmvault | **shared vault volume + `watch` daemon**; internal HTTP MCP bridge | yes, `up` |
 
-### coderag — native shared daemon (verified)
+### coderag — native shared daemon
 
 CBM ships a **per-account coordination daemon** that owns the shared knowledge graph, background
-watchers, continuous indexing, and the UI (:9749). The first session starts it; each agent runs a
-**thin stdio MCP frontend** that registers a session against the shared daemon (clean JSON-RPC on
-stdout; the daemon owns long-lived state). All CBM processes MUST share one canonical cache root
-(`CBM_CACHE_DIR`) and the exact same build — a different root is rejected while any process is
-active. So "persistent + shared" is coderag's native design. The Coderag container bridges its
-stdio frontend to `http://coderag:9750/mcp` on the Compose network. It runs bridge and daemon together
-so the bridge cannot create a private graph. Agent workers use this endpoint through `mcp-remote`.
+watchers, continuous indexing, and the UI (:9749). Each agent runs a **thin stdio MCP frontend** that
+registers a session against the shared daemon. All CBM processes MUST share one canonical cache root
+(`CBM_CACHE_DIR`) and the exact same build — a different root is rejected while any process is active.
+The coderag container bridges its stdio frontend to `http://coderag:9750/mcp` on the Compose network
+and runs bridge and daemon together so the bridge cannot create a private graph. Its index is confined
+to the read-only `/code` mount.
 
-### swarmvault — shared vault + doc-drop model (verified)
+### swarmvault — shared vault + doc-drop model
 
-swarmvault's MCP is stdio, but sharing does NOT go through the MCP as a content-write path. Model:
+swarmvault's MCP is stdio, but sharing does not go through the MCP as a content-write path:
 
-- One **Finder-visible shared vault dir** outside `CODE_ROOT`; persistent watcher ingests it.
-- `swarmvault-mcp` exposes Streamable HTTP at `http://swarmvault-mcp:9760/mcp` on the Compose
-  network. It mounts the vault read-only, so agent MCP calls cannot write or promote content.
-- Agents use the MCP for read/query. The watcher is the only fleet component with vault write access.
-- Content-trust gate still applies to the SHARED vault: a malicious PR could make an agent drop an
-  injected doc and trigger ingest → poisoned recall. Run-scoped scratch docs = free; promotion into
-  the shared vault = server-gated + provenance-tagged (same discipline as hindsight; enforced in M1
-  write-path).
+- One **Finder-visible shared vault dir** outside `CODE_ROOT`; a persistent watcher ingests it.
+- `swarmvault-mcp` exposes Streamable HTTP at `http://swarmvault-mcp:9760/mcp`, mounting the vault
+  read-only, so MCP calls cannot write or promote content.
+- The watcher is the only fleet component with vault write access.
+- Content-trust still applies: run-scoped scratch docs are free; promotion into the shared vault is
+  server-gated and provenance-tagged.
 
 ## Building the optional services
 
@@ -97,71 +80,29 @@ scripts/compose.sh build coderag swarmvault-watch swarmvault-mcp
 scripts/compose.sh up -d coderag swarmvault-watch swarmvault-mcp
 ```
 
-Both images build from pinned upstream commits. `coderag` starts codebase-memory-mcp's permanent
-daemon and exposes its UI only at `http://localhost:9749`; its index is confined to the read-only
-`/code` mount. `swarmvault-watch` initializes an empty mounted vault once, then
-watches its inbox. The coderag entrypoint rejects codebase-memory-mcp lifecycle commands that could
-mutate agent configuration.
+Both images build from pinned upstream commits. The coderag entrypoint rejects codebase-memory-mcp
+lifecycle commands that could mutate agent configuration.
 
-coderag can only index paths selected beneath its read-only `/code` mount. This setup does not
-configure automatic indexing or watcher scope; agents still own their worktree diffs.
+## hindsight provider
 
-## Open items (resolve at implementation — do not commit a secret regardless)
+hindsight runs an LLM to extract facts on every `retain`, so `HINDSIGHT_API_LLM_API_KEY` must be set
+with a keyed provider (`HINDSIGHT_API_LLM_PROVIDER=openai` verified end to end). Keyless subscription
+providers (`claude-code`) do NOT work headless in a container — there is no logged-in session inside
+it. Agents recall from the bank-scoped `http://hindsight:8888/mcp/fleet-shared/` endpoint; the shared
+bank is locked to a read-only MCP tool set by `hindsight-bank-init` so agents cannot self-retain junk.
 
-1. **hindsight needs a keyed LLM provider.** hindsight runs an LLM to extract facts on every
-   `retain`, so `HINDSIGHT_API_LLM_API_KEY` must be set (verified: e2e worked with
-   `HINDSIGHT_API_LLM_PROVIDER=openai` + key). Keyless subscription providers (`claude-code`)
-   do NOT work headless in a container — there is no logged-in session inside the container
-   (`Not logged in · Please run /login`). Do not use them for an unattended server; use a keyed
-   provider.
-2. **hindsight agent wiring.** Complete. Agents use the bank-scoped
-   `http://hindsight:8888/mcp/fleet-shared/` endpoint through `mcp-remote --allow-http`.
-3. **coderag agent wiring.** Complete. Agents use `http://coderag:9750/mcp` and
-   `http://swarmvault-mcp:9760/mcp` through `mcp-remote --allow-http`; they mount neither Coderag
-   cache nor vault.
+**hindsight data + PG major version:** `hindsight_pgdata` is mounted at the fixed pg18 PGDATA path
+(`/var/lib/postgresql/18/docker`) and the db image is pinned to `pgvector/pgvector:pg18`. The mount
+path is version-specific; older tags (e.g. `pg16`) use a different PGDATA
+(`/var/lib/postgresql/data`), so changing the tag without migrating would mount the volume at the
+wrong path and silently re-init an empty cluster — data loss, no error. To move majors, do a
+`pg_upgrade` or dump/restore and update both the pinned tag and the mount path together.
 
 ## Schema
 
 `docker/initdb/01-schema.sql` loads once on first Postgres boot. `requests` stores queue records;
-`pending_decisions` remains for compatibility with older workers that used human-gated memory. The
-`schema-migrate` service reapplies additive schema changes for existing database volumes, including
-`pending_maintenance_reviews`, the local queue for maintenance findings needing human judgment, and
-pending-decision `publishing` recovery fields.
-Validated against postgres:16: dedupe index blocks two active rows for the same `(kind, dedupe_key)`;
-running-lineage index blocks concurrent work on different heads of the same PR; expired attempts are
-nonce-fenced and reclaimed.
-
-**hindsight data + PG major version:** `hindsight_pgdata` is mounted at the fixed pg18 PGDATA path
-(`/var/lib/postgresql/18/docker`) and the db image is pinned to `pgvector/pgvector:pg18`. This is
-deliberate: the mount path is version-specific, and older tags (e.g. `pg16`) use a *different*
-PGDATA (`/var/lib/postgresql/data`), so changing the tag without migrating would mount the volume
-at the wrong path and silently re-init an empty cluster — data loss, no error. To move majors, do a
-`pg_upgrade` or dump/restore and update both the pinned tag and the mount path together.
-
-## Producers (M2)
-
-Compose runs `pr-producer-review` and `pr-producer-maintain` every
-`PR_PRODUCER_INTERVAL_SECONDS` (default 900). `bin/pr-producer <review|maintain>` is enqueue-only: it
-discovers matching PRs (assigned for `review`, authored for `maintain`), applies the repo allowlist
-and stale-age cutoff, resolves each PR's head sha, and inserts one `requests` row per PR
-(`dedupe_key = repo#num@headsha`). It never runs the agent — scalable `bin/agent-server` workers
-drain the queue through leased claims.
-
-Configure `PR_PRODUCER_REPOSITORIES` or `PR_PRODUCER_ORGS` in `.env`, then inspect discovery logs:
-
-```bash
-scripts/compose.sh logs -f pr-producer-review pr-producer-maintain
-```
-
-Before enabling these services on an existing host, unload legacy launchd/systemd producer jobs to
-avoid duplicate GitHub discovery traffic. Queue dedupe prevents duplicate active rows during the
-cutover.
-
-Dedupe is two-layered (see `lib/queue.sh`):
-- the partial unique index blocks a second **active** (queued|running) row for the same key;
-- `queue_enqueue` also skips a key already queued/running/**done**, so re-runs don't create churn rows;
-  a **failed** head IS re-enqueued (a transient error should retry; permanent poison-PR protection is a future `max_attempts` concern, not a dead-letter here).
-- a PR whose head advanced gets a **new** dedupe_key → a fresh row (re-review on the new commit).
-
-Legacy launchd templates and `scripts/producer-launch.sh` remain available for hosts that cannot run
-the Compose producer services. The old `bin/pr-automation` inline loop remains retired.
+`pending_decisions` remains for compatibility with older records. Validated against postgres:16: the
+dedupe index blocks two active rows for the same `(kind, dedupe_key)`; the running-lineage index
+blocks concurrent work on different heads of the same PR; expired attempts are nonce-fenced and
+reclaimed. `07-hermes-autonomy.sql` and `08-hermes-swe-pilot.sql` add the enrollment table and the
+security-definer queue functions that are the runtime's sole repository authority.
