@@ -10,6 +10,8 @@ args="$*"; input="$(cat || true)"
 if [[ "$args" == *hermes_claim_request* ]]; then
   if [[ "$args" == *pr-review* ]]; then
     jq -cn '{id:8,kind:"pr-review",payload:{repo:"owner/repo",number:9},dedupe_key:"owner/repo#9@head"}'
+  elif [[ "$args" == *pr-maintain* ]]; then
+    jq -cn '{id:12,kind:"pr-maintain",payload:{repo:"owner/repo",number:9},dedupe_key:"owner/repo#9@head"}'
   else
     jq -cn '{id:7,kind:"swe-implement",payload:{repo:"owner/repo",source:"prompt",prompt:"change"},dedupe_key:"swe:test"}'
   fi
@@ -53,8 +55,16 @@ grep -q 'hermes_settle_request' "$tmp/settle-generic.sql"
 grep -q 'untrusted-pr-data' "$tmp/work/8-"*/prompt.md
 grep -Fq 'provider: anthropic' agent-config/hermes/profiles/pr-review-v1/config.yaml
 
+rm -f "$tmp/hermes.args" "$tmp/settle-generic.sql"
+PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK_ROOT="$tmp/work" \
+  HERMES_QUEUE_LEASE_SECONDS=120 REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake \
+  bin/hermes-queue-runner pr-maintain | grep -q 'request=12 status=done'
+grep -Fxq 'pr-maintain-v1' "$tmp/hermes.args"
+grep -q 'hermes_settle_request' "$tmp/settle-generic.sql"
+grep -Fq 'provider: anthropic' agent-config/hermes/profiles/pr-maintain-v1/config.yaml
+
 if PATH="$tmp/bin:$PATH" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK_ROOT="$tmp/work" \
   REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake bin/hermes-queue-runner unknown >/dev/null 2>&1; then
   echo 'FAIL: unknown kind accepted' >&2; exit 1
 fi
-echo 'PASS: shared Hermes queue runner maps SWE and PR-review and settles typed results'
+echo 'PASS: shared Hermes queue runner maps SWE, PR-review, and PR-maintain and settles typed results'
