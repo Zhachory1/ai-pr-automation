@@ -155,6 +155,14 @@ actions (unprotected push, draft PR, review). Enrollment proof must be refreshed
 an enqueue or claim; `scripts/hermes-authority-watch.py` refreshes it or invalidates enrollment when
 an authority digest changes. Merge stays a human GitHub decision, not a hard credential boundary.
 
+### Local (non-repo) roles
+
+`doc-write` and `memory-curate` touch no GitHub repository, so the GitHub capability probes do not
+apply. They authorize through a reserved `local/fleet` sentinel enrollment created by
+`scripts/hermes-local-enroll.py` from a minimal authority digest. The queue functions enforce the
+split both ways: a local kind must use the sentinel, and the sentinel cannot authorize a repo-scoped
+kind. The same ten-minute freshness, security-definer API, and no-direct-DML rules apply.
+
 ## Per-Role Activation
 
 Each role activates behind the same exclusive cutover:

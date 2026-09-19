@@ -15,7 +15,7 @@ docker run --rm -d --name "$container" -e POSTGRES_PASSWORD=test -e POSTGRES_DB=
   -p "$port:5432" postgres:16 >/dev/null
 for _ in $(seq 1 30); do docker exec "$container" psql -U postgres -d fleet -c 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$container" psql -U postgres -d fleet -c 'SELECT 1' >/dev/null
-for sql in 01-schema.sql 02-agent-server.sql 07-hermes-autonomy.sql 08-hermes-swe-pilot.sql; do
+for sql in 01-schema.sql 02-agent-server.sql 07-hermes-autonomy.sql 08-hermes-swe-pilot.sql 09-hermes-local-roles.sql; do
   docker cp "docker/initdb/$sql" "$container:/tmp/$sql"
   docker exec "$container" psql -U postgres -d fleet -v ON_ERROR_STOP=1 -qf "/tmp/$sql"
 done
