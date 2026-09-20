@@ -102,17 +102,17 @@ Never mount or configure a CA key in Compose. Set all five `FLEET_CONTROLLER_*_F
 Open https://127.0.0.1:8080 and sign in. Session lifetime defaults to 12 hours. Fleet Controller
 keeps localhost, Host, Origin, and CSRF checks in addition to login.
 
-Then install the host-native runtime under `hermes-agent` and enroll a repository:
+Then install the host-native runtime under `hermes-agent` and grant a repository:
 
 ```bash
 sudo scripts/hermes-native.sh install          # pinned Hermes for the service account
 sudo scripts/hermes-native.sh sync-profiles     # install immutable profiles
-scripts/hermes-repo-gate.py <evidence.json>      # prove server-side denials hold
-scripts/hermes-repo-enroll.py <evidence.json>    # record runtime repository authority
+# grant repos in the authority YAML (see agent-config/hermes/authority.example.yaml)
+scripts/hermes-authority.py --check Zhachory1/ai-pr-automation
 ```
 
-See [`docs/hermes/README.md`](docs/hermes/README.md) for evidence generation, the autonomy capability
-check, and per-role activation.
+See [`docs/hermes/README.md`](docs/hermes/README.md) for the authority allowlist and per-role
+activation.
 
 ### Fleet Controller rollback
 
@@ -180,7 +180,7 @@ cannot pile up duplicate queued jobs.
 
 Required posture:
 
-- Enroll each repository through `scripts/hermes-repo-gate.py`; the runtime refuses unenrolled repos.
+- Grant each repository in the authority YAML; producers only enqueue work for granted repos.
 - The deploy key pushes feature branches only; branch protection blocks protected-branch and merge.
 - The read-only API token cannot merge; merge is a human GitHub action.
 - Confirm whether private repository content may be sent to the selected provider before enrolling.
@@ -194,8 +194,9 @@ bash tests/test-queue-injection.sh
 bash tests/test-single-instance.sh
 # host-native queue runner: kind→profile map and typed settle
 bash tests/test-hermes-queue-runner.sh
-# autonomy enrollment gate: capability proof and least-privilege queue API
-bash tests/test-hermes-autonomy-gate.sh
+# collapsed queue API + YAML authority allowlist
+bash tests/test-hermes-queue-authority.sh
+bash tests/test-hermes-authority.sh
 # Fleet Controller auth and session controls
 python3 tests/test-status-server.py
 ```
