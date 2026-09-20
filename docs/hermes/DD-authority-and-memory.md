@@ -10,7 +10,8 @@ authority model for shared-memory curation.
 1. **GitHub reauth friction.** The autonomy gate requires an enrollment proof refreshed within ten
    minutes of every enqueue or claim (`hermes_repository_authorized`, from #150). Nothing refreshes
    it automatically, so the operator re-runs evidence generation by hand before every pilot. Repo
-   roles (`pr-review`, `pr-maintain`) cannot run hands-off.
+   roles (`pr-review`, `pr-maintain`) cannot run hands-off. The deeper issue: the gate re-proves
+   branch protection client-side, duplicating the server-side wall that already enforces it.
 
 2. **Wrong authority model for memory.** memory-curate was gated behind the same enrollment
    machinery via a `local/fleet` sentinel the operator enrolls by hand. But memory has no externally
@@ -21,26 +22,30 @@ authority model for shared-memory curation.
 
 ## Decisions
 
-### GitHub authority: declarative YAML + owner-side reauth producer
+### GitHub authority: declarative YAML grant; branch protection is the wall
+
+Corrected model (operator decision): **branch protection is the enforcement boundary. The agent does
+not pre-verify it.** If the agent hits a protected-branch, merge, or permission denial, it stops and
+reconciles. The server-side wall already stops the disallowed action, so re-proving it client-side
+every cycle is theater — the same reasoning that removed the freshness gate from memory.
 
 - The operator maintains an **authority YAML** outside `CODE_ROOT` and git
-  (`/Users/Shared/zhach-ai-pr-automation/authority.yaml`). It lists the repositories the operator
-  intends to authorize and the expected server-side policy. This file is *declared intent*, owned by
-  the human.
-- A **reauth producer** runs as the operator (not `hermes-agent`), on a short interval (~5 min), via
-  launchd. Each cycle it reads the YAML, **re-queries live GitHub branch protection with the owner
-  token**, recomputes the evidence digest, runs `scripts/hermes-repo-gate.py`, and refreshes the
-  enrollment `checked_at` through `scripts/hermes-repo-enroll.py` / `hermes-authority-watch.py`.
-- The gate keeps its teeth: if protection actually weakened or a credential rotated, the recomputed
-  digest changes, the proof does not match, and the claim fails — exactly the #150 contract. Auto
-  reauth is safe **only because it re-verifies live each cycle**, never rubber-stamps.
-- **Revocation** = remove the repo from the YAML. The producer stops refreshing it; the proof goes
-  stale within ten minutes; the agent stops claiming that repo. Instant hard stop is still
-  `UPDATE hermes_repository_enrollments SET active=false`.
-- **Boundary preserved:** the YAML is the operator's allowlist of intent; the producer holds the
-  owner token and lives outside the agent account; `hermes-agent` never sees the token and only
-  benefits from fresh proof. This is the "enrollment-evidence producer" flagged as missing in the
-  cron-sync PR.
+  (`/Users/Shared/zhach-ai-pr-automation/authority.yaml`). It is simply the operator's **grant of
+  repo space**: "you may write to and use these repositories." It is permission intent, not a
+  security proof, and carries no branch-protection or credential digest.
+- The runtime authorizes a repo by presence in the YAML grant. No live GitHub re-query, no owner
+  token in any background job, no ten-minute freshness digest for repo roles.
+- **On a wall:** a protected-branch push, merge, or permission error is a terminal `reconcile` — the
+  agent reads back state and stops; it never retries around the wall.
+- **Revocation** = remove the repo from the YAML (agent loses the grant on next read) and/or the
+  server-side controls that already deny the action. Instant hard stop remains available by disabling
+  the role's cron job.
+- **Boundary preserved:** `hermes-agent` still never holds the owner token; it simply is not needed,
+  because protection enforces server-side rather than being re-checked client-side.
+
+This supersedes the earlier "reauth producer that re-queries live branch protection" idea and the
+#150 ten-minute enrollment-freshness gate for repo roles. Those are removed as redundant with the
+server-side wall.
 
 ### Memory: no enrollment; deterministic gate is the control; two tiers
 
@@ -94,21 +99,25 @@ by memory-curate.
 
 ## Open questions / runtime dependencies
 
-- Confirm the remote memory MCP servers (`memory-ads-success`, `memory-org`) are configured for the
-  `hermes-agent` account and expose `retain`/`recall` with the fields the runner needs (content,
-  tags, sources, dedupe). They are not visible from the current operator session.
+- Confirmed wired in `~/.roktcode/mcp.json`: `memory-ads-success` →
+  `https://rokt-agent-memory.eng.roktinternal.com/mcp/team-ads-success/`; `memory-org` → the
+  `Rokt Builders` bank (org-wide). Bank name is **`team-ads-success`**. Streamable HTTP endpoints.
+  Must confirm the same servers are configured for the `hermes-agent` account (they are configured
+  for the operator account today).
 - `retain` is asynchronous and LLM-rewrites the input, so runner-side dedupe must query `recall`
   before proposing, and cannot assume a just-written memory is immediately recallable.
-- Confirm the exact bank names as the service knows them (`team-ads-success` vs `ads-success`).
 - Decide the internal-topic blocklist source (static list in-repo vs operator-maintained file).
+- The org-wide bank is `Rokt Builders` (via `memory-org`), not literally named `fleet-shared`; map
+  the Tier-2 target to the org bank the service exposes.
 
 ## Work items
 
-1. `authority.yaml` schema + `bin/hermes-authority-reauth` producer + launchd template (owner-run).
+1. `authority.yaml` schema (plain repo-grant list) + runtime reads it to authorize a repo; remove
+   the repo-role enrollment/freshness digest path; map protected/permission errors to `reconcile`.
 2. Drop the `local/fleet` sentinel requirement for memory-curate; remove enrollment from its path.
 3. Rewrite the memory-curate write/recall path from local Hindsight REST to the remote memory MCP
-   `retain`/`recall`.
-4. Base gate (exists) + Tier-2 stricter gate for `fleet-shared`; route Tier-1 to `team-ads-success`.
-5. Tests: reauth digest-change failure, revocation-by-removal, base vs stricter gate fixtures,
-   tier routing, dedupe against recall.
+   `retain`/`recall` (`team-ads-success` default; org bank for Tier 2).
+4. Base gate (exists) + Tier-2 stricter gate for the org bank; route Tier-1 to `team-ads-success`.
+5. Tests: repo-grant authorize/deny, wall-hit → reconcile, base vs stricter gate fixtures, tier
+   routing, dedupe against recall.
 6. Docs: update `docs/hermes/README.md` and `docs/memory-curation.md`.
