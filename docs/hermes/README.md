@@ -6,6 +6,7 @@ Status: host-native autonomous migration approved; Fleet Controller auth merged;
 
 - [Host-native autonomous design](DD-host-native-agent-engine.md)
 - [Host-native implementation plan](plan-host-native-autonomous-hermes.md)
+- [Authority auto-reauth and two-tier memory design](DD-authority-and-memory.md)
 - [Roadmap](../hermes-migration-roadmap.md)
 - [Grounding brief](grounding-brief.md)
 - [PRD](PRD-m0-m2.md)
