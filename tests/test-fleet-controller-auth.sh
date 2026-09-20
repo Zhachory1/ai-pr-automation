@@ -46,11 +46,11 @@ FLEET_CONTROLLER_TLS_KEY_FILE=$tmp/secrets/controller.key
 EOF
 cp "$tmp/test.env" "$tmp/project/.env"
 scripts/validate-fleet-controller-secrets.py --env-file "$tmp/test.env" --repo "$tmp/project" >/dev/null
-if HERMES_OAUTH_LOCK_HELD=1 CODE_ROOT="$tmp/code" SWARMVAULT_VAULT="$tmp/secrets" \
+if CODE_ROOT="$tmp/code" SWARMVAULT_VAULT="$tmp/secrets" \
   scripts/compose.sh -f "$tmp/project/docker-compose.yml" up status >/dev/null 2>&1; then
   echo 'FAIL: startup wrapper accepted Compose file override' >&2; exit 1
 fi
-if HERMES_OAUTH_LOCK_HELD=1 COMPOSE_FILE="$tmp/project/docker-compose.yml" \
+if COMPOSE_FILE="$tmp/project/docker-compose.yml" \
   CODE_ROOT="$tmp/code" SWARMVAULT_VAULT="$tmp/secrets" scripts/compose.sh up status >/dev/null 2>&1; then
   echo 'FAIL: startup wrapper accepted COMPOSE_FILE override' >&2; exit 1
 fi
