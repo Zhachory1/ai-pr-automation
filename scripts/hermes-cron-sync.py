@@ -75,15 +75,21 @@ def main():
         raise SystemExit(f"hermes launcher not found at {HERMES}")
 
     have = existing_job_names()
-    planned, created, skipped = [], [], []
+    planned, created, refreshed, skipped = [], [], [], []
     for role, spec in JOBS.items():
         name = f"{NAME_PREFIX}{role}"
+        # The wrapper script is our artifact and must always track the current binary/enqueue logic,
+        # even for an existing job (create skips existing, so a stale wrapper would otherwise persist).
+        if args.apply:
+            before = (SCRIPTS_DIR / f"{name}.sh").read_text() if (SCRIPTS_DIR / f"{name}.sh").exists() else None
+            script = wrapper_script(role, spec)
+            if name in have and before != (SCRIPTS_DIR / f"{name}.sh").read_text():
+                refreshed.append(name)
         if name in have:
             skipped.append(name)
             continue
         planned.append(name)
         if args.apply:
-            script = wrapper_script(role, spec)
             hermes("create", "--no-agent", "--name", name, "--paused",
                    "--paused-reason",
                    ("awaiting enrollment-evidence producer" if spec["repo_scoped"]
@@ -96,6 +102,7 @@ def main():
         "existing": sorted(skipped),
         "planned": sorted(planned),
         "created": sorted(created),
+        "script_refreshed": sorted(refreshed),
         "note": "jobs are PAUSED; resume a role with `hermes cron resume <name>`. "
                 "repo-scoped roles need enrollment proof refreshed <10min before resume.",
     }

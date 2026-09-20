@@ -56,10 +56,20 @@ if grep -q 'hermes_enqueue_local' "$tmp/hermes/scripts/ai-pr-automation-pr-revie
   echo 'FAIL: repo role should not self-enqueue' >&2; exit 1
 fi
 
-# Idempotent: second apply creates nothing (all exist).
+# Idempotent: second apply creates nothing (all exist) and does not rewrite unchanged wrappers.
 out="$(run --apply)"
 [[ "$(jq -r '.created|length' <<<"$out")" == 0 ]] || { echo 'FAIL: not idempotent' >&2; exit 1; }
 [[ "$(jq -r '.existing|length' <<<"$out")" == 3 ]]
+[[ "$(jq -r '.script_refreshed|length' <<<"$out")" == 0 ]] || { echo 'FAIL: rewrote unchanged wrapper' >&2; exit 1; }
 [[ "$(wc -l < "$store" | tr -d ' ')" == 3 ]] || { echo 'FAIL: duplicate jobs created' >&2; exit 1; }
+
+# A stale wrapper for an EXISTING job is refreshed in place (no new job created).
+echo 'stale contents' > "$tmp/hermes/scripts/ai-pr-automation-memory-curate.sh"
+out="$(run --apply)"
+[[ "$(jq -r '.created|length' <<<"$out")" == 0 ]] || { echo 'FAIL: refresh created a job' >&2; exit 1; }
+[[ "$(jq -r '.script_refreshed|join(",")' <<<"$out")" == 'ai-pr-automation-memory-curate' ]] \
+  || { echo "FAIL: stale wrapper not refreshed: $out" >&2; exit 1; }
+grep -q 'hermes_enqueue_local' "$tmp/hermes/scripts/ai-pr-automation-memory-curate.sh" \
+  || { echo 'FAIL: refreshed wrapper missing self-enqueue' >&2; exit 1; }
 
 echo 'PASS: hermes-cron-sync creates paused executor jobs idempotently'
