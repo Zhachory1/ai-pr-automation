@@ -50,6 +50,11 @@ out="$(run --apply)"
 # wrapper scripts written and exec the installed executor
 grep -q 'hermes-queue-runner pr-review' "$tmp/hermes/scripts/ai-pr-automation-pr-review.sh"
 grep -q 'hermes-memory-curate' "$tmp/hermes/scripts/ai-pr-automation-memory-curate.sh"
+# self-triggering role enqueues against the sentinel before claiming; repo roles do not
+grep -q 'hermes_enqueue_local' "$tmp/hermes/scripts/ai-pr-automation-memory-curate.sh"
+if grep -q 'hermes_enqueue_local' "$tmp/hermes/scripts/ai-pr-automation-pr-review.sh"; then
+  echo 'FAIL: repo role should not self-enqueue' >&2; exit 1
+fi
 
 # Idempotent: second apply creates nothing (all exist).
 out="$(run --apply)"

@@ -43,6 +43,14 @@ for kind in doc-write memory-curate; do
     || { echo "FAIL: $kind not settled" >&2; exit 1; }
 done
 
+# hermes_enqueue_local enqueues against the current active sentinel without the caller holding a proof.
+local_id="$(q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_local('memory-curate','{}'::jsonb,'memory-curate:auto');")"
+[[ "$local_id" =~ ^[0-9]+$ ]] || { echo 'FAIL: hermes_enqueue_local did not enqueue' >&2; exit 1; }
+[[ "$(q -c "SELECT payload->>'repo' FROM requests WHERE id=$local_id;")" == 'local/fleet' ]] \
+  || { echo 'FAIL: enqueue_local did not stamp the sentinel repo' >&2; exit 1; }
+if q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_local('pr-review','{}'::jsonb,'x');" >/dev/null 2>&1; then
+  echo 'FAIL: enqueue_local accepted a repo-scoped kind' >&2; exit 1; fi
+
 # A local role MUST use the sentinel: a real repo payload is rejected even with a valid proof.
 if q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_request('doc-write','{\"repo\":\"owner/repo\"}'::jsonb,'doc:2','$proof');" \
   >/dev/null 2>&1; then echo 'FAIL: local role accepted a non-sentinel repo' >&2; exit 1; fi
@@ -55,10 +63,12 @@ if q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_request('pr-review','{\"r
 if q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_request('memory-nuke','{\"repo\":\"local/fleet\"}'::jsonb,'x','$proof');" \
   >/dev/null 2>&1; then echo 'FAIL: unsupported kind enqueued' >&2; exit 1; fi
 
-# Stale sentinel cannot enqueue.
+# Stale sentinel cannot enqueue (direct or via the local helper).
 q -c "UPDATE hermes_repository_enrollments SET checked_at=clock_timestamp()-interval '11 minutes' WHERE repo='local/fleet';" >/dev/null
 if q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_request('doc-write','{\"repo\":\"local/fleet\"}'::jsonb,'doc:3','$proof');" \
   >/dev/null 2>&1; then echo 'FAIL: stale sentinel enqueued' >&2; exit 1; fi
+if q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_local('memory-curate','{}'::jsonb,'memory-curate:stale');" \
+  >/dev/null 2>&1; then echo 'FAIL: stale sentinel enqueued via helper' >&2; exit 1; fi
 
 # Hermes role still has no direct table DML.
 if q -c "SET ROLE hermes_worker; UPDATE requests SET status='done';" >/dev/null 2>&1; then

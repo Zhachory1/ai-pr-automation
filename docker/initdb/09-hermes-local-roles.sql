@@ -67,9 +67,33 @@ BEGIN
 END;
 $$;
 
+-- Scheduled local roles are self-triggering: a cron tick has no external producer to enqueue work.
+-- This helper enqueues one row for a local kind against the CURRENT active sentinel, so the executor
+-- never needs to hold or rotate the proof itself. It reuses hermes_enqueue_request, so the same
+-- dedupe/freshness/kind rules apply; a still-active row dedupes to NULL (no pile-up).
+CREATE OR REPLACE FUNCTION hermes_enqueue_local(target_kind TEXT, target_payload JSONB, target_dedupe_key TEXT)
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+DECLARE sentinel_proof TEXT;
+BEGIN
+  IF target_kind NOT IN ('doc-write','memory-curate') THEN
+    RAISE EXCEPTION 'hermes_enqueue_local is for local roles only';
+  END IF;
+  SELECT proof_digest INTO sentinel_proof FROM hermes_repository_enrollments
+   WHERE repo='local/fleet' AND active AND checked_at > clock_timestamp() - interval '10 minutes';
+  IF sentinel_proof IS NULL THEN
+    RAISE EXCEPTION 'local/fleet sentinel is not actively enrolled';
+  END IF;
+  RETURN hermes_enqueue_request(target_kind,
+           jsonb_set(coalesce(target_payload,'{}'::jsonb),'{repo}','"local/fleet"'::jsonb,true),
+           target_dedupe_key, sentinel_proof);
+END;
+$$;
+
 REVOKE ALL ON FUNCTION hermes_enqueue_request(TEXT,JSONB,TEXT,TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_claim_request(TEXT,TEXT,TEXT,INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_enqueue_local(TEXT,JSONB,TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION hermes_enqueue_request(TEXT,JSONB,TEXT,TEXT) TO hermes_worker;
 GRANT EXECUTE ON FUNCTION hermes_claim_request(TEXT,TEXT,TEXT,INTEGER) TO hermes_worker;
+GRANT EXECUTE ON FUNCTION hermes_enqueue_local(TEXT,JSONB,TEXT) TO hermes_worker;
 
 COMMIT;

@@ -25,9 +25,9 @@ SUPPORT_ROOT = os.environ.get("HERMES_NATIVE_SUPPORT_ROOT", "/usr/local/libexec/
 # operator-side evidence producer refreshing enrollment proof within 10 minutes; do not resume
 # them until that producer runs, or every claim fails the freshness gate.
 JOBS = {
-    "pr-review":     {"exec": "hermes-queue-runner pr-review",  "schedule": "every 15m", "repo_scoped": True},
-    "pr-maintain":   {"exec": "hermes-queue-runner pr-maintain", "schedule": "every 15m", "repo_scoped": True},
-    "memory-curate": {"exec": "hermes-memory-curate",            "schedule": "every 6h",  "repo_scoped": False},
+    "pr-review":     {"exec": "hermes-queue-runner pr-review",  "schedule": "every 15m", "repo_scoped": True,  "self_trigger": False},
+    "pr-maintain":   {"exec": "hermes-queue-runner pr-maintain", "schedule": "every 15m", "repo_scoped": True,  "self_trigger": False},
+    "memory-curate": {"exec": "hermes-memory-curate",            "schedule": "every 6h",  "repo_scoped": False, "self_trigger": True},
 }
 NAME_PREFIX = "ai-pr-automation-"
 
@@ -46,12 +46,20 @@ def existing_job_names():
 
 def wrapper_script(role, spec):
     """Write a tiny launcher under ~/.hermes/scripts that execs the installed executor. Kept as a
-    thin file (not the executor itself) so the canonical root-owned binary stays the single source."""
+    thin file (not the executor itself) so the canonical root-owned binary stays the single source.
+    Self-triggering roles (scheduled sweeps with no external producer) enqueue one row against the
+    sentinel first, then the claim-only executor drains it; dedupe guards against pile-up."""
     path = SCRIPTS_DIR / f"{NAME_PREFIX}{role}.sh"
-    body = f"""#!/usr/bin/env bash
-set -euo pipefail
-exec {SUPPORT_ROOT}/{spec['exec']}
-"""
+    lines = ["#!/usr/bin/env bash", "set -euo pipefail",
+             'set -a; . "${HERMES_HOME:-$HOME/.hermes}/.env"; set +a']
+    if spec.get("self_trigger"):
+        lines.append(
+            'psql -qAt -v ON_ERROR_STOP=1 -h "${REQUESTS_DB_HOST:-127.0.0.1}" '
+            '-p "${REQUESTS_DB_PORT:-5432}" -U "${REQUESTS_DB_USER:-hermes_runtime}" '
+            '-d "${REQUESTS_DB_NAME:-fleet}" -c '
+            f'"SELECT hermes_enqueue_local(\'{role}\',\'{{}}\'::jsonb,\'{role}:\'||to_char(now(),\'YYYYMMDDHH24\'))" >/dev/null')
+    lines.append(f"exec {SUPPORT_ROOT}/{spec['exec']}")
+    body = "\n".join(lines) + "\n"
     SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     if not path.exists() or path.read_text() != body:
         path.write_text(body)
