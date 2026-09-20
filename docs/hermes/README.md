@@ -6,6 +6,7 @@ Status: host-native autonomous migration approved; Fleet Controller auth merged;
 
 - [Host-native autonomous design](DD-host-native-agent-engine.md)
 - [Host-native implementation plan](plan-host-native-autonomous-hermes.md)
+- [Authority allowlist and two-tier memory design](DD-authority-and-memory.md)
 - [Roadmap](../hermes-migration-roadmap.md)
 - [Grounding brief](grounding-brief.md)
 - [PRD](PRD-m0-m2.md)
@@ -46,31 +47,28 @@ scripts/hermes-native.sh status
 scripts/hermes-native.sh logs
 ```
 
-## Autonomy Enrollment
+## Repo Authority
 
-Native Hermes can enqueue or claim repository work only through `hermes_worker` database functions.
-Those functions require active repository proof checked within ten minutes. Existing Compose workers
-keep their old queue API only for rollback.
+Authority is scope-of-attention, not security. The enforcement boundary is the `hermes-agent` OS
+account, the repo-scoped deploy key, the read-only API token, and GitHub branch protection — those
+enforce which repos and what actions server-side. The agent does not pre-verify them; if it hits a
+protected-branch, merge, or permission wall it stops and reconciles.
 
-Validate human-produced denial evidence, then enroll with existing fleet DB credentials:
+The operator lists granted repositories in a plain YAML allowlist outside `CODE_ROOT` and git (see
+`agent-config/hermes/authority.example.yaml`), pointed to by `HERMES_AUTHORITY_FILE`:
 
 ```bash
-scripts/hermes-repo-gate.py evidence.json
-scripts/hermes-repo-enroll.py evidence.json
+scripts/hermes-authority.py --check Zhachory1/ai-pr-automation   # exit 0 granted, 3 denied
+scripts/hermes-authority.py                                       # list granted repos
 ```
 
-Evidence binds repository, credential, ruleset, workflow, environment policy, required denials, and
-allowed actions. This foundation creates no credential, evidence, enrollment, or live GitHub probe.
-PR 4 performs one `Zhachory1/ai-pr-automation` autonomy capability check before native credentials start.
-The check proves both allowed work (feature push, draft PR, review) and enforced boundaries
-(protected branch, unsafe workflow/deployment, administration). Merge remains normal human policy,
-not a hard credential boundary. Workflow files may still be
-edited in a feature branch; `unsafe_workflow_execution` means agent-push runs get no dangerous
-secret, write token, deployment, or release authority.
+Producers consult the allowlist before enqueuing repo-scoped work. The queue functions no longer take
+a proof or check enrollment; there is no freshness gate. Remove a repo from the YAML to stop the
+fleet spending effort on it. Local roles (`doc-write`, `memory-curate`) are not repo-scoped and need
+no grant.
 
-`bin/hermes-queue-runner` and `swe-implement-v1` are installed paused. Live activation still requires
-`hermes-agent`, enrollment for this repository, GitHub credentials, fresh authority evidence, and
-explicit human approval. No Fleet Worker or Effect Gateway is introduced.
+This replaces the earlier enrollment/proof/10-minute-freshness model, which re-proved a server-side
+wall that already enforces itself. See [DD-authority-and-memory.md](DD-authority-and-memory.md).
 
 ## M0 Pull Requests
 
@@ -139,38 +137,26 @@ pushes with force-with-lease, and resolves addressed threads; the three-round ca
 supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
 human-owned.
 
-## Autonomy Capability Check
-
-Before activating credentials, prove the boundary once against a live repository. Generate evidence,
-validate denials, and enroll:
-
-```bash
-scripts/hermes-repo-gate.py evidence.json      # server-side denials hold
-scripts/hermes-repo-enroll.py evidence.json    # record runtime repository authority
-```
-
-Evidence binds repository, credential fingerprint, ruleset, workflow, and environment-policy digests,
-required denials (protected push, unsafe workflow execution, deployment, administration), and allowed
-actions (unprotected push, draft PR, review). Enrollment proof must be refreshed within ten minutes of
-an enqueue or claim; `scripts/hermes-authority-watch.py` refreshes it or invalidates enrollment when
-an authority digest changes. Merge stays a human GitHub decision, not a hard credential boundary.
-
 ## Per-Role Activation
 
 Each role activates behind the same exclusive cutover:
 
 1. Confirm the queue has no in-flight row for the kind.
-2. Enroll the target repository with fresh evidence.
+2. Grant the target repository in the authority YAML (repo roles only).
 3. Enqueue one bounded task through the security-definer queue function.
 4. Run `bin/hermes-queue-runner <kind>` once and verify a single claimant, the typed result, and the
    expected draft PR or review.
 5. Leave the executor paused until standing activation is approved.
 
+The boundary is enforced server-side: if the agent attempts a protected-branch push, merge, or other
+denied action, GitHub rejects it and the row reconciles. Nothing is pre-proven client-side.
+
 ## Validation
 
 ```bash
 bash tests/test-hermes-queue-runner.sh
-bash tests/test-hermes-autonomy-gate.sh
+bash tests/test-hermes-queue-authority.sh
+bash tests/test-hermes-authority.sh
 bash tests/test-hermes-native-foundation.sh
 bash tests/test-hermes-state-roundtrip.sh
 python3 tests/test-status-server.py
@@ -182,7 +168,7 @@ The runtime proves:
 
 - exact Hermes image and native commit pin;
 - immutable profile per queue kind;
-- enrollment as sole runtime repository authority;
+- YAML allowlist as operator scope-of-attention (not a security gate);
 - least-privilege security-definer queue API;
 - server-side denial of protected push, merge, unsafe workflow execution, deployment, administration.
 
