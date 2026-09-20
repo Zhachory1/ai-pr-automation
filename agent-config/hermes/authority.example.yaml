@@ -1,0 +1,14 @@
+# Operator grant of repo space for the host-native Hermes fleet.
+#
+# This is scope-of-attention, NOT security. The real boundary is the hermes-agent OS account, the
+# repo-scoped deploy key, the read-only API token, and GitHub branch protection — those enforce which
+# repos and what actions server-side. This file only lists the repositories you have granted the
+# fleet permission to spend effort on. Producers read it before enqueuing repo-scoped work.
+#
+# Copy to the operator authority path (outside CODE_ROOT and git), e.g.:
+#   /Users/Shared/zhach-ai-pr-automation/authority.yaml
+# and point HERMES_AUTHORITY_FILE at it. Remove a repo to stop the fleet spending effort on it.
+#
+# Local roles (doc-write, memory-curate) are not repo-scoped and need no entry here.
+repos:
+  - Zhachory1/ai-pr-automation
