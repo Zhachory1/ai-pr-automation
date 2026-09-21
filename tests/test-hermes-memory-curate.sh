@@ -13,9 +13,11 @@ cat > "$tmp/bin/psql" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 args="$*"; input="$(cat || true)"
-if [[ "$args" == *hermes_enqueue_request* ]]; then
+if [[ "$args" == *hermes_enqueue_request* || "$input" == *hermes_enqueue_request* ]]; then
+  printf '%s\n' "$input" > "$TEST_STATE/enqueue.sql"
   echo 42   # self-enqueue tick
 elif [[ "$args" == *hermes_claim_request* ]]; then
+  touch "$TEST_STATE/claimed"
   jq -cn '{id:5,kind:"memory-curate",payload:{},dedupe_key:"memory-curate:1"}'
 elif [[ "$args" == *hermes_renew_request* ]]; then echo t
 elif [[ "$input" == *hermes_settle_request* ]]; then printf '%s\n' "$input" > "$TEST_STATE/settle.sql"; echo t
@@ -68,6 +70,16 @@ fi
 SH
 chmod +x "$tmp/bin/psql" "$tmp/bin/hermes" "$tmp/bin/curl"
 
+# Standing producer mode enqueues and exits; dispatcher owns the claim/consumer concurrency.
+PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" \
+  REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake \
+  MEMORY_CURATOR_STATE_DIR="$tmp/state" MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" \
+  MEMORY_CURATOR_PRIVATE_DOCS="$tmp/none" HERMES_QUEUE_LEASE_SECONDS=120 \
+  bin/hermes-memory-curate --enqueue-only >/dev/null
+[[ -s "$tmp/enqueue.sql" ]] || { echo 'FAIL: enqueue-only did not enqueue' >&2; exit 1; }
+[[ ! -e "$tmp/claimed" ]] || { echo 'FAIL: enqueue-only also claimed' >&2; exit 1; }
+rm -f "$tmp/enqueue.sql"
+
 out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" \
   REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake \
   MEMORY_CURATOR_STATE_DIR="$tmp/state" MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" \
@@ -75,6 +87,7 @@ out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" \
   bin/hermes-memory-curate --enqueue)"
 
 echo "$out" | grep -q 'request=5 status=done' || { echo "FAIL: not done: $out" >&2; exit 1; }
+grep -q 'hermes_enqueue_request' "$tmp/enqueue.sql" || { echo 'FAIL: self-enqueue SQL missing' >&2; exit 1; }
 
 team="$tmp/team.jsonl"; org="$tmp/org.jsonl"
 # Team bank: clean-multisource + force-with-lease + revenue-topic = 3 (secret/too-short/near-dup dropped).

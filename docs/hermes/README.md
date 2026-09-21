@@ -168,8 +168,20 @@ in-flight executors before exit; the maintenance file pauses new claims. The dis
 consumer cron jobs entirely — do not run both.
 
 ```bash
-sudo scripts/hermes-native.sh dispatcher-start   # load the dispatcher daemon
-sudo scripts/hermes-native.sh dispatcher-stop    # SIGTERM, drain, unload
+sudo scripts/hermes-native.sh dispatcher-start   # dispatcher + root Postgres watchdog
+sudo scripts/hermes-native.sh dispatcher-stop    # watchdog off, SIGTERM/drain dispatcher
+```
+
+The root watchdog probes Postgres every 10s. After two failures it creates the maintenance fence and
+boots out dispatcher + gateway, preventing new claims. The memory-curate producer enqueues one row
+every six hours (`--enqueue-only`); the dispatcher owns the claim and its `memory-curate=1` cap.
+
+For normal operation use the single wrapper:
+
+```bash
+scripts/fleet.sh up       # Compose support, then native gateway/watchdog/dispatcher/producers
+scripts/fleet.sh status
+scripts/fleet.sh down     # producers off, dispatcher drains, gateway off, Compose down
 ```
 
 ## Per-Role Activation
