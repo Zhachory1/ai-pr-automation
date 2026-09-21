@@ -95,23 +95,28 @@ def valid_run_status(value, run_id, terminal=False):
 def parse_typed_output(output):
     if not isinstance(output, str): return None
     text = output.strip()
-    fences = re.findall(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
-    if fences:
-        if len(fences) != 1: return None
-        text = fences[0].strip()
+    fence = re.fullmatch(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    if fence: text = fence.group(1).strip()
     try: return json.loads(text)
-    except json.JSONDecodeError: pass
-    decoder = json.JSONDecoder()
-    candidates = []
-    for start, char in enumerate(text):
-        if char != "{": continue
+    except json.JSONDecodeError: return None
+
+
+def parse_safety_output(output):
+    value = parse_typed_output(output)
+    if isinstance(value, dict): return value
+    if not isinstance(output, str): return None
+    text, decoder, candidates, attempts, start = output.strip(), json.JSONDecoder(), [], 0, 0
+    while (start := text.find("{", start)) >= 0:
+        attempts += 1
+        if attempts > 256: return None
         try:
-            value, length = decoder.raw_decode(text[start:])
-            if isinstance(value, dict): candidates.append((start, start + length, value))
-        except json.JSONDecodeError: pass
-    maximal = [candidate for candidate in candidates if not any(
-        other[0] <= candidate[0] and candidate[1] <= other[1] and candidate != other for other in candidates)]
-    return maximal[0][2] if len(maximal) == 1 else None
+            value, end = decoder.raw_decode(text, start)
+        except json.JSONDecodeError:
+            start += 1
+            continue
+        if isinstance(value, dict): candidates.append((start, end, value))
+        start = end
+    return candidates[0][2] if len(candidates) == 1 else None
 
 
 def normalize_safety(value):
@@ -638,8 +643,8 @@ class Controller:
                 direct = attempt["kind"] in DIRECT_EFFECT
                 self.settle(attempt, "reconcile" if direct else "failed", f"Hermes terminal status {status}",
                             attempt_state="reconcile" if direct else "failed"); return
-            value = parse_typed_output(output)
             kind = attempt["kind"]
+            value = parse_safety_output(output) if kind == "pr-safety-review" else parse_typed_output(output)
             if kind in DIRECT_EFFECT:
                 result = valid_generic(kind, value, attempt["nonce"], attempt["payload"], attempt["dedupe_key"])
                 if not result:
