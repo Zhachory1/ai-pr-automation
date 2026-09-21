@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# hermes-pr-producer — discovery producer for the host-native fleet. Finds matching open PRs and
+# enqueues one requests row per PR head for the dispatcher to consume. Never invokes a model.
+#
+#   hermes-pr-producer review    -> PRs assigned to the fleet account   (kind=pr-review)
+#   hermes-pr-producer maintain  -> PRs authored by the fleet account   (kind=pr-maintain)
+#
+# Repo scope comes from the operator authority YAML (scope-of-attention, not security; see
+# docs/hermes/DD-authority-and-memory.md). The collapsed queue API takes no proof. Head SHA is
+# resolved so the dedupe key is per-commit: a re-review/re-maintain only fires on a new head, and the
+# server-side enqueue supersedes an older queued row of the same PR lineage.
+set -euo pipefail
+umask 077
+
+MODE="${1:-}"
+case "$MODE" in
+  review)   KIND=pr-review;   GH_FILTER=--assignee ;;
+  maintain) KIND=pr-maintain; GH_FILTER=--author ;;
+  *) echo "usage: hermes-pr-producer <review|maintain>" >&2; exit 2 ;;
+esac
+
+HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || echo /usr/local/libexec/ai-pr-automation)"
+: "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
+: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
+GH_TIMEOUT_SECONDS="${PR_PRODUCER_GH_TIMEOUT_SECONDS:-60}"
+MAX_UPDATED_AGE_DAYS="${PR_PRODUCER_MAX_UPDATED_AGE_DAYS:-0}"   # 0 disables
+AUTHORITY="${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}"
+AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
+[[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
+
+ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
+log() { echo "$(ts) hermes-pr-producer[$MODE] $*" >&2; }
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need gh; need jq; need psql; need python3
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+[[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
+psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
+
+# Load the granted-repo allowlist once. Empty grant = nothing to do (not an error).
+mapfile -t GRANTED < <(python3 "$AUTHORITY_BIN" --file "$AUTHORITY" 2>/dev/null | jq -r '.repos[]?' || true)
+if (( ${#GRANTED[@]} == 0 )); then log "no repos granted in $AUTHORITY; nothing to discover"; exit 0; fi
+repo_granted() { local r="$1"; local g; for g in "${GRANTED[@]}"; do [[ "$g" == "$r" ]] && return 0; done; return 1; }
+
+log "discovering PRs ($GH_FILTER @me) across ${#GRANTED[@]} granted repo(s)"
+gh_status=0
+prs="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" \
+  gh search prs "$GH_FILTER" @me --state open \
+    --json number,title,url,repository,updatedAt --limit 1000 \
+    --jq '.[] | [.repository.nameWithOwner, (.number|tostring), .url, .title, (.updatedAt|fromdateiso8601|tostring)] | @tsv' \
+  2>/dev/null)" || gh_status=$?
+if (( gh_status != 0 )); then log "WARN: gh search failed (exit $gh_status); enqueued nothing"; exit 3; fi
+if [[ -z "$prs" ]]; then log "no matching open PRs"; exit 0; fi
+
+now_epoch="$(date +%s)"; cutoff=$(( now_epoch - (MAX_UPDATED_AGE_DAYS * 86400) ))
+enq=0 dedupe=0 skip=0
+while IFS=$'\t' read -r repo number url title updated_epoch; do
+  [[ -z "$repo" ]] && continue
+  if ! repo_granted "$repo"; then skip=$((skip+1)); continue; fi
+  if (( MAX_UPDATED_AGE_DAYS > 0 )) && [[ "$updated_epoch" =~ ^[0-9]+$ ]] && (( updated_epoch < cutoff )); then
+    skip=$((skip+1)); continue
+  fi
+  sha="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" gh pr view "$number" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+  if [[ -z "$sha" ]]; then log "skip $repo#$number: could not resolve head sha"; skip=$((skip+1)); continue; fi
+  payload="$(jq -cn --arg repo "$repo" --arg pr "$number" --arg url "$url" --arg title "$title" \
+    '{repo:$repo, number:($pr|tonumber), url:$url, title:$title}')"
+  dedupe_key="${repo}#${number}@${sha}"
+  # psql -c does NOT interpolate :'var'; feed the SQL via stdin so :'var' substitution applies.
+  # A NULL return (dedupe/cap skip) prints empty; a numeric id means a row was inserted.
+  inserted="$(psqlq -v payload="$payload" -v dk="$dedupe_key" -v kind="$KIND" \
+    <<<"SELECT hermes_enqueue_request(:'kind', :'payload'::jsonb, :'dk');" 2>/dev/null || true)"
+  if [[ "$inserted" =~ ^[0-9]+$ ]]; then enq=$((enq+1)); log "enqueued $KIND $dedupe_key (#$inserted)"; else dedupe=$((dedupe+1)); fi
+done <<< "$prs"
+
+log "done: enqueued=$enq deduped=$dedupe skipped=$skip"

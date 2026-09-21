@@ -32,7 +32,8 @@ reconciles. The server-side wall already stops the disallowed action, so re-prov
 every cycle is theater — the same reasoning that removed the freshness gate from memory.
 
 - The operator maintains an **authority YAML** outside `CODE_ROOT` and git
-  (`/Users/Shared/zhach-ai-pr-automation/authority.yaml`). It is simply the operator's **grant of
+  (`/usr/local/etc/ai-pr-automation/authority.yaml` — root-owned, world-readable so the service
+  account can read it, root-writable so only the operator can grant). It is simply the operator's **grant of
   repo space**: "you may write to and use these repositories." It is permission intent, not a
   security proof, and carries no branch-protection or credential digest.
 - The runtime authorizes a repo by presence in the YAML grant. No live GitHub re-query, no owner

@@ -6,7 +6,7 @@
 # fleet permission to spend effort on. Producers read it before enqueuing repo-scoped work.
 #
 # Copy to the operator authority path (outside CODE_ROOT and git), e.g.:
-#   /Users/Shared/zhach-ai-pr-automation/authority.yaml
+#   /usr/local/etc/ai-pr-automation/authority.yaml   (root-owned, world-readable, root-writable)
 # and point HERMES_AUTHORITY_FILE at it. Remove a repo to stop the fleet spending effort on it.
 #
 # Local roles (doc-write, memory-curate) are not repo-scoped and need no entry here.

@@ -70,6 +70,22 @@ no grant.
 This replaces the earlier enrollment/proof/10-minute-freshness model, which re-proved a server-side
 wall that already enforces itself. See [DD-authority-and-memory.md](DD-authority-and-memory.md).
 
+### Discovery producer
+
+`bin/hermes-pr-producer <review|maintain>` finds eligible open PRs (assigned to the fleet account for
+review, authored for maintain) across the granted repos, resolves each head SHA, and enqueues one row
+per PR with a per-commit dedupe key (`repo#num@headsha`) so a re-review only fires on a new head. It
+makes zero model calls. Consumption is continuous (the dispatcher); discovery is the one interval
+component, because GitHub cannot push to us. Two launchd timers (review + maintain,
+`HERMES_PRODUCER_INTERVAL_SECONDS`, default 900s) run the producers:
+
+```bash
+sudo scripts/hermes-native.sh producer-start   # load review + maintain discovery timers
+sudo scripts/hermes-native.sh producer-stop
+```
+
+Grant a repo in the authority YAML before starting producers, or they enqueue nothing.
+
 ## M0 Pull Requests
 
 | Work | PR | State |
@@ -136,6 +152,25 @@ and posts one review per head. `pr-maintain-v1` works the exact claim head, make
 pushes with force-with-lease, and resolves addressed threads; the three-round cap and stale-head
 supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
 human-owned.
+
+## Dispatcher
+
+Queue execution is driven by a long-running dispatcher, not interval timers. `bin/hermes-dispatcher`
+runs under launchd as `hermes-agent` and continuously drains the queue: each pass, for every kind
+with a free slot and unclaimed depth (`hermes_queue_depth`), it spawns one executor in the background
+and tracks its PID to enforce a per-kind concurrency cap. Work starts within a couple of seconds of
+enqueue; there are no per-role timers to tune.
+
+Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `memory-curate=1`.
+A crashed executor's row is reclaimed on lease expiry; a crashed dispatcher is restarted by launchd
+and in-flight rows are never lost (claim/settle is transactional and nonce-fenced). SIGTERM drains
+in-flight executors before exit; the maintenance file pauses new claims. The dispatcher replaces the
+consumer cron jobs entirely — do not run both.
+
+```bash
+sudo scripts/hermes-native.sh dispatcher-start   # load the dispatcher daemon
+sudo scripts/hermes-native.sh dispatcher-stop    # SIGTERM, drain, unload
+```
 
 ## Per-Role Activation
 

@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT = os.environ.get("HERMES_AUTHORITY_FILE", "/Users/Shared/zhach-ai-pr-automation/authority.yaml")
+DEFAULT = os.environ.get("HERMES_AUTHORITY_FILE", "/usr/local/etc/ai-pr-automation/authority.yaml")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 
