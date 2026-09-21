@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.ai-pr-automation-memory-curate-producer</string>
+  <key>UserName</key><string>__HERMES_USER__</string>
+  <key>ProgramArguments</key><array>
+    <string>/opt/homebrew/bin/bash</string><string>-c</string>
+    <string>set -a; . "$HERMES_HOME/.env"; set +a; exec __SUPPORT_ROOT__/hermes-memory-curate --enqueue-only</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>HOME</key><string>__SERVICE_HOME__</string>
+    <key>HERMES_HOME</key><string>__HERMES_HOME__</string>
+    <key>PATH</key><string>__SERVICE_HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key><string>__SERVICE_HOME__</string>
+  <key>RunAtLoad</key><false/>
+  <key>StartInterval</key><integer>__INTERVAL_SECONDS__</integer>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>__LOG_ROOT__/memory-curate-producer.out.log</string>
+  <key>StandardErrorPath</key><string>__LOG_ROOT__/memory-curate-producer.err.log</string>
+</dict></plist>
