@@ -88,6 +88,7 @@ grep -Fq '"$ROOT/scripts/hermes-native.sh" producer-start' scripts/hermes-native
 grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
 grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" up' scripts/fleet.sh
 grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
+grep -Fq 'HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime' scripts/fleet.sh
 grep -Fq 'PR_SAFETY_POLICY_DIGEST=' scripts/configure-hermes-role-env.sh
 mkdir -p "$tmp/runtime"
 cat > "$tmp/fake-hermes" <<'SH'

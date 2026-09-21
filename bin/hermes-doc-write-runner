@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-umask 077
+# Staged bytes cross the native/Compose boundary through a read-only bind mount. Keep them private
+# to the service user + staff group; Fleet Controller runs through Docker Desktop as the host user.
+umask 027
 
 : "${HERMES_BIN:=hermes}"; : "${REQUESTS_DB_USER:=hermes_runtime}"
 : "${REQUESTS_DB_NAME:=fleet}"; : "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"

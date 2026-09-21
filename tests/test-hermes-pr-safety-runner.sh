@@ -96,7 +96,7 @@ check "clear queues no pending review" "q \"SELECT count(*) FROM pending_mainten
 TEST_PR_SAFETY_RESULT_STATUS=changes_requested enqueue op-changes "$HEAD" "$DIFF" op-changes >/dev/null
 TEST_PR_SAFETY_RESULT_STATUS=changes_requested bin/hermes-pr-safety-runner
 check "changes_requested settles done" "q \"SELECT status FROM requests WHERE dedupe_key='op-changes';\" | grep -qx done"
-check "changes_requested writes immutable handoff" "[[ -f \"$HANDOFF_ROOT/o__r__pr7__op-changes.md\" ]] && [[ \"\$(stat -f '%Lp' \"$HANDOFF_ROOT/o__r__pr7__op-changes.md\")\" == 600 ]]"
+check "changes_requested writes immutable handoff" "[[ -f \"$HANDOFF_ROOT/o__r__pr7__op-changes.md\" ]] && [[ \"\$(stat -f '%Lp' \"$HANDOFF_ROOT/o__r__pr7__op-changes.md\")\" == 640 ]]"
 check "non-incident handoff stays out of human queue" "q \"SELECT count(*) FROM pending_maintenance_reviews;\" | grep -qx 0"
 
 # --- incident candidate: pending row inserted in same settle transaction ----------------------

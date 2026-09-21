@@ -9,13 +9,18 @@ HERMES_HOME="${HERMES_NATIVE_HOME:-$SERVICE_HOME/.hermes}"
 CONFIG_ROOT="${HERMES_NATIVE_CONFIG_ROOT:-/usr/local/etc/ai-pr-automation}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="$HERMES_HOME/.env"
-STATE="$SERVICE_HOME/.local/share/ai-pr-automation"
+# Docker Desktop cannot traverse the intentionally 0700 service home. Cross-runtime artifacts live
+# in a dedicated shared root: hermes-agent owns writes; staff can traverse/read Fleet Controller's
+# read-only bind mounts. Provider credentials remain under the private service home.
+STATE="${HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime}"
 DOC_STAGE="$STATE/doc-writer"
 HANDOFF="$STATE/safety-handoffs"
 SNAPSHOTS="$STATE/safety-snapshots"
 POLICY="$CONFIG_ROOT/pr-safety-policy-v1.md"
 
-install -d -m 700 -o "$SERVICE_USER" -g staff "$DOC_STAGE" "$HANDOFF" "$SNAPSHOTS"
+install -d -m 0755 -o root -g wheel "$STATE"
+install -d -m 0750 -o "$SERVICE_USER" -g staff "$DOC_STAGE" "$HANDOFF"
+install -d -m 0700 -o "$SERVICE_USER" -g staff "$SNAPSHOTS"
 install -m 0444 -o root -g wheel "$ROOT/policy/pr-safety-policy-v1.md" "$POLICY"
 POLICY_DIGEST="$(shasum -a 256 "$POLICY" | awk '{print $1}')"
 

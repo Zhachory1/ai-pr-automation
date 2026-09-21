@@ -60,7 +60,7 @@ def open_staged(root_fd, value):
 def write_once(directory_fd, name, data):
     try:
         descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o600, dir_fd=directory_fd)
+                             0o640, dir_fd=directory_fd)
     except FileExistsError:
         descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
         with os.fdopen(descriptor, "rb") as existing:
@@ -81,14 +81,14 @@ def stage(args):
     root_fd = open_root(args.stage_root)
     try:
         try:
-            os.mkdir("requests", 0o700, dir_fd=root_fd)
+            os.mkdir("requests", 0o750, dir_fd=root_fd)
         except FileExistsError:
             pass
         requests_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
         try:
             request = str(args.request_id)
             try:
-                os.mkdir(request, 0o700, dir_fd=requests_fd)
+                os.mkdir(request, 0o750, dir_fd=requests_fd)
             except FileExistsError:
                 pass
             request_fd = os.open(request, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
