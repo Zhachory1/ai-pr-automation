@@ -49,6 +49,8 @@ class ControllerContractTest(unittest.TestCase):
         running = {"object":"hermes.run","run_id":"r","status":"running","created_at":1.0,
                    "updated_at":2.0,"last_event":"run.started","session_id":"s","model":"m"}
         self.assertTrue(controller.valid_run_status(running, "r"))
+        sparse = {"object":"hermes.run","run_id":"r","status":"queued","created_at":1.0,"updated_at":1.0}
+        self.assertTrue(controller.valid_run_status(sparse, "r"))
         self.assertFalse(controller.valid_run_status(running, "r", terminal=True))
         self.assertTrue(controller.valid_run_status(dict(running, status="completed", output="{}", usage={}), "r", terminal=True))
 

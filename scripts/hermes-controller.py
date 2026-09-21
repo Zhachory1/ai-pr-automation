@@ -82,11 +82,14 @@ def valid_generic(kind, value, nonce, payload, dedupe_key):
 
 
 def valid_run_status(value, run_id, terminal=False):
-    required = {"object", "run_id", "status", "created_at", "updated_at", "last_event", "session_id", "model"}
+    # queued/running statuses may omit model/session/last_event/output/usage until those facts exist.
+    # Terminal records are strict and must carry the complete poll contract.
+    required = {"object", "run_id", "status", "created_at", "updated_at"}
     if (not isinstance(value, dict) or not required <= set(value) or value.get("object") != "hermes.run"
             or value.get("run_id") != run_id):
         return False
-    return not terminal or ("output" in value and isinstance(value.get("usage"), dict))
+    terminal_required = {"last_event", "session_id", "model", "output", "usage"}
+    return not terminal or (terminal_required <= set(value) and isinstance(value.get("usage"), dict))
 
 
 def parse_typed_output(output):
