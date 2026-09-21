@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "memory-recall": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["/usr/local/libexec/ai-pr-automation/hermes-memory-recall-shim"]
+    }
+  }
+}
