@@ -60,6 +60,7 @@ fi
 
 plutil -lint launchd/com.example.ai-pr-automation-hermes.plist.template >/dev/null
 plutil -lint launchd/com.example.ai-pr-automation-dispatcher.plist.template >/dev/null
+plutil -lint launchd/com.example.ai-pr-automation-hermes-dashboard.plist.template >/dev/null
 # Producer templates contain integer placeholders and become valid only after render; install_native
 # renders then plutil-lints both outputs.
 grep -Fq '<key>StartInterval</key><integer>__INTERVAL_SECONDS__</integer>' launchd/com.example.ai-pr-automation-producer.plist.template
@@ -83,6 +84,7 @@ grep -Fq 'DOC_WRITER_STAGE_HOST=' .env.example
 # LaunchDaemon log files must exist before bootstrap; hermes-agent cannot create files in root-owned
 # LOG_ROOT and launchd otherwise exits EX_CONFIG before running the program.
 grep -Fq 'install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"' scripts/hermes-native.sh
+grep -Fq '"$ROOT/scripts/hermes-native.sh" dashboard-start' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes-native.sh" dispatcher-start' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes-native.sh" producer-start' scripts/hermes-native.sh
 grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh

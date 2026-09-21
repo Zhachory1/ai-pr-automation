@@ -39,7 +39,10 @@ Fleet Controller handles:
 - retries, cancellation, and reconciliation;
 - queue and fleet status.
 
-Hermes Agent Engine has no fleet UI. Hermes dashboard is not deployed. Hermes CLI remains an administrative tool.
+Hermes Agent Engine keeps Fleet Controller as the operations/decision UI and exposes the host-native
+Hermes dashboard for runtime diagnostics. nginx fronts both on one loopback TLS port; the Hermes UI
+is Basic-Auth protected and remains outside the decision/merge authority path. Hermes CLI remains an
+administrative tool.
 
 Keep Docker Compose for support services only:
 
@@ -56,7 +59,7 @@ Current Compose-hosted Hermes works. It also duplicates Hermes lifecycle:
 
 - Compose wraps Hermes s6 supervision;
 - profile setup fights mounted state;
-- dashboard adds no required human action;
+- a dashboard is optional diagnostics, not a decision surface;
 - containers block easy host OAuth, browser, and MCP use;
 - each agent migration adds deployment plumbing.
 
@@ -541,7 +544,7 @@ Failure behavior:
 | Native Hermes plus Effect Gateway | Scoped credentials | Extra service and remote-write hop | Reject |
 | Native fully autonomous Hermes | Simplest agent architecture | Larger prompt-injection blast radius | Choose |
 | Human-account Hermes | Easiest setup | Exposes human credentials and files | Reject |
-| Hermes dashboard | Runtime UI | No required human action | Reject |
+| Host-native Hermes dashboard behind loopback nginx + Basic Auth | Runtime diagnostics without authority | Extra local UI surface | Choose |
 
 ## Rollout
 
@@ -618,7 +621,7 @@ Keep old schema, images, and manifests until final deletion gate.
 - Document publication still requires exact human-approved bytes.
 - Disposable browser has no human session.
 - Fleet Controller actions require authenticated human session.
-- Dashboard-free reboot and rollback work.
+- Gateway/dispatcher reboot works without the dashboard; dashboard failure does not stop agent work.
 - No direct model SDK or Me Write runtime remains after final phase.
 
 ## Open Questions

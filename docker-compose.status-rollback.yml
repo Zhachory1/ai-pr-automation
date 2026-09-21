@@ -1,4 +1,6 @@
 services:
   status:
     image: agent-fleet/status:${FLEET_CONTROLLER_ROLLBACK_VERSION:-pre-auth-b7fe7ed}
+    ports:
+      - "127.0.0.1:${STATUS_PORT:-8080}:8080"
     secrets: !reset []

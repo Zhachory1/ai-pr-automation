@@ -47,6 +47,10 @@ class StatusServerTest(unittest.TestCase):
         self.assertIn("run-finished", page)
         self.assertIn("run_id", page)
 
+    def test_fleet_proxy_host_and_origin_are_allowed(self):
+        self.assertIn(f"fleet.localhost:{status_server.PUBLIC_PORT}", status_server.ALLOWED_HOSTS)
+        self.assertIn(f"https://fleet.localhost:{status_server.PUBLIC_PORT}", status_server.ALLOWED_ORIGINS)
+
     def test_render_shows_escaped_pr_safety_human_queue_item(self):
         # query order: running, queued, recent, human_review, pending, today, capped, swe, docs
         rows = [
