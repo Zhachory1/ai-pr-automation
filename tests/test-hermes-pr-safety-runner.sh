@@ -45,11 +45,14 @@ export PR_SAFETY_SNAPSHOT_ROOT="$SNAPSHOT_ROOT" PR_SAFETY_POLICY_ROOT="$POLICY_R
   HANDOFF_ROOT="$TMP/handoffs" HERMES_WORK_ROOT="$TMP/work" HERMES_QUEUE_LEASE_SECONDS=120
 mkdir -p "$HANDOFF_ROOT" "$HERMES_WORK_ROOT" "$TMP/bin"
 
-# Fake hermes: reads the prompt file the runner wrote, extracts the identity JSON and the result
-# path, and writes a status/handoff driven by TEST_PR_SAFETY_RESULT_STATUS / TEST_PR_SAFETY_MALFORMED.
+# Fake hermes: reads the prompt and derives fixture behavior from operation_id. This deliberately
+# does not rely on inherited TEST_* env because the runner must scrub queue/model subprocess env.
 cat > "$TMP/bin/hermes" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+for v in PGPASSWORD REQUESTS_DB_USER REQUESTS_DB_HOST REQUESTS_DB_PORT REQUESTS_DB_NAME; do
+  [[ -z "${!v:-}" ]] || { echo "leaked queue credential: $v" >&2; exit 97; }
+done
 query=""; work=""; while (($#)); do
   [[ "$1" != --query-file ]] || { query="$2"; shift; }
   [[ "$1" != --in ]] || { work="$2"; shift; }
@@ -58,11 +61,13 @@ done
 identity="$(grep -m1 '^{' "$query")"
 result="$(grep -Eo '/[^ ]+/result\.json' "$query" | head -1)"
 draft="$(grep -Eo '/[^ ]+/handoff\.md' "$query" | head -1)"
-status="${TEST_PR_SAFETY_RESULT_STATUS:-clear}"
-if [[ "${TEST_PR_SAFETY_MALFORMED:-}" == true ]]; then
-  printf '{not valid json' > "$result"
-  exit 0
-fi
+op="$(jq -r .operation_id <<<"$identity")"
+case "$op" in
+  op-incident) status=incident_candidate ;;
+  op-changes) status=changes_requested ;;
+  op-malformed) printf '{not valid json' > "$result"; exit 0 ;;
+  *) status=clear ;;
+esac
 jq --arg status "$status" '. + {status:$status,intent:{claimed:"",evidence:[],needed:"unknown",smaller_existing_solution:null,matches_description:"unknown",description_divergence:null,simpler_alternative:null},findings:[],coverage:{status:"unavailable",command:null,changed_executable_line_coverage_percent:null,gaps:[]},documentation:{status:"not_applicable",required_updates:[]},observability:{status:"not_applicable",recommended_metrics:[],recommended_slos_or_runbooks:[],datadog_terraform_candidate:false},incident:{candidate:false,failure_mode:null,blast_radius:null,recommended_action:null,evidence:[]},human_decisions_needed:[]}' <<<"$identity" > "$result"
 if [[ "$status" == incident_candidate ]]; then
   jq '.incident = {candidate:true,failure_mode:"unsafe deploy",blast_radius:"prod",recommended_action:"investigate",evidence:["fixture"]}' "$result" > "$result.tmp" && mv "$result.tmp" "$result"
