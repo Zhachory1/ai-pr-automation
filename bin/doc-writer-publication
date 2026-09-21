@@ -134,8 +134,12 @@ def publish(args):
         except FileNotFoundError:
             pass
         else:
-            os.close(existing)
-            fail("publication target already exists")
+            with os.fdopen(existing, "rb") as published:
+                if not stat.S_ISREG(os.fstat(published.fileno()).st_mode) or digest(bounded(published)) != args.digest:
+                    fail("publication target already exists with different bytes")
+            emit(status="published", target_path=args.target_path, content_digest=args.digest,
+                 already_exists=True)
+            return
         try:
             os.mkdir(".ai-pr-automation-staging", 0o700, dir_fd=inbox_fd)
         except FileExistsError:
@@ -157,7 +161,34 @@ def publish(args):
             os.close(hidden_fd)
     finally:
         os.close(inbox_fd)
-    emit(status="published", target_path=args.target_path, content_digest=args.digest)
+    emit(status="published", target_path=args.target_path, content_digest=args.digest,
+         already_exists=False)
+
+
+def inspect(args):
+    if not TARGET_RE.fullmatch(args.target_path or ""):
+        fail("invalid publication target")
+    stage_fd = open_root(args.stage_root)
+    try:
+        data = open_staged(stage_fd, args.staged_path)
+    finally:
+        os.close(stage_fd)
+    staged_digest = digest(data)
+    inbox_fd = open_root(args.inbox_root)
+    try:
+        try:
+            descriptor = os.open(args.target_path, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=inbox_fd)
+        except FileNotFoundError:
+            target_digest = None
+        else:
+            with os.fdopen(descriptor, "rb") as target:
+                if not stat.S_ISREG(os.fstat(target.fileno()).st_mode):
+                    fail("publication target is not a regular file")
+                target_digest = digest(bounded(target))
+    finally:
+        os.close(inbox_fd)
+    emit(status="inspected", staged_digest=staged_digest, target_exists=target_digest is not None,
+         target_digest=target_digest)
 
 
 def main():
@@ -177,10 +208,15 @@ def main():
     publish_parser.add_argument("--staged-path", required=True)
     publish_parser.add_argument("--target-path", required=True)
     publish_parser.add_argument("--digest", required=True)
+    inspect_parser = commands.add_parser("inspect")
+    inspect_parser.add_argument("--stage-root", required=True)
+    inspect_parser.add_argument("--inbox-root", required=True)
+    inspect_parser.add_argument("--staged-path", required=True)
+    inspect_parser.add_argument("--target-path", required=True)
     args = parser.parse_args()
     if getattr(args, "digest", None) and not re.fullmatch(r"[0-9a-f]{64}", args.digest):
         fail("digest must be lowercase SHA-256")
-    {"stage": stage, "read": read_staged, "publish": publish}[args.command](args)
+    {"stage": stage, "read": read_staged, "publish": publish, "inspect": inspect}[args.command](args)
 
 
 if __name__ == "__main__":

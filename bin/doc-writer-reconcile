@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Operator reconciler for prepared doc publications. Runs with the trusted fleet DB role, not
+# hermes_worker: prepared rows are quarantined (request=reconcile) before filesystem effect, so an
+# ordinary worker cannot reclaim or complete one it does not own. This tool idempotently publishes
+# exact bytes (existing matching target is success) then atomically marks DB published/done.
+set -euo pipefail
+: "${REQUESTS_DB_USER:=fleet}"; : "${REQUESTS_DB_NAME:=fleet}"
+: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
+: "${DOC_WRITER_STAGE_DIR:?DOC_WRITER_STAGE_DIR is required}"
+: "${DOC_WRITER_INBOX_DIR:?DOC_WRITER_INBOX_DIR is required}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PUBLICATION_BIN="${DOC_WRITER_PUBLICATION_BIN:-$HERE/doc-writer-publication}"
+psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
+
+rows="$(psqlq <<'SQL'
+SELECT json_build_object('id',p.request_id,'staged_path',p.staged_path,'target_path',p.target_path,
+  'content_digest',p.content_digest,'document_generation',p.document_generation)::text
+FROM doc_publications p JOIN requests r ON r.id=p.request_id
+WHERE p.state='prepared' AND r.kind='doc-write' AND r.status='reconcile'
+ORDER BY p.request_id;
+SQL
+)"
+[[ -n "$rows" ]] || { echo 'no prepared doc publications'; exit 0; }
+
+while IFS= read -r row; do
+  id="$(jq -r .id <<<"$row")"; staged="$(jq -r .staged_path <<<"$row")"
+  target="$(jq -r .target_path <<<"$row")"; digest="$(jq -r .content_digest <<<"$row")"
+  generation="$(jq -r .document_generation <<<"$row")"
+  inspect="$($PUBLICATION_BIN inspect --stage-root "$DOC_WRITER_STAGE_DIR" --inbox-root "$DOC_WRITER_INBOX_DIR" \
+    --staged-path "$staged" --target-path "$target")"
+  [[ "$(jq -r .staged_digest <<<"$inspect")" == "$digest" ]] \
+    || { echo "request=$id reconcile failed: staged digest mismatch" >&2; continue; }
+  if [[ "$(jq -r .target_exists <<<"$inspect")" == true ]]; then
+    [[ "$(jq -r .target_digest <<<"$inspect")" == "$digest" ]] \
+      || { echo "request=$id reconcile failed: existing target mismatch" >&2; continue; }
+  else
+    "$PUBLICATION_BIN" publish --stage-root "$DOC_WRITER_STAGE_DIR" --inbox-root "$DOC_WRITER_INBOX_DIR" \
+      --staged-path "$staged" --target-path "$target" --digest "$digest" >/dev/null \
+      || { echo "request=$id reconcile failed: publish error" >&2; continue; }
+  fi
+  completed="$(psqlq -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" <<'SQL'
+WITH publication AS (
+  UPDATE doc_publications SET state='published',published_at=clock_timestamp(),updated_at=clock_timestamp(),error=NULL
+  WHERE request_id=:'id'::bigint AND state='prepared' AND target_path=:'target'
+    AND content_digest=:'digest' AND document_generation=:'generation' RETURNING request_id
+)
+UPDATE requests r SET status='done',posted_ref=:'target',finished_at=clock_timestamp(),fail_response=NULL
+FROM publication p WHERE r.id=p.request_id AND r.status='reconcile' RETURNING r.id;
+SQL
+)"
+  [[ "$completed" == "$id" ]] || { echo "request=$id target exists but DB completion failed" >&2; continue; }
+  echo "request=$id reconciled published=$target"
+done <<<"$rows"

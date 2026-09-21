@@ -53,7 +53,8 @@ binding="$(q -c "SET ROLE hermes_worker; SELECT hermes_doc_publication_claimed($
 prepared="$(q -c "SET ROLE hermes_worker; SELECT hermes_prepare_doc_publication($id2,'$nonce3');")"
 [[ "$(jq -r .target_path <<<"$prepared")" == "$target" ]]
 [[ "$(q -c "SELECT r.status||':'||p.state FROM requests r JOIN doc_publications p ON p.request_id=r.id WHERE r.id=$id2;")" == 'reconcile:prepared' ]]
-[[ "$(q -c "SET ROLE hermes_worker; SELECT hermes_mark_doc_published($id2,'$target','$digest','$generation');")" == t ]]
+[[ "$(q -c "SET ROLE hermes_worker; SELECT hermes_mark_doc_published($id2,'ffffffffffffffffffffffffffffffff','$target','$digest','$generation');")" == f ]]
+[[ "$(q -c "SET ROLE hermes_worker; SELECT hermes_mark_doc_published($id2,'$nonce3','$target','$digest','$generation');")" == t ]]
 [[ "$(q -c "SELECT r.status||':'||p.state||':'||r.posted_ref FROM requests r JOIN doc_publications p ON p.request_id=r.id WHERE r.id=$id2;")" == "done:published:$target" ]]
 
 if q -c "SET ROLE hermes_worker; SELECT * FROM requests;" >/dev/null 2>&1; then

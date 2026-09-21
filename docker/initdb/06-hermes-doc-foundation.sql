@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS doc_publications (
   document_generation TEXT NOT NULL CHECK (document_generation ~ '^(legacy|hermes):[0-9a-f]{64}$'),
   approved_at         TIMESTAMPTZ,
   published_at        TIMESTAMPTZ,
+  prepared_by_nonce   TEXT CHECK (prepared_by_nonce IS NULL OR prepared_by_nonce ~ '^[0-9a-f]{32}$'),
   error               TEXT,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -58,6 +59,9 @@ CREATE TABLE IF NOT EXISTS doc_publications (
     (state = 'published' AND approved_at IS NOT NULL AND published_at IS NOT NULL)
   )
 );
+
+ALTER TABLE doc_publications ADD COLUMN IF NOT EXISTS prepared_by_nonce TEXT
+  CHECK (prepared_by_nonce IS NULL OR prepared_by_nonce ~ '^[0-9a-f]{32}$');
 
 CREATE OR REPLACE FUNCTION reject_doc_publication_binding_change()
 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -161,7 +165,8 @@ BEGIN
       AND r.lease_expires_at>clock_timestamp() AND r.payload->>'publication_only'='true'
     FOR UPDATE OF p,r
   ), publication AS (
-    UPDATE doc_publications p SET state='prepared',updated_at=clock_timestamp()
+    UPDATE doc_publications p SET state='prepared',prepared_by_nonce=target_nonce,
+      updated_at=clock_timestamp()
     FROM eligible e WHERE p.request_id=e.request_id RETURNING e.*
   ), quarantined AS (
     UPDATE requests r SET status='reconcile',side_effect_at=clock_timestamp(),
@@ -197,14 +202,15 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION hermes_mark_doc_published(
-  target_id BIGINT,target_target_path TEXT,target_digest TEXT,target_generation TEXT)
+  target_id BIGINT,target_nonce TEXT,target_target_path TEXT,target_digest TEXT,target_generation TEXT)
 RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
 BEGIN
   WITH eligible AS (
     SELECT p.request_id FROM doc_publications p JOIN requests r ON r.id=p.request_id
     WHERE p.request_id=target_id AND p.state='prepared' AND p.approved_at IS NOT NULL
       AND p.target_path=target_target_path AND p.content_digest=target_digest
-      AND p.document_generation=target_generation AND r.status='reconcile'
+      AND p.document_generation=target_generation AND p.prepared_by_nonce=target_nonce
+      AND r.status='reconcile' AND r.run_nonce=target_nonce
     FOR UPDATE OF p,r
   ), publication AS (
     UPDATE doc_publications p SET state='published',published_at=clock_timestamp(),
@@ -223,12 +229,13 @@ REVOKE ALL ON FUNCTION hermes_stage_doc_publication(BIGINT,TEXT,TEXT,TEXT,TEXT,T
 REVOKE ALL ON FUNCTION hermes_doc_publication_claimed(BIGINT,TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_prepare_doc_publication(BIGINT,TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_reconcile_doc_publication(BIGINT,TEXT,TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION hermes_mark_doc_published(BIGINT,TEXT,TEXT,TEXT) FROM PUBLIC;
+DROP FUNCTION IF EXISTS hermes_mark_doc_published(BIGINT,TEXT,TEXT,TEXT);
+REVOKE ALL ON FUNCTION hermes_mark_doc_published(BIGINT,TEXT,TEXT,TEXT,TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION hermes_settle_doc_questions(BIGINT,TEXT,JSONB,JSONB) TO hermes_worker;
 GRANT EXECUTE ON FUNCTION hermes_stage_doc_publication(BIGINT,TEXT,TEXT,TEXT,TEXT,TEXT,JSONB,JSONB) TO hermes_worker;
 GRANT EXECUTE ON FUNCTION hermes_doc_publication_claimed(BIGINT,TEXT) TO hermes_worker;
 GRANT EXECUTE ON FUNCTION hermes_prepare_doc_publication(BIGINT,TEXT) TO hermes_worker;
 GRANT EXECUTE ON FUNCTION hermes_reconcile_doc_publication(BIGINT,TEXT,TEXT) TO hermes_worker;
-GRANT EXECUTE ON FUNCTION hermes_mark_doc_published(BIGINT,TEXT,TEXT,TEXT) TO hermes_worker;
+GRANT EXECUTE ON FUNCTION hermes_mark_doc_published(BIGINT,TEXT,TEXT,TEXT,TEXT) TO hermes_worker;
 
 COMMIT;

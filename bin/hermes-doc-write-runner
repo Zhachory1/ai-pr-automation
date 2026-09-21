@@ -10,6 +10,7 @@ umask 077
 PROFILE=doc-write-v1
 PROFILE_DIR="${DOC_WRITER_PROFILE_DIR:-$HERMES_HOME/profiles/$PROFILE}"
 PUBLICATION_BIN="${DOC_WRITER_PUBLICATION_BIN:-$(cd "$(dirname "$0")" && pwd)/doc-writer-publication}"
+NATIVE_MANIFEST="${HERMES_NATIVE_MANIFEST:-/usr/local/etc/ai-pr-automation/hermes-native.json}"
 lease="${HERMES_QUEUE_LEASE_SECONDS:-120}"
 nonce="$(openssl rand -hex 16)"; run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$nonce"
 
@@ -17,7 +18,7 @@ psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_P
 settle() {
   local status="$1" detail="$2"
   psqlq -v id="$id" -v nonce="$nonce" -v status="$status" -v detail="$detail" \
-    -c "SELECT hermes_settle_request(:'id'::bigint,:'nonce',:'status',:'detail');" >/dev/null || true
+    <<<"SELECT hermes_settle_request(:'id'::bigint,:'nonce',:'status',:'detail');" >/dev/null || true
 }
 stop_heartbeat() {
   [[ -n "${heartbeat:-}" ]] || return 0
@@ -44,25 +45,25 @@ fi
 
 if [[ "$(jq -r '.publication_only == true' <<<"$payload")" == true ]]; then
   publication="$(psqlq -v id="$id" -v nonce="$nonce" \
-    -c "SELECT hermes_doc_publication_claimed(:'id'::bigint,:'nonce');")"
+    <<<"SELECT hermes_doc_publication_claimed(:'id'::bigint,:'nonce');")"
   if [[ -z "$publication" ]]; then settle reconcile "approved publication binding unavailable"; exit 1; fi
   staged="$(jq -r .staged_path <<<"$publication")"; target="$(jq -r .target_path <<<"$publication")"
   digest="$(jq -r .content_digest <<<"$publication")"; generation="$(jq -r .document_generation <<<"$publication")"
   if ! "$PUBLICATION_BIN" read --stage-root "$DOC_WRITER_STAGE_DIR" --staged-path "$staged" \
       --digest "$digest" >/dev/null; then
     psqlq -v id="$id" -v nonce="$nonce" -v error="approved staged bytes are missing or invalid" \
-      -c "SELECT hermes_reconcile_doc_publication(:'id'::bigint,:'nonce',:'error');" >/dev/null || true
+      <<<"SELECT hermes_reconcile_doc_publication(:'id'::bigint,:'nonce',:'error');" >/dev/null || true
     exit 1
   fi
   prepared="$(psqlq -v id="$id" -v nonce="$nonce" \
-    -c "SELECT hermes_prepare_doc_publication(:'id'::bigint,:'nonce');")"
+    <<<"SELECT hermes_prepare_doc_publication(:'id'::bigint,:'nonce');")"
   [[ -n "$prepared" ]] || { settle reconcile "publication prepare fence failed"; exit 1; }
   [[ "$(jq -S . <<<"$prepared")" == "$(jq -S . <<<"$publication")" ]] \
     || { echo "prepared publication binding changed" >&2; exit 1; }
   "$PUBLICATION_BIN" publish --stage-root "$DOC_WRITER_STAGE_DIR" --inbox-root "$DOC_WRITER_INBOX_DIR" \
     --staged-path "$staged" --target-path "$target" --digest "$digest" >/dev/null
-  published="$(psqlq -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" \
-    -c "SELECT hermes_mark_doc_published(:'id'::bigint,:'target',:'digest',:'generation');")"
+  published="$(psqlq -v id="$id" -v nonce="$nonce" -v target="$target" -v digest="$digest" -v generation="$generation" \
+    <<<"SELECT hermes_mark_doc_published(:'id'::bigint,:'nonce',:'target',:'digest',:'generation');")"
   [[ "$published" == t ]] || { echo "publication copied but database completion failed; reconcile request $id" >&2; exit 1; }
   echo "request=$id status=done posted_ref=$target"
   exit 0
@@ -70,10 +71,10 @@ fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/hermes-doc-write.XXXXXX")"; trap 'stop_heartbeat; rm -rf "$work"' EXIT
 result="$work/result.json"; prompt="$work/prompt.md"; prior_file="$work/prior.md"
-profile_digest="$(python3 - "$PROFILE_DIR" "$0" "$PUBLICATION_BIN" <<'PY'
+profile_digest="$(python3 - "$PROFILE_DIR" "$0" "$PUBLICATION_BIN" "$NATIVE_MANIFEST" <<'PY'
 import hashlib,pathlib,sys
 value=hashlib.sha256()
-for item in [*sorted(pathlib.Path(sys.argv[1]).iterdir()),pathlib.Path(sys.argv[2]),pathlib.Path(sys.argv[3])]:
+for item in [*sorted(pathlib.Path(sys.argv[1]).iterdir()),pathlib.Path(sys.argv[2]),pathlib.Path(sys.argv[3]),pathlib.Path(sys.argv[4])]:
     if item.is_file() and not item.is_symlink():
         value.update(item.name.encode()+b'\0'+item.read_bytes()+b'\0')
 print(value.hexdigest())
@@ -102,7 +103,7 @@ jq -n --arg nonce "$nonce" --argjson payload "$payload" --rawfile prior "$prior_
 (
   while sleep "$((lease / 4))"; do
     [[ "$(psqlq -v id="$id" -v nonce="$nonce" -v lease="$lease" \
-      -c "SELECT hermes_renew_request(:'id'::bigint,:'nonce',:'lease'::integer);")" == t ]] \
+      <<<"SELECT hermes_renew_request(:'id'::bigint,:'nonce',:'lease'::integer);")" == t ]] \
       || { kill -TERM "$PPID"; exit 1; }
   done
 ) & heartbeat=$!
@@ -134,7 +135,7 @@ if [[ "$kind" == open_questions ]] && jq -e --arg nonce "$nonce" '
   provenance="$(jq -cn --arg run_id "$run_id" --arg profile "$PROFILE" --arg generation "$generation" \
     '{run_id:$run_id,profile:$profile,document_generation:$generation,written_by:"hermes"}')"
   settled="$(psqlq -v id="$id" -v nonce="$nonce" -v proposal="$proposal" -v provenance="$provenance" \
-    -c "SELECT hermes_settle_doc_questions(:'id'::bigint,:'nonce',:'proposal'::jsonb,:'provenance'::jsonb);")"
+    <<<"SELECT hermes_settle_doc_questions(:'id'::bigint,:'nonce',:'proposal'::jsonb,:'provenance'::jsonb);")"
   [[ "$settled" == t ]] || { settle reconcile "document questions settlement failed"; exit 1; }
   echo "request=$id status=open_questions"
   exit 0
@@ -162,7 +163,7 @@ PY
     '{run_id:$run_id,profile:$profile,document_generation:$generation,written_by:"hermes"}')"
   settled="$(psqlq -v id="$id" -v nonce="$nonce" -v staged="$staged" -v target="$target" \
     -v digest="$digest" -v generation="$generation" -v proposal="$proposal" -v provenance="$provenance" \
-    -c "SELECT hermes_stage_doc_publication(:'id'::bigint,:'nonce',:'staged',:'target',:'digest',:'generation',:'proposal'::jsonb,:'provenance'::jsonb);")"
+    <<<"SELECT hermes_stage_doc_publication(:'id'::bigint,:'nonce',:'staged',:'target',:'digest',:'generation',:'proposal'::jsonb,:'provenance'::jsonb);")"
   [[ "$settled" == t ]] || { settle reconcile "document publication settlement failed"; exit 1; }
   echo "request=$id status=awaiting_approval"
   exit 0

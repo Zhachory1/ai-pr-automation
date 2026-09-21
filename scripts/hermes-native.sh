@@ -82,6 +82,7 @@ install_native() {
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
   [[ ! -x "$ROOT/bin/hermes-doc-write-runner" ]] || install -m 0555 "$ROOT/bin/hermes-doc-write-runner" "$SUPPORT_ROOT/hermes-doc-write-runner"
   [[ ! -x "$ROOT/bin/doc-writer-publication" ]] || install -m 0555 "$ROOT/bin/doc-writer-publication" "$SUPPORT_ROOT/doc-writer-publication"
+  [[ ! -x "$ROOT/bin/doc-writer-reconcile" ]] || install -m 0555 "$ROOT/bin/doc-writer-reconcile" "$SUPPORT_ROOT/doc-writer-reconcile"
   [[ ! -x "$ROOT/bin/hermes-dispatcher" ]] || install -m 0555 "$ROOT/bin/hermes-dispatcher" "$DISPATCHER"
   [[ ! -x "$ROOT/bin/hermes-postgres-watchdog" ]] || install -m 0555 "$ROOT/bin/hermes-postgres-watchdog" "$SUPPORT_ROOT/hermes-postgres-watchdog"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-dispatcher.plist.template" "$DISPATCHER_PLIST" \

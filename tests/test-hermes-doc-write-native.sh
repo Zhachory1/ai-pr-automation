@@ -7,7 +7,7 @@ cp -R agent-config/hermes/profiles/doc-write-v1 "$tmp/home/.hermes/profiles/"
 
 cat > "$tmp/bin/psql" <<SH
 #!/usr/bin/env bash
-query="\$*"; echo "\$RUN_CASE \$query" >> "$tmp/db.log"
+query="\$* \$(cat || true)"; echo "\$RUN_CASE \$query" >> "$tmp/db.log"
 case "\$query" in
   *"hermes_claim_request"*)
     case "\$RUN_CASE" in
@@ -77,6 +77,11 @@ if bin/doc-writer-publication publish --stage-root "$tmp/stage" --inbox-root "$t
   echo 'FAIL: existing target accepted' >&2; exit 1
 fi
 [[ "$(cat "$tmp/inbox/dd-2026-09-21-existing-9.md")" == keep ]]
+# Retry-after-crash: an existing regular target with the exact expected bytes is idempotent success.
+printf 'final bytes' > "$tmp/inbox/dd-2026-09-21-matching-9.md"
+bin/doc-writer-publication publish --stage-root "$tmp/stage" --inbox-root "$tmp/inbox" \
+  --staged-path requests/42/publish.md --target-path dd-2026-09-21-matching-9.md --digest "$digest" \
+  | jq -e '.status=="published" and .already_exists==true' >/dev/null
 ln -s "$tmp/exact" "$tmp/inbox/dd-2026-09-21-symlink-10.md"
 if bin/doc-writer-publication publish --stage-root "$tmp/stage" --inbox-root "$tmp/inbox" \
   --staged-path requests/42/publish.md --target-path dd-2026-09-21-symlink-10.md --digest "$digest" >/dev/null 2>&1; then

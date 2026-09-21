@@ -544,68 +544,6 @@ SELECT json_build_object('staged_path',p.staged_path,'target_path',p.target_path
 SQL
 }
 
-doc_publication_prepare() {
-  local id="$1" target="$2" digest="$3" generation="$4" nonce="$5"
-  _psql -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" -v nonce="$nonce" <<'SQL'
-WITH eligible AS (
-  SELECT p.request_id
-    FROM doc_publications p JOIN requests r ON r.id=p.request_id
-   WHERE p.request_id=:'id' AND p.state='approved' AND p.approved_at IS NOT NULL
-     AND p.target_path=:'target' AND p.content_digest=:'digest' AND p.document_generation=:'generation'
-     AND r.status='running' AND r.run_nonce=:'nonce' AND r.lease_expires_at>clock_timestamp()
-   FOR UPDATE OF p,r
-), publication AS (
-  UPDATE doc_publications p SET state='prepared', updated_at=clock_timestamp()
-   FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
-), quarantined AS (
-  UPDATE requests r SET status='reconcile', side_effect_at=clock_timestamp(), finished_at=clock_timestamp(),
-         fail_response='doc publication prepared; reconcile until exact target is verified', lease_expires_at=NULL
-   FROM publication p WHERE r.id=p.request_id RETURNING r.id
-)
-SELECT id FROM quarantined;
-SQL
-}
-
-doc_publication_mark_published() {
-  local id="$1" target="$2" digest="$3" generation="$4"
-  _psql -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" <<'SQL'
-WITH eligible AS (
-  SELECT p.request_id FROM doc_publications p JOIN requests r ON r.id=p.request_id
-   WHERE p.request_id=:'id' AND p.state='prepared' AND p.approved_at IS NOT NULL
-     AND p.target_path=:'target' AND p.content_digest=:'digest' AND p.document_generation=:'generation'
-     AND r.status='reconcile'
-   FOR UPDATE OF p,r
-), publication AS (
-  UPDATE doc_publications p SET state='published', published_at=clock_timestamp(), updated_at=clock_timestamp()
-   FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
-), finished AS (
-  UPDATE requests r SET status='done', posted_ref=:'target', finished_at=clock_timestamp(), fail_response=NULL
-   FROM publication p WHERE r.id=p.request_id RETURNING r.id
-)
-SELECT id FROM finished;
-SQL
-}
-
-doc_publication_reconcile_published() {
-  local id="$1" target="$2" digest="$3" generation="$4"
-  _psql -v id="$id" -v target="$target" -v digest="$digest" -v generation="$generation" <<'SQL'
-WITH eligible AS (
-  SELECT p.request_id FROM doc_publications p JOIN requests r ON r.id=p.request_id
-   WHERE p.request_id=:'id' AND p.state IN ('prepared','reconcile') AND p.approved_at IS NOT NULL
-     AND p.target_path=:'target' AND p.content_digest=:'digest' AND p.document_generation=:'generation'
-     AND r.status='reconcile'
-   FOR UPDATE OF p,r
-), publication AS (
-  UPDATE doc_publications p SET state='published', published_at=clock_timestamp(), updated_at=clock_timestamp(), error=NULL
-   FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
-), finished AS (
-  UPDATE requests r SET status='done', posted_ref=:'target', finished_at=clock_timestamp(), fail_response=NULL
-   FROM publication p WHERE r.id=p.request_id RETURNING r.id
-)
-SELECT id FROM finished;
-SQL
-}
-
 hermes_doc_active_count() {
   _psql <<'SQL'
 SELECT count(*) FROM hermes_doc_runs WHERE state='submitting';
