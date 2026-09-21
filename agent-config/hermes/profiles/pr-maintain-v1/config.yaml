@@ -1,3 +1,6 @@
+gateway:
+  api_server:
+    enabled: false
 model:
   provider: anthropic
   default: claude-sonnet-4-6
