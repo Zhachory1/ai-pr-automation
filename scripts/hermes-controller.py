@@ -114,9 +114,10 @@ def parse_safety_output(output):
         except json.JSONDecodeError:
             start += 1
             continue
-        if isinstance(value, dict): candidates.append((start, end, value))
+        if isinstance(value, dict) and {"nonce", "operation_id", "status", "incident"} <= set(value):
+            candidates.append(value)
         start = end
-    return candidates[0][2] if len(candidates) == 1 else None
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def normalize_safety(value):

@@ -60,9 +60,11 @@ class ControllerContractTest(unittest.TestCase):
         self.assertEqual(controller.parse_typed_output('```json\n{"x":1}\n```'), {"x":1})
         self.assertIsNone(controller.parse_typed_output('analysis first\n```json\n{"x":1}\n```'))
         self.assertIsNone(controller.parse_typed_output('analysis first\n{"x":{"y":1}}'))
-        self.assertEqual(controller.parse_safety_output('analysis first\n```json\n{"x":1}\n```'), {"x":1})
-        self.assertEqual(controller.parse_safety_output('analysis first\n{"x":{"y":1}}'), {"x":{"y":1}})
-        self.assertIsNone(controller.parse_safety_output('{"status":"incident_candidate"}\n```json\n{"status":"clear"}\n```'))
+        clear = '{"nonce":"n","operation_id":"o","status":"clear","incident":{"candidate":false}}'
+        incident = '{"nonce":"n","operation_id":"o","status":"incident_candidate","incident":{"candidate":true}}'
+        self.assertEqual(controller.parse_safety_output(f'analysis {{}} first\n```json\n{clear}\n```')["status"], "clear")
+        self.assertEqual(controller.parse_safety_output(f'analysis first\n{clear}')["status"], "clear")
+        self.assertIsNone(controller.parse_safety_output(f'{incident}\n```json\n{clear}\n```'))
         self.assertIsNone(controller.parse_safety_output('prose {"x":1} then {"x":2}'))
 
     def test_poll_method_is_not_shadowed_by_interval(self):
