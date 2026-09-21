@@ -58,8 +58,9 @@ class ControllerContractTest(unittest.TestCase):
         self.assertEqual(controller.parse_typed_output('{"x":1}'), {"x":1})
         self.assertEqual(controller.parse_typed_output('```json\n{"x":1}\n```'), {"x":1})
         self.assertEqual(controller.parse_typed_output('analysis first\n```json\n{"x":1}\n```'), {"x":1})
+        self.assertEqual(controller.parse_typed_output('analysis first\n{"x":{"y":1}}'), {"x":{"y":1}})
         self.assertIsNone(controller.parse_typed_output('```json\n{"x":1}\n```\n```json\n{"x":2}\n```'))
-        self.assertIsNone(controller.parse_typed_output('prose {"x":1}'))
+        self.assertIsNone(controller.parse_typed_output('prose {"x":1} then {"x":2}'))
 
     def test_poll_method_is_not_shadowed_by_interval(self):
         instance = controller.Controller.__new__(controller.Controller)
