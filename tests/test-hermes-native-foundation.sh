@@ -61,6 +61,7 @@ fi
 plutil -lint launchd/com.example.ai-pr-automation-hermes.plist.template >/dev/null
 plutil -lint launchd/com.example.ai-pr-automation-dispatcher.plist.template >/dev/null
 plutil -lint launchd/com.example.ai-pr-automation-watchdog.plist.template >/dev/null
+grep -Fq '<key>RunAtLoad</key><true/>' launchd/com.example.ai-pr-automation-watchdog.plist.template
 # Producer templates contain integer placeholders and become valid only after render; install_native
 # renders then plutil-lints both outputs.
 grep -Fq '<key>StartInterval</key><integer>__INTERVAL_SECONDS__</integer>' launchd/com.example.ai-pr-automation-producer.plist.template

@@ -12,7 +12,7 @@
     <key>REQUESTS_DB_PORT</key><string>__DB_PORT__</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
-  <key>RunAtLoad</key><false/>
+  <key>RunAtLoad</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>Umask</key><integer>63</integer>
   <key>StandardOutPath</key><string>__LOG_ROOT__/watchdog.out.log</string>
