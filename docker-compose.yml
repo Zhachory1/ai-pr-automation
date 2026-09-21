@@ -246,6 +246,7 @@ services:
       - fleet_controller_tls_key
     volumes:
       - ${DOC_WRITER_STAGE_HOST:?set DOC_WRITER_STAGE_HOST to the native Hermes stage directory}:/work:ro
+      - ${HANDOFF_ROOT:?set HANDOFF_ROOT to the native Hermes handoff directory}:${HANDOFF_ROOT}:ro
     networks:
       - status-internal
       - status-host

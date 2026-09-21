@@ -78,13 +78,17 @@ grep -Fq 'provider: anthropic' agent-config/hermes/profiles/doc-write-v1/config.
 grep -Fq 'cli: []' agent-config/hermes/profiles/doc-write-v1/config.yaml
 grep -Fq 'DOC_WRITER_STAGE_DIR: /work' docker-compose.yml
 grep -Fq 'DOC_WRITER_STAGE_HOST' docker-compose.yml
+grep -Fq '${HANDOFF_ROOT:?set HANDOFF_ROOT to the native Hermes handoff directory}:${HANDOFF_ROOT}:ro' docker-compose.yml
 grep -Fq 'DOC_WRITER_STAGE_HOST=' .env.example
 # LaunchDaemon log files must exist before bootstrap; hermes-agent cannot create files in root-owned
 # LOG_ROOT and launchd otherwise exits EX_CONFIG before running the program.
 grep -Fq 'install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes-native.sh" dispatcher-start' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes-native.sh" producer-start' scripts/hermes-native.sh
+grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
 grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" up' scripts/fleet.sh
+grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
+grep -Fq 'PR_SAFETY_POLICY_DIGEST=' scripts/configure-hermes-role-env.sh
 mkdir -p "$tmp/runtime"
 cat > "$tmp/fake-hermes" <<'SH'
 #!/usr/bin/env bash
