@@ -1,6 +1,10 @@
 # PR Safety Review Contract
 
-Status: read-only merged-PR producer and dedicated PR-safety agent server. Agent runs directly in worker container.
+Status: historical Docker-worker design. The active runtime is host-native
+(`bin/hermes-pr-safety-producer` + `bin/hermes-pr-safety-runner` + `pr-safety-v1` profile); see
+[`docs/hermes/README.md`](hermes/README.md) (Host-Native Runtime section). Contract below (identity, policy
+digest, immutable handoff, incident-only human-review routing) is preserved verbatim under the
+native runner.
 
 ## Purpose
 

@@ -1,0 +1,5 @@
+name: pr-safety-v1
+version: 1.0.0
+description: Read-only draft-only safety analysis of one immutable merged-PR snapshot; incident candidates only surface for human review.
+hermes_requires: ">=0.21.3"
+distribution_owned: [mcp.json, SOUL.md, config.yaml, distribution.yaml, .no-bundled-skills]

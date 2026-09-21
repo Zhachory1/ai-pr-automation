@@ -30,6 +30,8 @@ MEMORY_PRODUCER_INTERVAL="${HERMES_MEMORY_CURATE_INTERVAL_SECONDS:-21600}"
 WATCHDOG="$SUPPORT_ROOT/hermes-postgres-watchdog"
 WATCHDOG_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-watchdog.plist"
 WATCHDOG_LABEL="com.example.ai-pr-automation-watchdog"
+PR_SAFETY_PRODUCER_INTERVAL="${HERMES_PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}"
+PR_SAFETY_PRODUCER_TEMPLATE="$ROOT/launchd/com.example.ai-pr-automation-pr-safety-producer.plist.template"
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
@@ -64,7 +66,8 @@ install_native() {
   local logfile
   for logfile in gateway.out gateway.err dispatcher.out dispatcher.err \
     producer-review.out producer-review.err producer-maintain.out producer-maintain.err \
-    memory-curate-producer.out memory-curate-producer.err; do
+    memory-curate-producer.out memory-curate-producer.err \
+    producer-pr-safety.out producer-pr-safety.err; do
     install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"
   done
   install -m 0600 -o root -g wheel /dev/null "$LOG_ROOT/watchdog.out.log"
@@ -85,6 +88,9 @@ install_native() {
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
   [[ ! -x "$ROOT/bin/hermes-queue-runner" ]] || install -m 0555 "$ROOT/bin/hermes-queue-runner" "$SUPPORT_ROOT/hermes-queue-runner"
   [[ ! -x "$ROOT/bin/hermes-pr-producer" ]] || install -m 0555 "$ROOT/bin/hermes-pr-producer" "$SUPPORT_ROOT/hermes-pr-producer"
+  [[ ! -x "$ROOT/bin/hermes-pr-safety-producer" ]] || install -m 0555 "$ROOT/bin/hermes-pr-safety-producer" "$SUPPORT_ROOT/hermes-pr-safety-producer"
+  [[ ! -x "$ROOT/bin/hermes-pr-safety-runner" ]] || install -m 0555 "$ROOT/bin/hermes-pr-safety-runner" "$SUPPORT_ROOT/hermes-pr-safety-runner"
+  [[ ! -f "$ROOT/bin/pr-safety-json-repair.py" ]] || install -m 0555 "$ROOT/bin/pr-safety-json-repair.py" "$SUPPORT_ROOT/pr-safety-json-repair.py"
   [[ ! -f "$ROOT/scripts/hermes-authority.py" ]] || install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
   [[ ! -x "$ROOT/bin/hermes-memory-curate" ]] || install -m 0555 "$ROOT/bin/hermes-memory-curate" "$SUPPORT_ROOT/hermes-memory-curate"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
@@ -146,6 +152,19 @@ temporary = pathlib.Path(target + ".tmp")
 temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
 PY
   plutil -lint "$MEMORY_PRODUCER_PLIST" >/dev/null
+  python3 - "$PR_SAFETY_PRODUCER_TEMPLATE" "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-pr-safety.plist" \
+    "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" "$AUTHORITY_FILE" "$PR_SAFETY_PRODUCER_INTERVAL" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, user, home, hermes_home, support, authority, interval, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in {"__HERMES_USER__":user,"__SERVICE_HOME__":home,
+                   "__HERMES_HOME__":hermes_home,"__SUPPORT_ROOT__":support,
+                   "__AUTHORITY_FILE__":authority,"__INTERVAL_SECONDS__":interval,"__LOG_ROOT__":logs}.items():
+    text = text.replace(key, value)
+temporary = pathlib.Path(target + ".tmp")
+temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-pr-safety.plist" >/dev/null
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-watchdog.plist.template" "$WATCHDOG_PLIST" \
     "$WATCHDOG" "$MAINTENANCE_FILE" "${REQUESTS_DB_PORT:-5432}" "$LOG_ROOT" <<'PY'
 import os, pathlib, sys
@@ -211,7 +230,7 @@ case "${1:-}" in
     ;;
   producer-start)
     need_root
-    for mode in review maintain; do
+    for mode in review maintain pr-safety; do
       launchctl bootstrap system "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-$mode.plist" 2>/dev/null \
         || launchctl kickstart -k "system/com.example.ai-pr-automation-producer-$mode"
     done
@@ -221,7 +240,7 @@ case "${1:-}" in
   producer-stop)
     need_root
     launchctl bootout "system/$MEMORY_PRODUCER_LABEL" 2>/dev/null || true
-    for mode in review maintain; do
+    for mode in review maintain pr-safety; do
       launchctl bootout "system/com.example.ai-pr-automation-producer-$mode" 2>/dev/null || true
     done
     ;;
@@ -241,7 +260,7 @@ case "${1:-}" in
   status)
     for service in "$LABEL" "$DISPATCHER_LABEL" "$WATCHDOG_LABEL" \
       com.example.ai-pr-automation-producer-review com.example.ai-pr-automation-producer-maintain \
-      "$MEMORY_PRODUCER_LABEL"; do
+      com.example.ai-pr-automation-producer-pr-safety "$MEMORY_PRODUCER_LABEL"; do
       launchctl print "system/$service" 2>/dev/null | awk -v name="$service" \
         '/^[[:space:]]*state =/{print name ": " $0; found=1; exit} END{if(!found) print name ": not loaded"}'
     done
