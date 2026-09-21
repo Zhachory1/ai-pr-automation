@@ -8,6 +8,7 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -54,13 +55,15 @@ class ControllerContractTest(unittest.TestCase):
         self.assertFalse(controller.valid_run_status(running, "r", terminal=True))
         self.assertTrue(controller.valid_run_status(dict(running, status="completed", output="{}", usage={}), "r", terminal=True))
 
-    def test_typed_output_accepts_only_plain_or_single_json_fence(self):
+    def test_typed_output_is_strict_and_safety_allows_one_embedded_object(self):
         self.assertEqual(controller.parse_typed_output('{"x":1}'), {"x":1})
         self.assertEqual(controller.parse_typed_output('```json\n{"x":1}\n```'), {"x":1})
-        self.assertEqual(controller.parse_typed_output('analysis first\n```json\n{"x":1}\n```'), {"x":1})
-        self.assertEqual(controller.parse_typed_output('analysis first\n{"x":{"y":1}}'), {"x":{"y":1}})
-        self.assertIsNone(controller.parse_typed_output('```json\n{"x":1}\n```\n```json\n{"x":2}\n```'))
-        self.assertIsNone(controller.parse_typed_output('prose {"x":1} then {"x":2}'))
+        self.assertIsNone(controller.parse_typed_output('analysis first\n```json\n{"x":1}\n```'))
+        self.assertIsNone(controller.parse_typed_output('analysis first\n{"x":{"y":1}}'))
+        self.assertEqual(controller.parse_safety_output('analysis first\n```json\n{"x":1}\n```'), {"x":1})
+        self.assertEqual(controller.parse_safety_output('analysis first\n{"x":{"y":1}}'), {"x":{"y":1}})
+        self.assertIsNone(controller.parse_safety_output('{"status":"incident_candidate"}\n```json\n{"status":"clear"}\n```'))
+        self.assertIsNone(controller.parse_safety_output('prose {"x":1} then {"x":2}'))
 
     def test_poll_method_is_not_shadowed_by_interval(self):
         instance = controller.Controller.__new__(controller.Controller)
@@ -111,6 +114,17 @@ class ControllerContractTest(unittest.TestCase):
         instance.postprocess_safety(attempt, value)
         settlement = calls[0][1]
         self.assertEqual(settlement[2:7], ("done", "clear", False, None, None))
+
+        incident = dict(value, status="needs_human_decision", incident={"candidate":True},
+                        findings=[{"severity":"high"}])
+        attempt.update(run_id="run", profile="pr-safety-v1")
+        with tempfile.TemporaryDirectory() as handoffs, mock.patch.dict("os.environ", {"HANDOFF_ROOT":handoffs}):
+            calls.clear(); instance.postprocess_safety(attempt, incident)
+            settlement = calls[0][1]
+            self.assertTrue(settlement[4])
+            self.assertEqual(json.loads(settlement[5])["status"], "incident_candidate")
+            instance.postprocess_safety(attempt, incident)
+            self.assertEqual(len(list(pathlib.Path(handoffs).iterdir())), 1)
 
     def test_memory_gates_reject_noise_secrets_and_weak_org_evidence(self):
         valid = {"content":"Use one stable operation key to prevent duplicate external effects after uncertain submissions.",
