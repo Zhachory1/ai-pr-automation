@@ -20,7 +20,7 @@ PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes.plist"
 LABEL="com.example.ai-pr-automation-hermes"
 DASHBOARD_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes-dashboard.plist"
 DASHBOARD_LABEL="com.example.ai-pr-automation-hermes-dashboard"
-HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/zhach-ai-pr-automation/hermes-api-keys.json}"
+HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }

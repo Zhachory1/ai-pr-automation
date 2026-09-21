@@ -68,6 +68,8 @@ grep -Fq 'chmod 0444 "$installer"' scripts/hermes-native.sh
 grep -Fq 'sync-support) HERMES_SUPPORT_ONLY=true install_native' scripts/hermes-native.sh
 grep -Fq 'scripts/configure-hermes-api.py' scripts/hermes-native.sh
 grep -Fq 'HERMES_API_KEYS_FILE=' scripts/hermes-native.sh
+grep -Fq '/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json' scripts/hermes-native.sh
+grep -Fq 'os.chown(args.keys_file, operator.pw_uid, operator.pw_gid)' scripts/configure-hermes-api.py
 for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1 doc-write-v1 memory-curate-v1 pr-safety-v1; do
   grep -A2 '^gateway:' "agent-config/hermes/profiles/$profile/config.yaml" | grep -Fq 'enabled: false'
 done

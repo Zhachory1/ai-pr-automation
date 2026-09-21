@@ -87,7 +87,7 @@ multiplexing, loopback Runs API, and stable distinct API keys for six profiles. 
 key bundle remains outside repository, default:
 
 ```text
-/Users/Shared/zhach-ai-pr-automation/hermes-api-keys.json
+/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json
 ```
 
 Keys are copied into each installed profile `.env`; controller receives bundle as Compose secret.
