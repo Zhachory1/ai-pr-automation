@@ -137,6 +137,30 @@ pushes with force-with-lease, and resolves addressed threads; the three-round ca
 supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
 human-owned.
 
+## Executor Cron
+
+The LaunchDaemon runs the Hermes gateway; queue execution is driven by Hermes' built-in scheduler.
+One `--no-agent` cron job per role runs the installed executor, which claims one request, invokes the
+role profile, and settles. Register the jobs (created PAUSED) with:
+
+```bash
+sudo scripts/hermes-native.sh sync-cron           # dry run
+sudo scripts/hermes-native.sh sync-cron --apply    # create paused jobs
+```
+
+Sync is idempotent: it creates missing jobs and refreshes the wrapper script for existing ones, but
+never resumes a job. Resume a role when its preconditions hold:
+
+```bash
+sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
+  /Users/hermes-agent/.local/bin/hermes cron resume ai-pr-automation-memory-curate
+```
+
+`memory-curate` self-enqueues one row per tick via its executor's `--enqueue` flag, so it is fully
+hands-off once resumed. The repo-scoped roles (`pr-review`, `pr-maintain`) only act on repositories
+listed in the authority YAML grant; grant the target repo before resuming, or their producer enqueues
+nothing.
+
 ## Per-Role Activation
 
 Each role activates behind the same exclusive cutover:
