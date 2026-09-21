@@ -100,7 +100,18 @@ def parse_typed_output(output):
         if len(fences) != 1: return None
         text = fences[0].strip()
     try: return json.loads(text)
-    except json.JSONDecodeError: return None
+    except json.JSONDecodeError: pass
+    decoder = json.JSONDecoder()
+    candidates = []
+    for start, char in enumerate(text):
+        if char != "{": continue
+        try:
+            value, length = decoder.raw_decode(text[start:])
+            if isinstance(value, dict): candidates.append((start, start + length, value))
+        except json.JSONDecodeError: pass
+    maximal = [candidate for candidate in candidates if not any(
+        other[0] <= candidate[0] and candidate[1] <= other[1] and candidate != other for other in candidates)]
+    return maximal[0][2] if len(maximal) == 1 else None
 
 
 def normalize_safety(value):
