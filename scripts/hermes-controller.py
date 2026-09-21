@@ -103,11 +103,13 @@ def parse_typed_output(output):
     except json.JSONDecodeError: return None
 
 
-def valid_safety(value, payload):
-    required = {"operation_id", "repo", "pr", "head_sha", "base_sha", "diff_hash",
+def valid_safety(value, payload, nonce):
+    required = {"nonce", "operation_id", "repo", "pr", "head_sha", "base_sha", "diff_hash",
                 "policy_version", "policy_digest", "status", "intent", "findings", "coverage",
                 "documentation", "observability", "incident", "human_decisions_needed"}
     if not strict_object(value, required):
+        return False
+    if value.get("nonce") != nonce:
         return False
     for key in ("operation_id", "repo", "pr", "head_sha", "base_sha", "diff_hash",
                 "policy_version", "policy_digest"):
@@ -295,7 +297,12 @@ class Controller:
                 else: content += "\n<untrusted-prior-draft>\n" + read.stdout.decode("utf-8", "replace") + "\n</untrusted-prior-draft>"
         elif kind == "pr-safety-review":
             task = "Assess the immutable snapshot and return the full pr-safety-review JSON schema. Do not write files."
-            schema = "full profile pr-safety-review schema with identity fields copied exactly"
+            schema = ('{"nonce":nonce,"operation_id":string,"repo":string,"pr":integer,'
+                      '"head_sha":string,"base_sha":string,"diff_hash":string,'
+                      '"policy_version":string,"policy_digest":string,"status":string,'
+                      '"intent":object,"findings":array,"coverage":object,"documentation":object,'
+                      '"observability":object,"incident":object,"human_decisions_needed":array}. '
+                      'Use exactly these keys; do not include snapshot_path or policy_path')
             content = canonical(payload)
             error = self.safety_preflight(payload)
         else:
@@ -531,7 +538,7 @@ class Controller:
         return str(target), hashlib.sha256(data).hexdigest()
 
     def postprocess_safety(self, attempt, value):
-        if not valid_safety(value, attempt["payload"]): raise ValueError("invalid safety result")
+        if not valid_safety(value, attempt["payload"], attempt["nonce"]): raise ValueError("invalid safety result")
         if value["status"] == "superseded":
             status, detail, proposal, provenance = "superseded", "analyst reported superseded", None, None
         elif value["status"] == "clear":

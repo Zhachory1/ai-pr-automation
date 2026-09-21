@@ -89,11 +89,13 @@ class ControllerContractTest(unittest.TestCase):
     def test_safety_clear_is_incident_free_and_identity_bound(self):
         payload = {"operation_id":"op","repo":"o/r","pr":1,"head_sha":"h","base_sha":"b",
                    "diff_hash":"d","policy_version":"v1","policy_digest":"p"}
-        value = dict(payload, status="clear", intent={}, findings=[], coverage={}, documentation={},
+        nonce = "a" * 32
+        value = dict(payload, nonce=nonce, status="clear", intent={}, findings=[], coverage={}, documentation={},
                      observability={}, incident={"candidate":False}, human_decisions_needed=[])
-        self.assertTrue(controller.valid_safety(value, payload))
-        self.assertFalse(controller.valid_safety(dict(value, findings=[{"claim":"x"}]), payload))
-        self.assertFalse(controller.valid_safety(dict(value, incident={"candidate":True}), payload))
+        self.assertTrue(controller.valid_safety(value, payload, nonce))
+        self.assertFalse(controller.valid_safety(dict(value, findings=[{"claim":"x"}]), payload, nonce))
+        self.assertFalse(controller.valid_safety(dict(value, incident={"candidate":True}), payload, nonce))
+        self.assertFalse(controller.valid_safety(dict(value, nonce="b" * 32), payload, nonce))
 
     def test_memory_gates_reject_noise_secrets_and_weak_org_evidence(self):
         valid = {"content":"Use one stable operation key to prevent duplicate external effects after uncertain submissions.",
