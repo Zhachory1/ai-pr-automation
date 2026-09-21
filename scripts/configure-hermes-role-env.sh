@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# One-time non-secret role defaults for the dedicated service account. Preserves provider/GitHub/DB
+# credentials already in ~/.hermes/.env; only replaces the named role-path settings below.
+set -euo pipefail
+[[ "$EUID" == 0 ]] || { echo 'run as root' >&2; exit 2; }
+SERVICE_USER="${HERMES_SERVICE_USER:-hermes-agent}"
+SERVICE_HOME="${HERMES_SERVICE_HOME:-/Users/$SERVICE_USER}"
+HERMES_HOME="${HERMES_NATIVE_HOME:-$SERVICE_HOME/.hermes}"
+CONFIG_ROOT="${HERMES_NATIVE_CONFIG_ROOT:-/usr/local/etc/ai-pr-automation}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ENV_FILE="$HERMES_HOME/.env"
+STATE="$SERVICE_HOME/.local/share/ai-pr-automation"
+DOC_STAGE="$STATE/doc-writer"
+HANDOFF="$STATE/safety-handoffs"
+SNAPSHOTS="$STATE/safety-snapshots"
+POLICY="$CONFIG_ROOT/pr-safety-policy-v1.md"
+
+install -d -m 700 -o "$SERVICE_USER" -g staff "$DOC_STAGE" "$HANDOFF" "$SNAPSHOTS"
+install -m 0444 -o root -g wheel "$ROOT/policy/pr-safety-policy-v1.md" "$POLICY"
+POLICY_DIGEST="$(shasum -a 256 "$POLICY" | awk '{print $1}')"
+
+tmp="$(mktemp /private/tmp/hermes-role-env.XXXXXX)"; trap 'rm -f "$tmp"' EXIT
+if [[ -f "$ENV_FILE" ]]; then
+  grep -vE '^(DOC_WRITER_STAGE_DIR|DOC_WRITER_INBOX_DIR|MEMORY_CURATOR_PRIVATE_DOCS|PR_SAFETY_MERGED_PR_AUTHORS|PR_SAFETY_SNAPSHOT_ROOT|PR_SAFETY_POLICY_ROOT|PR_SAFETY_POLICY_PATH|PR_SAFETY_POLICY_VERSION|PR_SAFETY_POLICY_DIGEST|HANDOFF_ROOT)=' "$ENV_FILE" > "$tmp" || true
+fi
+cat >> "$tmp" <<EOF
+DOC_WRITER_STAGE_DIR=$DOC_STAGE
+DOC_WRITER_INBOX_DIR=${HERMES_DOC_WRITER_INBOX_DIR:-/Users/zhach/private-docs/inbox}
+MEMORY_CURATOR_PRIVATE_DOCS=${HERMES_MEMORY_PRIVATE_DOCS:-/Users/zhach/private-docs}
+PR_SAFETY_MERGED_PR_AUTHORS=${HERMES_PR_SAFETY_AUTHORS:-Zhachory1,zhach1}
+PR_SAFETY_SNAPSHOT_ROOT=$SNAPSHOTS
+PR_SAFETY_POLICY_ROOT=$CONFIG_ROOT
+PR_SAFETY_POLICY_PATH=$POLICY
+PR_SAFETY_POLICY_VERSION=v1
+PR_SAFETY_POLICY_DIGEST=$POLICY_DIGEST
+HANDOFF_ROOT=$HANDOFF
+EOF
+install -m 0600 -o "$SERVICE_USER" -g staff "$tmp" "$ENV_FILE"
+echo "configured Hermes role paths: stage=$DOC_STAGE handoff=$HANDOFF snapshots=$SNAPSHOTS"
