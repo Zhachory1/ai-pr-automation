@@ -7,7 +7,7 @@ env CODE_ROOT="$tmp/code" SWARMVAULT_VAULT="$tmp/vault" REQUESTS_DB_PASSWORD=x H
   DOC_WRITER_STAGE_HOST="$tmp/stage" HANDOFF_ROOT="$tmp/handoffs" \
   FLEET_CONTROLLER_PASSWORD_FILE=/dev/null FLEET_CONTROLLER_SESSION_SECRET_FILE=/dev/null \
   FLEET_CONTROLLER_TLS_CA_CERT_FILE=/dev/null FLEET_CONTROLLER_TLS_CERT_FILE=/dev/null \
-  FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null UI_BASIC_AUTH_FILE=/dev/null HERMES_API_KEYS_FILE=/dev/null docker compose --profile hermes-api-conformance config --format json > "$tmp/config.json"
+  FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null HERMES_API_KEYS_FILE=/dev/null docker compose --profile hermes-api-conformance config --format json > "$tmp/config.json"
 python3 - "$tmp/config.json" <<'PY'
 import json,sys
 s=json.load(open(sys.argv[1]))['services']
@@ -33,8 +33,8 @@ for pair in \
   grep -Fq "server_name $host;" docker/ui-proxy.conf
   grep -Fq "proxy_pass $upstream;" docker/ui-proxy.conf
 done
-[[ "$(grep -c 'auth_basic_user_file /run/secrets/ui_basic_auth;' docker/ui-proxy.conf)" == 3 ]]
 grep -Fq 'proxy_set_header Host $http_host;' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header X-Fleet-Local-Proxy 1;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Origin $http_origin;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9119;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9999;' docker/ui-proxy.conf
@@ -42,4 +42,4 @@ grep -Fq 'proxy_set_header Host 127.0.0.1:9749;' docker/ui-proxy.conf
 if grep -Fq 'proxy_set_header Origin https://127.0.0.1' docker/ui-proxy.conf; then
   echo 'FAIL: proxy spoofs an allowed Origin and bypasses Fleet CSRF checks' >&2; exit 1
 fi
-echo 'PASS: nginx is sole UI port, routes all UIs, preserves Fleet CSRF, and auth-gates diagnostics'
+echo 'PASS: nginx is sole loopback UI port, routes all UIs, and preserves Fleet CSRF'

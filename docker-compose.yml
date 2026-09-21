@@ -228,14 +228,13 @@ services:
       STATUS_BIND: 0.0.0.0
       FLEET_CONTROLLER_PUBLIC_PORT: ${STATUS_PORT:-8080}
       FLEET_CONTROLLER_USERNAME: ${FLEET_CONTROLLER_USERNAME:-fleet}
-      FLEET_CONTROLLER_PASSWORD_FILE: /run/secrets/fleet_controller_password
+      FLEET_CONTROLLER_TRUST_LOCAL_PROXY: "true"
       FLEET_CONTROLLER_SESSION_SECRET_FILE: /run/secrets/fleet_controller_session_secret
       FLEET_CONTROLLER_TLS_CERT_FILE: /run/secrets/fleet_controller_tls_cert
       FLEET_CONTROLLER_TLS_KEY_FILE: /run/secrets/fleet_controller_tls_key
       FLEET_CONTROLLER_SESSION_SECONDS: ${FLEET_CONTROLLER_SESSION_SECONDS:-43200}
     secrets:
       - fleet_controller_tls_ca_cert
-      - fleet_controller_password
       - fleet_controller_session_secret
       - fleet_controller_tls_cert
       - fleet_controller_tls_key
@@ -398,7 +397,6 @@ services:
       - fleet_controller_tls_ca_cert
       - fleet_controller_tls_cert
       - fleet_controller_tls_key
-      - ui_basic_auth
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -424,16 +422,12 @@ volumes:
 secrets:
   fleet_controller_tls_ca_cert:
     file: ${FLEET_CONTROLLER_TLS_CA_CERT_FILE:?set FLEET_CONTROLLER_TLS_CA_CERT_FILE}
-  fleet_controller_password:
-    file: ${FLEET_CONTROLLER_PASSWORD_FILE:?set FLEET_CONTROLLER_PASSWORD_FILE}
   fleet_controller_session_secret:
     file: ${FLEET_CONTROLLER_SESSION_SECRET_FILE:?set FLEET_CONTROLLER_SESSION_SECRET_FILE}
   fleet_controller_tls_cert:
     file: ${FLEET_CONTROLLER_TLS_CERT_FILE:?set FLEET_CONTROLLER_TLS_CERT_FILE}
   fleet_controller_tls_key:
     file: ${FLEET_CONTROLLER_TLS_KEY_FILE:?set FLEET_CONTROLLER_TLS_KEY_FILE}
-  ui_basic_auth:
-    file: ${UI_BASIC_AUTH_FILE:?set UI_BASIC_AUTH_FILE}
   hermes_api_keys:
     file: ${HERMES_API_KEYS_FILE:?set HERMES_API_KEYS_FILE}
   github_read_token:

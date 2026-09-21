@@ -51,6 +51,17 @@ class StatusServerTest(unittest.TestCase):
         self.assertIn(f"fleet.localhost:{status_server.PUBLIC_PORT}", status_server.ALLOWED_HOSTS)
         self.assertIn(f"https://fleet.localhost:{status_server.PUBLIC_PORT}", status_server.ALLOWED_ORIGINS)
 
+    def test_trusted_local_proxy_needs_marker_and_exact_host(self):
+        class Request:
+            headers = {"X-Fleet-Local-Proxy": "1",
+                       "Host": f"fleet.localhost:{status_server.PUBLIC_PORT}"}
+        with patch.object(status_server, "TRUST_LOCAL_PROXY", True):
+            self.assertEqual(status_server.Handler._actor(Request()), status_server.AUTH_USERNAME)
+            Request.headers["Host"] = "example.com"
+            self.assertIsNone(status_server.Handler._actor(Request()))
+            Request.headers = {"Host": f"fleet.localhost:{status_server.PUBLIC_PORT}"}
+            self.assertIsNone(status_server.Handler._actor(Request()))
+
     def test_render_shows_escaped_pr_safety_human_queue_item(self):
         # query order: running, queued, recent, human_review, pending, today, capped, swe, docs
         rows = [
