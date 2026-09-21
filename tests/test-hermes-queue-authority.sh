@@ -19,7 +19,7 @@ docker run --rm -d --name "$container" -e POSTGRES_PASSWORD=test -e POSTGRES_DB=
   -p "$port:5432" postgres:16 >/dev/null
 for _ in $(seq 1 30); do docker exec "$container" psql -U postgres -d fleet -c 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$container" psql -U postgres -d fleet -c 'SELECT 1' >/dev/null
-for sql in 01-schema.sql 02-agent-server.sql 07-hermes-autonomy.sql 08-hermes-swe-pilot.sql 09-hermes-yaml-authority.sql; do
+for sql in 01-schema.sql 02-agent-server.sql 07-hermes-autonomy.sql 08-hermes-swe-pilot.sql 09-hermes-yaml-authority.sql 12-hermes-lease-reclaim.sql; do
   docker cp "docker/initdb/$sql" "$container:/tmp/$sql"
   docker exec "$container" psql -U postgres -d fleet -v ON_ERROR_STOP=1 -qf "/tmp/$sql"
 done
@@ -48,6 +48,25 @@ claim="$(q -c "SET ROLE hermes_worker; SELECT hermes_claim_request('pr-review','
 [[ "$(q -c "SET ROLE hermes_worker; SELECT hermes_renew_request('$id','$nonce',120);")" == t ]]
 [[ "$(q -c "SET ROLE hermes_worker; SELECT hermes_settle_request('$id','ffffffffffffffffffffffffffffffff','done',NULL);")" == f ]]
 [[ "$(q -c "SET ROLE hermes_worker; SELECT hermes_settle_request('$id','$nonce','done',NULL);")" == t ]]
+
+# Expired lease without side-effect intent is requeued and claimed by the next worker.
+retry_id="$(q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_request('pr-review','$payload'::jsonb,'owner/repo#8@head');")"
+old_nonce=11111111111111111111111111111111
+new_nonce=22222222222222222222222222222222
+q -c "SET ROLE hermes_worker; SELECT hermes_claim_request('pr-review','run-old','$old_nonce',120);" >/dev/null
+q -c "UPDATE requests SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$retry_id;" >/dev/null
+retry_claim="$(q -c "SET ROLE hermes_worker; SELECT hermes_claim_request('pr-review','run-new','$new_nonce',120);")"
+[[ "$(jq -r .id <<<"$retry_claim")" == "$retry_id" ]] || { echo 'FAIL: expired safe lease not reclaimed' >&2; exit 1; }
+[[ "$(q -c "SET ROLE hermes_worker; SELECT hermes_renew_request('$retry_id','$old_nonce',120);")" == f ]]
+q -c "SET ROLE hermes_worker; SELECT hermes_settle_request('$retry_id','$new_nonce','done',NULL);" >/dev/null
+
+# Expired lease after side-effect intent quarantines to reconcile and is never replayed.
+effect_id="$(q -c "SET ROLE hermes_worker; SELECT hermes_enqueue_request('pr-review','$payload'::jsonb,'owner/repo#9@head');")"
+effect_nonce=33333333333333333333333333333333
+q -c "SET ROLE hermes_worker; SELECT hermes_claim_request('pr-review','run-effect','$effect_nonce',120);" >/dev/null
+q -c "UPDATE requests SET side_effect_at=clock_timestamp(),lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$effect_id;" >/dev/null
+[[ -z "$(q -c "SET ROLE hermes_worker; SELECT hermes_claim_request('pr-review','run-next','44444444444444444444444444444444',120);")" ]]
+[[ "$(q -c "SELECT status FROM requests WHERE id=$effect_id;")" == reconcile ]] || { echo 'FAIL: expired effect lease replayed' >&2; exit 1; }
 
 # Least privilege intact: no direct table DML.
 if q -c "SET ROLE hermes_worker; UPDATE requests SET status='done' WHERE id=$id;" >/dev/null 2>&1; then
