@@ -345,7 +345,7 @@ services:
       HERMES_AUTHORITY_FILE: /config/authority.yaml
       GITHUB_TOKEN_FILE: /run/secrets/github_read_token
       PRODUCER_INTERVAL_SECONDS: ${PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}
-      PR_SAFETY_MERGED_PR_AUTHORS: ${PR_SAFETY_MERGED_PR_AUTHORS:-}
+      PR_SAFETY_MERGED_PR_AUTHORS: ${PR_SAFETY_MERGED_PR_AUTHORS:-Zhachory1,zhach1}
       PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}
       PR_SAFETY_POLICY_ROOT: /usr/local/etc/ai-pr-automation
       PR_SAFETY_POLICY_PATH: ${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}

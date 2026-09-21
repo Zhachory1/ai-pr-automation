@@ -179,7 +179,7 @@ class Controller:
         self.keys = bundle["profiles"]
         self.client = HermesClient(os.environ.get("HERMES_API_BASE_URL", "http://host.docker.internal:8642"), self.keys)
         self.lease = int(os.environ.get("HERMES_CONTROLLER_LEASE_SECONDS", "120"))
-        self.poll = float(os.environ.get("HERMES_CONTROLLER_POLL_SECONDS", "2"))
+        self.poll_interval = float(os.environ.get("HERMES_CONTROLLER_POLL_SECONDS", "2"))
         self.generations = {kind: profile_digest(profile) for kind, (profile, _) in KINDS.items()}
         self.running = set()
         self.lock = threading.Lock()
@@ -390,13 +390,13 @@ class Controller:
             try:
                 status, current = self.client.request("GET", attempt["profile"], suffix)
             except (OSError, ValueError, json.JSONDecodeError):
-                time.sleep(self.poll); continue
+                time.sleep(self.poll_interval); continue
             if status == 404:
                 self.settle(attempt, "reconcile" if attempt["kind"] in DIRECT_EFFECT else "failed",
                     "Hermes run missing", attempt_state="reconcile" if attempt["kind"] in DIRECT_EFFECT else "failed")
                 return None
             if status != 200:
-                time.sleep(self.poll); continue
+                time.sleep(self.poll_interval); continue
             required = {"object", "run_id", "status", "created_at", "updated_at", "last_event",
                         "session_id", "model", "output", "usage"}
             if not required <= set(current) or current.get("object") != "hermes.run" or current.get("run_id") != run_id:
@@ -406,7 +406,7 @@ class Controller:
                 return None
             terminal = current["status"]
             if terminal not in TERMINAL:
-                time.sleep(self.poll); continue
+                time.sleep(self.poll_interval); continue
             output = current.get("output", "")
             if not isinstance(output, str): output = ""
             raw = output.encode()
@@ -621,7 +621,7 @@ class Controller:
                 for kind in KINDS:
                     attempt = self.claim(kind)
                     if attempt: self.schedule(pool, attempt)
-                time.sleep(self.poll)
+                time.sleep(self.poll_interval)
 
 
 if __name__ == "__main__":
