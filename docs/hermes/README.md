@@ -153,6 +153,22 @@ pushes with force-with-lease, and resolves addressed threads; the three-round ca
 supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
 human-owned.
 
+`pr-safety-review` uses a dedicated executor, `bin/hermes-pr-safety-runner` (not the shared
+`hermes-queue-runner`), because its contract differs from every other kind: it validates the claimed
+payload's snapshot path, head/base SHA, diff hash, and policy digest against the immutable Git
+snapshot and pinned policy file BEFORE invoking the model (`pr-safety-v1`, OpenAI provider only), and
+settles through `hermes_settle_pr_safety_request` instead of the generic settle path. A `clear`
+result settles `done` with no pending row. A non-clear, non-superseded result is published as an
+immutable local handoff under `HANDOFF_ROOT`; ONLY `incident.candidate=true` additionally inserts a
+`pending_maintenance_reviews` row (in the same SQL transaction as the `done` settle, so a row can
+never be marked done while its incident review silently failed to queue). A snapshot/policy digest
+mismatch or moved head settles `superseded`; a malformed analyst result settles `failed`. Read-only
+merged-PR discovery for this kind is `bin/hermes-pr-safety-producer`, which snapshots each merge
+commit read-only and enqueues through the security-definer `hermes_enqueue_pr_safety_event`
+(event ledger keyed by merge SHA, so a merge commit is reviewed at most once); a new head for the
+same PR supersedes any still-queued review of an older head. See
+[`pr-safety-review.md`](../pr-safety-review.md) for the full contract.
+
 ## Dispatcher
 
 Queue execution is driven by a long-running dispatcher, not interval timers. `bin/hermes-dispatcher`
@@ -161,7 +177,8 @@ with a free slot and unclaimed depth (`hermes_queue_depth`), it spawns one execu
 and tracks its PID to enforce a per-kind concurrency cap. Work starts within a couple of seconds of
 enqueue; there are no per-role timers to tune.
 
-Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `memory-curate=1`.
+Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `memory-curate=1`,
+`pr-safety-review=1`.
 A crashed executor's row is reclaimed on lease expiry; a crashed dispatcher is restarted by launchd
 and in-flight rows are never lost (claim/settle is transactional and nonce-fenced). SIGTERM drains
 in-flight executors before exit; the maintenance file pauses new claims. The dispatcher replaces the

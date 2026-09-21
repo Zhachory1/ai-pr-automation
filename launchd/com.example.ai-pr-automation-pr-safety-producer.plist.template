@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PR-safety merged-PR discovery producer timer. Read-only: searches merged PRs, snapshots the
+     merge commit, and enqueues a pr-safety-review row. Makes zero model calls. Separate from the
+     review/maintain discovery producers because it needs the PR_SAFETY_* policy pin and snapshot
+     roots, sourced from the same private $HERMES_HOME/.env. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.ai-pr-automation-producer-pr-safety</string>
+  <key>UserName</key><string>__HERMES_USER__</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-c</string>
+    <string>set -a; . "$HERMES_HOME/.env"; set +a; exec __SUPPORT_ROOT__/hermes-pr-safety-producer</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>HOME</key><string>__SERVICE_HOME__</string>
+    <key>HERMES_HOME</key><string>__HERMES_HOME__</string>
+    <key>HERMES_AUTHORITY_FILE</key><string>__AUTHORITY_FILE__</string>
+    <key>HERMES_AUTHORITY_BIN</key><string>__SUPPORT_ROOT__/hermes-authority.py</string>
+    <key>PATH</key><string>__SERVICE_HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key><string>__SERVICE_HOME__</string>
+  <key>RunAtLoad</key><false/>
+  <key>StartInterval</key><integer>__INTERVAL_SECONDS__</integer>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>__LOG_ROOT__/producer-pr-safety.out.log</string>
+  <key>StandardErrorPath</key><string>__LOG_ROOT__/producer-pr-safety.err.log</string>
+</dict></plist>

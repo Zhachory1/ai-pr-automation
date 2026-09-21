@@ -197,6 +197,9 @@ bash tests/test-hermes-queue-runner.sh
 # collapsed queue API + YAML authority allowlist
 bash tests/test-hermes-queue-authority.sh
 bash tests/test-hermes-authority.sh
+# pr-safety producer dedupe/snapshot identity and incident-only queue routing
+bash tests/test-hermes-pr-safety-producer.sh
+bash tests/test-hermes-pr-safety-runner.sh
 # Fleet Controller auth and session controls
 python3 tests/test-status-server.py
 ```
