@@ -52,15 +52,18 @@ install_native() {
   need_root; need_user
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME"
-  local installer; installer="$(mktemp /private/tmp/hermes-install.XXXXXX)"
-  trap 'rm -f "$installer"' RETURN
-  curl -fsSL "$HERMES_INSTALLER_URL" -o "$installer"
-  chmod 0444 "$installer"
-  [[ "$(shasum -a 256 "$installer" | awk '{print $1}')" == "$HERMES_INSTALLER_SHA256" ]] \
-    || { echo "Hermes installer digest mismatch" >&2; exit 2; }
-  sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
-    bash "$installer" --commit "$HERMES_NATIVE_COMMIT" --force-commit --skip-setup \
-      --non-interactive --no-skills --dir "$INSTALL_DIR" --hermes-home "$HERMES_HOME"
+  local installer=""
+  if [[ "${HERMES_SUPPORT_ONLY:-false}" != true ]]; then
+    installer="$(mktemp /private/tmp/hermes-install.XXXXXX)"
+    trap 'rm -f "$installer"' RETURN
+    curl -fsSL "$HERMES_INSTALLER_URL" -o "$installer"
+    chmod 0444 "$installer"
+    [[ "$(shasum -a 256 "$installer" | awk '{print $1}')" == "$HERMES_INSTALLER_SHA256" ]] \
+      || { echo "Hermes installer digest mismatch" >&2; exit 2; }
+    sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+      bash "$installer" --commit "$HERMES_NATIVE_COMMIT" --force-commit --skip-setup \
+        --non-interactive --no-skills --dir "$INSTALL_DIR" --hermes-home "$HERMES_HOME"
+  fi
   sync_profile
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
   [[ ! -x "$ROOT/bin/hermes-queue-runner" ]] || install -m 0555 "$ROOT/bin/hermes-queue-runner" "$SUPPORT_ROOT/hermes-queue-runner"
@@ -129,9 +132,9 @@ body={"version":version,"commit":commit,"installer_sha256":installer,
 tmp=pathlib.Path(out+".tmp"); tmp.write_text(json.dumps(body,sort_keys=True,separators=(",",":"))+"\n")
 os.chmod(tmp,0o644); os.replace(tmp,out)
 PY
-  rm -f "$installer"; trap - RETURN
+  if [[ -n "$installer" ]]; then rm -f "$installer"; trap - RETURN; fi
   "$ROOT/scripts/hermes-native.sh" preflight
-  echo "Hermes native foundation installed but not started"
+  echo "Hermes native foundation and support files synced but not started"
 }
 
 preflight() {
@@ -142,6 +145,7 @@ preflight() {
 
 case "${1:-}" in
   install) install_native ;;
+  sync-support) HERMES_SUPPORT_ONLY=true install_native ;;
   sync-profiles) need_root; need_user; sync_profile; preflight ;;
   preflight) preflight ;;
   start)
@@ -176,5 +180,5 @@ case "${1:-}" in
     ;;
   status) launchctl print "system/$LABEL" 2>/dev/null; launchctl print "system/$DISPATCHER_LABEL" 2>/dev/null || true ;;
   logs) tail -n 200 "$LOG_ROOT"/gateway.*.log "$LOG_ROOT"/dispatcher.*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-profiles|preflight|start|stop|dispatcher-start|dispatcher-stop|producer-start|producer-stop|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|dispatcher-start|dispatcher-stop|producer-start|producer-stop|status|logs" >&2; exit 2 ;;
 esac
