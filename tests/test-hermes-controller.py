@@ -104,6 +104,14 @@ class ControllerContractTest(unittest.TestCase):
         self.assertEqual(normalized["status"], "incident_candidate")
         self.assertNotIn("policy_path", normalized); self.assertNotIn("snapshot_path", normalized)
 
+        calls = []
+        instance = controller.Controller.__new__(controller.Controller)
+        instance.db_bool = lambda query, params: calls.append((query, params)) or True
+        attempt = {"request_id":1,"attempt_no":1,"nonce":nonce,"payload":payload}
+        instance.postprocess_safety(attempt, value)
+        settlement = calls[0][1]
+        self.assertEqual(settlement[2:7], ("done", "clear", False, None, None))
+
     def test_memory_gates_reject_noise_secrets_and_weak_org_evidence(self):
         valid = {"content":"Use one stable operation key to prevent duplicate external effects after uncertain submissions.",
                  "sources":["a","b"], "convention":True}
