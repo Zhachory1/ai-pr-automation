@@ -1,255 +1,139 @@
-# Hermes Migration
+# Hermes API Control Plane
 
-Status: host-native autonomous migration approved; Fleet Controller auth merged; native foundation in progress.
+Status: Compose control plane active; host dispatcher and producer launchd jobs retired.
 
-## Artifacts
+## Architecture
 
-- [Host-native autonomous design](DD-host-native-agent-engine.md)
-- [Host-native implementation plan](plan-host-native-autonomous-hermes.md)
-- [Authority allowlist and two-tier memory design](DD-authority-and-memory.md)
-- Proposed API control plane: [grounding](grounding-api-control-plane.md), [PRD](PRD-api-driven-control-plane.md), [DD](DD-api-driven-control-plane.md), [council](council-api-driven-control-plane.md), [plan](plan-api-driven-control-plane.md)
-- [Roadmap](../hermes-migration-roadmap.md)
-- [Grounding brief](grounding-brief.md)
-- [PRD](PRD-m0-m2.md)
-- [Design](DD-m0-m2.md)
-- [Council decision](council-m0-m2.md)
-- [Parity matrix](parity-matrix.md)
-- [M0 plan](plan-m0-evidence-scaffold.md)
-- [M2 grounding](grounding-m2-doc-runtime.md)
-- [M2 PRD](PRD-m2-doc-runtime.md)
-- [M2 design](DD-m2-doc-runtime.md)
-- [M2 council](council-m2-doc-runtime.md)
-- [M2a plan](plan-m2a-doc-foundation.md)
-- [M2b shadow/routing plan](plan-m2b-shadow-routing.md)
-- [OAuth PRD](PRD-oauth-login.md)
-- [OAuth design](DD-oauth-login.md)
-- [OAuth plan](plan-oauth-login.md)
+Compose owns deterministic scheduling and effects. Host Hermes owns profile execution.
 
-## Native Foundation
-
-Pinned contract: `agent-config/hermes/native.env`. Foundation installs one headless gateway and
-`smoke-v1` profile under dedicated `hermes-agent` account. It does not create account, configure
-provider credentials, load LaunchDaemon, claim queue work, or make provider calls.
-
-After human creates `hermes-agent`, install without starting:
-
-```bash
-sudo scripts/hermes-native.sh install
-sudo scripts/hermes-native.sh preflight
+```text
+Compose producers -> Postgres requests/hermes_runs -> Compose hermes-controller
+                                                   -> host.docker.internal:8642
+                                                   -> /p/<profile>/v1/runs
 ```
 
-Operator-local Hermes may exist for CLI testing. It is not fleet runtime. Start dedicated gateway
-only after account, provider, API key, and autonomy gates are approved:
+Host launchd keeps only:
 
-```bash
-sudo scripts/hermes-native.sh start
-sudo scripts/hermes-native.sh stop
-scripts/hermes-native.sh status
-scripts/hermes-native.sh logs
+- pinned Hermes gateway bound to `127.0.0.1:8642`;
+- Hermes dashboard.
+
+Compose runs:
+
+- `hermes-controller`;
+- `pr-producer-review`;
+- `pr-producer-maintain`;
+- `pr-safety-producer`;
+- `memory-curate-producer`;
+- Postgres, Fleet Controller, and support services.
+
+No controller mount exposes Hermes service home, provider OAuth, SSH keys, browser profile, Docker
+socket, or GitHub write credentials. Controller receives profile API key bundle and deterministic
+artifact paths. GitHub discovery producers receive only read-only token.
+
+Approved design:
+
+- [PRD](PRD-api-driven-control-plane.md)
+- [design](DD-api-driven-control-plane.md)
+- [delivery plan](plan-api-driven-control-plane.md)
+
+## Queue and Runs ledger
+
+`hermes_kind_routes` fixes route, generation, profile, auth/profile generations, and caps:
+
+| Kind | Profile | Cap |
+| --- | --- | ---: |
+| `pr-maintain` | `pr-maintain-v1` | 3 |
+| `pr-review` | `pr-review-v1` | 1 |
+| `swe-implement` | `swe-implement-v1` | 1 |
+| `doc-write` | `doc-write-v1` | 1 |
+| `memory-curate` | `memory-curate-v1` | 1 |
+| `pr-safety-review` | `pr-safety-v1` | 1 |
+
+Claim and attempt reservation are one transaction. Each `hermes_runs` row stores immutable operation
+identity, route/auth/profile generations, exact serialized request bytes and SHA-256, stable
+idempotency key, submit count/deadline, Hermes run ID, terminal output digest, and reconcile evidence.
+Every `submitting` attempt consumes kind capacity, including accepted, running, and stop-unconfirmed
+attempts.
+
+Controller behavior:
+
+1. reserve attempt under API route/generation and fixed cap;
+2. final nonce/route/generation CAS before POST;
+3. POST exact stored bytes and stable key;
+4. replay identical request after lost response, at most eight POSTs/five minutes and within 23 hours;
+5. renew queue lease while polling;
+6. stop same Hermes run on lease loss and reconcile if termination is uncertain;
+7. digest terminal output, strict-parse per kind, run deterministic effect, and nonce-fence settlement.
+
+Review, maintain, and SWE are direct-effect kinds. Missing/interrupted/malformed or otherwise uncertain
+results enter `reconcile`; matching operation key remains blocked until human disposition. They never
+start a second run automatically.
+
+## Deterministic kind handling
+
+- `doc-write`: controller reuses atomic stage/publication helper. Model returns questions or document
+  bytes only. Exact staged bytes and digest bind human approval; publication-only requests skip model.
+- `pr-safety-review`: controller validates snapshot head/base/diff and pinned policy before submit,
+  writes immutable handoff after strict output, and inserts human queue row only for incident candidate.
+- `memory-curate`: model proposes candidates from bounded source bytes. Controller applies secret,
+  shape, convention, team dedupe, stricter org, and watermark gates before writes.
+- `pr-review`, `pr-maintain`, `swe-implement`: profile performs GitHub effect; controller validates
+  exact-head marker, pushed SHA, or repository-bound draft PR URL respectively.
+
+## API keys and profiles
+
+Pinned runtime contract is `agent-config/hermes/native.env`. `sync-support` enables profile
+multiplexing, loopback Runs API, and stable distinct API keys for six profiles. Root/operator-owned
+key bundle remains outside repository, default:
+
+```text
+/Users/Shared/zhach-ai-pr-automation/hermes-api-keys.json
 ```
 
-## Repo Authority
+Keys are copied into each installed profile `.env`; controller receives bundle as Compose secret.
+Rotation requires pause, drain/reconcile, key replacement, conformance, generation increment, resume.
+Do not rotate by editing bundle in place while attempts submit.
 
-Authority is scope-of-attention, not security. The enforcement boundary is the `hermes-agent` OS
-account, the repo-scoped deploy key, the read-only API token, and GitHub branch protection — those
-enforce which repos and what actions server-side. The agent does not pre-verify them; if it hits a
-protected-branch, merge, or permission wall it stops and reconciles.
+## Authority and producers
 
-The operator lists granted repositories in a plain YAML allowlist outside `CODE_ROOT` and git (see
-`agent-config/hermes/authority.example.yaml`), pointed to by `HERMES_AUTHORITY_FILE`:
+Repository authority YAML is scope-of-attention, not credential security. Compose review/maintain
+producers discover open PRs, resolve exact heads, and enqueue deduped rows. Safety producer discovers
+merged PRs and writes immutable snapshots. Memory producer enqueues hourly-deduped schedule trigger.
+Producers make no model calls.
 
-```bash
-scripts/hermes-authority.py --check Zhachory1/ai-pr-automation   # exit 0 granted, 3 denied
-scripts/hermes-authority.py                                       # list granted repos
-```
+Set in `.env`:
 
-Producers consult the allowlist before enqueuing repo-scoped work. The queue functions no longer take
-a proof or check enrollment; there is no freshness gate. Remove a repo from the YAML to stop the
-fleet spending effort on it. Local roles (`doc-write`, `memory-curate`) are not repo-scoped and need
-no grant.
+- `HERMES_AUTHORITY_FILE`;
+- `GITHUB_READ_TOKEN_FILE`;
+- `PR_SAFETY_MERGED_PR_AUTHORS`, policy digest, and shared snapshot path;
+- document stage/inbox paths;
+- memory source/state paths.
 
-This replaces the earlier enrollment/proof/10-minute-freshness model, which re-proved a server-side
-wall that already enforces itself. See [DD-authority-and-memory.md](DD-authority-and-memory.md).
-
-### Discovery producer
-
-`bin/hermes-pr-producer <review|maintain>` finds eligible open PRs (assigned to the fleet account for
-review, authored for maintain) across the granted repos, resolves each head SHA, and enqueues one row
-per PR with a per-commit dedupe key (`repo#num@headsha`) so a re-review only fires on a new head. It
-makes zero model calls. Consumption is continuous (the dispatcher); discovery is the one interval
-component, because GitHub cannot push to us. Two launchd timers (review + maintain,
-`HERMES_PRODUCER_INTERVAL_SECONDS`, default 900s) run the producers:
+## Operations
 
 ```bash
-sudo scripts/hermes-native.sh producer-start   # load review + maintain discovery timers
-sudo scripts/hermes-native.sh producer-stop
-```
-
-Grant a repo in the authority YAML before starting producers, or they enqueue nothing.
-
-## M0 Pull Requests
-
-| Work | PR | State |
-| --- | --- | --- |
-| Intent, parity, and plan | [#117](https://github.com/Zhachory1/ai-pr-automation/pull/117) | merged |
-| Pinned disabled Compose service | [#118](https://github.com/Zhachory1/ai-pr-automation/pull/118) | merged |
-| Baseline metrics | [#119](https://github.com/Zhachory1/ai-pr-automation/pull/119) | merged |
-| Isolated state-volume round trip | [#120](https://github.com/Zhachory1/ai-pr-automation/pull/120) | merged |
-
-M0 focused validation passed after merge. No M0 PR activates Hermes.
-
-## M2a Pull Requests
-
-| Work | PR | State |
-| --- | --- | --- |
-| Design and plan | [#121](https://github.com/Zhachory1/ai-pr-automation/pull/121) | merged |
-| Runtime/filesystem assumptions | [#122](https://github.com/Zhachory1/ai-pr-automation/pull/122) | merged |
-| Durable run/publication state | [#123](https://github.com/Zhachory1/ai-pr-automation/pull/123) | merged |
-| Atomic publication helper | [#124](https://github.com/Zhachory1/ai-pr-automation/pull/124) | merged |
-| Exact publication approval | [#125](https://github.com/Zhachory1/ai-pr-automation/pull/125) | merged |
-| Bounded Runs adapter | [#126](https://github.com/Zhachory1/ai-pr-automation/pull/126) | merged |
-| Immutable prompt renderer | [#127](https://github.com/Zhachory1/ai-pr-automation/pull/127) | merged |
-| Runtime and egress conformance | [#128](https://github.com/Zhachory1/ai-pr-automation/pull/128) | merged |
-
-No M2a PR routes a doc request through Hermes or makes a paid provider call.
-
-## Account OAuth
-
-Provider credentials live in the `hermes-agent` account's `~/.hermes/.env`, never in repo `.env`.
-Log the service account into a provider before activating any paid role:
-
-```bash
-sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
-  /Users/hermes-agent/.local/bin/hermes auth add anthropic --type oauth --no-browser
-sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
-  /Users/hermes-agent/.local/bin/hermes auth status anthropic
-```
-
-OpenAI Codex uses the same flow with `openai-codex`. If a token is exposed, revoke it at the provider
-before local logout. Each immutable profile pins its own `model.provider` / `model.default`.
-
-## Host-Native Runtime
-
-One pinned Hermes runs every role under `hermes-agent`. `sync-support` enables the loopback Runs API,
-turns on profile multiplexing, and provisions stable distinct API keys for all six profiles. The
-root/operator-owned key bundle lives outside CODE_ROOT at
-`/Users/Shared/zhach-ai-pr-automation/hermes-api-keys.json`; keys are copied into private profile
-`.env` files and never printed. Rotation is not automatic—follow the approved pause/drain/rotate
-protocol in [DD-api-driven-control-plane.md](DD-api-driven-control-plane.md).
-
-Install and manage the gateway with:
-
-```bash
-sudo scripts/hermes-native.sh install         # pinned Hermes for the service account
-sudo scripts/hermes-native.sh sync-profiles    # install immutable profiles
-sudo scripts/hermes-native.sh start            # load LaunchDaemon (after gates approved)
-sudo scripts/hermes-native.sh stop             # maintenance mode; stops the gateway
-scripts/hermes-native.sh status
-scripts/hermes-native.sh logs
-```
-
-`bin/hermes-queue-runner <kind>` claims one request, renders it as untrusted task data into the
-matching immutable profile, does the work in an ephemeral worktree, and settles a typed result. The
-kind→profile map is fixed. If Postgres is unavailable, claims fail and queued work stays durable
-until Docker is restarted.
-
-Mapped kinds: `swe-implement` → `swe-implement-v1` (typed SWE settle, draft-PR URL); `pr-review` →
-`pr-review-v1` (generic settle, exact-head marker); `pr-maintain` → `pr-maintain-v1` (generic settle,
-pushed head). `pr-review-v1` resolves the head, refuses to approve an incomplete or superseded diff,
-and posts one review per head. `pr-maintain-v1` works the exact claim head, makes one bounded fix pass,
-pushes with force-with-lease, and resolves addressed threads; the three-round cap and stale-head
-supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
-human-owned.
-
-`pr-safety-review` uses a dedicated executor, `bin/hermes-pr-safety-runner` (not the shared
-`hermes-queue-runner`), because its contract differs from every other kind: it validates the claimed
-payload's snapshot path, head/base SHA, diff hash, and policy digest against the immutable Git
-snapshot and pinned policy file BEFORE invoking the Anthropic profile, and settles through
-`hermes_settle_pr_safety_request`. A `clear` result settles `done` with no pending row. A non-clear,
-non-superseded result is published as an immutable local handoff under `HANDOFF_ROOT`; ONLY
-`incident.candidate=true` additionally inserts a `pending_maintenance_reviews` row in the same SQL
-transaction as the `done` settle. Read-only merged-PR discovery is
-`bin/hermes-pr-safety-producer`; its event ledger is keyed by merge SHA.
-
-`bin/hermes-doc-write-runner` owns `doc-write` with immutable Anthropic profile `doc-write-v1`.
-Configure `DOC_WRITER_STAGE_DIR` and required `DOC_WRITER_INBOX_DIR` in the service account's
-`~/.hermes/.env`. Fleet Controller mounts the same stage via Compose `DOC_WRITER_STAGE_HOST` and
-verifies staged regular-file bytes and digest before approval. Hermes receives neither database nor
-inbox credentials; publication-only claims skip the model and copy only the approved bytes. Prepared
-publication crashes recover through the deterministic `doc-writer-reconcile` operator tool.
-
-## Dispatcher
-
-Queue execution is driven by a long-running dispatcher, not interval timers. `bin/hermes-dispatcher`
-runs under launchd as `hermes-agent` and continuously drains the queue: each pass, for every kind
-with a free slot and unclaimed depth (`hermes_queue_depth`), it spawns one executor in the background
-and tracks its PID to enforce a per-kind concurrency cap. Work starts within a couple of seconds of
-enqueue; there are no per-role timers to tune.
-
-Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `doc-write=1`,
-`memory-curate=1`, `pr-safety-review=1`.
-A crashed executor's row is reclaimed on lease expiry; a crashed dispatcher is restarted by launchd
-and in-flight rows are never lost (claim/settle is transactional and nonce-fenced). SIGTERM drains
-in-flight executors before exit; the maintenance file pauses new claims. The dispatcher replaces the
-consumer cron jobs entirely — do not run both.
-
-```bash
-sudo scripts/hermes-native.sh dispatcher-start   # load dispatcher
-sudo scripts/hermes-native.sh dispatcher-stop    # SIGTERM/drain dispatcher
-```
-
-The memory-curate producer enqueues one row every six hours (`--enqueue-only`); the dispatcher owns
-the claim and its `memory-curate=1` cap. Postgres recovery is operator-driven: restart Docker or run
-`fleet.sh up`; durable queued/leased work remains in Postgres and lease fencing prevents stale settle.
-
-For normal operation use the single wrapper:
-
-```bash
-scripts/fleet.sh up       # Compose support, then native gateway/dispatcher/producers
+sudo scripts/hermes-native.sh install       # pinned runtime, profiles, API keys, gateway/dashboard plists
+scripts/fleet.sh up                         # host gateway/dashboard + Compose controller/producers
 scripts/fleet.sh status
-scripts/fleet.sh down     # producers off, dispatcher drains, gateway off, Compose down
+scripts/fleet.sh logs
+scripts/fleet.sh down
 ```
 
-## Per-Role Activation
-
-Each role activates behind the same exclusive cutover:
-
-1. Confirm the queue has no in-flight row for the kind.
-2. Grant the target repository in the authority YAML (repo roles only).
-3. Enqueue one bounded task through the security-definer queue function.
-4. Run `bin/hermes-queue-runner <kind>` once and verify a single claimant, the typed result, and the
-   expected draft PR or review.
-5. Leave the executor paused until standing activation is approved.
-
-The boundary is enforced server-side: if the agent attempts a protected-branch push, merge, or other
-denied action, GitHub rejects it and the row reconciles. Nothing is pre-proven client-side.
+`sync-support` also unloads and removes old dispatcher/producer LaunchDaemons and installed queue
+runner binaries. Source artifacts remain in repository only for bounded rollback/audit during bake;
+normal lifecycle cannot start them.
 
 ## Validation
 
 ```bash
-bash tests/test-hermes-queue-runner.sh
-bash tests/test-hermes-queue-authority.sh
-bash tests/test-hermes-authority.sh
-bash tests/test-hermes-native-foundation.sh
-bash tests/test-hermes-doc-write-native.sh
+python3 tests/test-hermes-api-foundation.py
+python3 tests/test-hermes-controller.py
+bash tests/test-hermes-control-plane.sh
+bash tests/test-hermes-compose-wiring.sh
+bash tests/test-schema-migrate-idempotent.sh
 bash tests/test-hermes-doc-write-schema.sh
-bash tests/test-hermes-state-roundtrip.sh
-python3 tests/test-status-server.py
+bash tests/test-hermes-pr-safety-runner.sh
+bash tests/test-hermes-memory-curate.sh
 ```
 
-## Boundaries
-
-The runtime proves:
-
-- exact Hermes image and native commit pin;
-- immutable profile per queue kind;
-- YAML allowlist as operator scope-of-attention (not a security gate);
-- least-privilege security-definer queue API;
-- server-side denial of protected push, merge, unsafe workflow execution, deployment, administration.
-
-The runtime does not grant:
-
-- human GitHub token, SSH, Keychain, or Fleet Controller secret access;
-- protected-branch or default-branch push;
-- API merge, deployment, release, or administration;
-- exact-byte document publication without human approval.
+Postgres tests use throwaway `postgres:16`; fake-Hermes tests make no provider or GitHub effects.

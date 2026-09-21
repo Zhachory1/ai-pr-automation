@@ -1,9 +1,9 @@
 # Agent fleet support substrate
 
-One `docker-compose.yml` (repo root) + this dir. Compose renders **support services only**: the
-Postgres request queue, Hindsight memory, coderag, swarmvault, and the Fleet Controller UI. AI
-execution runs host-native under the `hermes-agent` account (see
-[`../docs/hermes/README.md`](../docs/hermes/README.md)); no AI worker runs in Compose.
+One `docker-compose.yml` (repo root) + this dir. Compose runs Postgres, Fleet Controller, support
+services, deterministic producers, and Hermes API controller. Model/tool execution stays in pinned
+host Hermes under `hermes-agent`; controller reaches profile-scoped Runs API through
+`host.docker.internal` (see [`../docs/hermes/README.md`](../docs/hermes/README.md)).
 
 ## Bring it up
 
@@ -19,13 +19,11 @@ fresh-install baseline.
 
 ## Queue and reconciliation
 
-The host-native runtime claims requests with a renewable Postgres lease. Different PR lineages run in
-parallel; a partial unique index prevents two claimants working the same head. After an abrupt stop,
-untouched work becomes claimable when the lease expires. Work that crossed a side-effect boundary
-enters `reconcile` instead of replaying a possible push or reply. `reconcile` rows appear in the Fleet
-Controller Recent list. Verify GitHub state before manually marking one `done` or returning it to
-`queued`; automatic retries stay blocked for that head. Use one audited transaction after inspecting
-the request ID and remote PR:
+Compose controller reserves exact Runs API bytes and stable idempotency key in `hermes_runs`, renews
+the queue lease, and nonce-fences terminal settlement. DB-enforced caps are maintain=3 and one for
+each other kind. Direct-effect uncertainty enters `reconcile`; matching operation remains blocked and
+never auto-retries. `reconcile` rows appear in Fleet Controller. Verify remote state before recording
+human disposition. Legacy request-only recovery remains:
 
 ```sql
 -- Effects landed: UPDATE requests SET status='done', posted_ref='manually-reconciled',
@@ -101,9 +99,7 @@ wrong path and silently re-init an empty cluster — data loss, no error. To mov
 
 ## Schema
 
-`docker/initdb/01-schema.sql` loads once on first Postgres boot. `requests` stores queue records;
-`pending_decisions` remains for compatibility with older records. Validated against postgres:16: the
-dedupe index blocks two active rows for the same `(kind, dedupe_key)`; the running-lineage index
-blocks concurrent work on different heads of the same PR; expired attempts are nonce-fenced and
-reclaimed. `07-hermes-autonomy.sql` and `08-hermes-swe-pilot.sql` add the enrollment table and the
-security-definer queue functions that are the runtime's sole repository authority.
+`docker/initdb/01-schema.sql` loads once on first Postgres boot. Numbered migrations add queue APIs,
+`hermes_kind_routes`, and generalized `hermes_runs`; schema-migrate reapplies upgrades idempotently.
+Postgres enforces route generations, fixed caps, exact-byte digest, one unresolved operation, replay
+bounds, and nonce-fenced settlement.

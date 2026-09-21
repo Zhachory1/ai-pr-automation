@@ -1,0 +1,20 @@
+FROM python:3.11.11-slim-bookworm@sha256:081075da77b2b55c23c088251026fb69a7b2bf92471e491ff5fd75c192fd38e5
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash ca-certificates curl git gh jq openssl postgresql-client && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip install --no-cache-dir psycopg[binary]==3.2.10
+
+WORKDIR /app
+COPY scripts/hermes-controller.py /app/hermes-controller.py
+COPY scripts/hermes-authority.py /app/hermes-authority.py
+COPY scripts/hermes-compose-producer.sh /app/hermes-compose-producer.sh
+COPY bin/hermes-pr-producer /app/hermes-pr-producer
+COPY bin/hermes-pr-safety-producer /app/hermes-pr-safety-producer
+COPY bin/doc-writer-publication /app/doc-writer-publication
+COPY agent-config/hermes/profiles /app/profiles
+COPY agent-config/hermes/native.env /app/native.env
+RUN chmod 0555 /app/hermes-controller.py /app/hermes-authority.py /app/hermes-compose-producer.sh \
+    /app/hermes-pr-producer /app/hermes-pr-safety-producer /app/doc-writer-publication
+
+CMD ["python3", "/app/hermes-controller.py"]

@@ -43,9 +43,14 @@ WITH publication AS (
   UPDATE doc_publications SET state='published',published_at=clock_timestamp(),updated_at=clock_timestamp(),error=NULL
   WHERE request_id=:'id'::bigint AND state='prepared' AND target_path=:'target'
     AND content_digest=:'digest' AND document_generation=:'generation' RETURNING request_id
+), finished AS (
+  UPDATE requests r SET status='done',posted_ref=:'target',finished_at=clock_timestamp(),fail_response=NULL
+  FROM publication p WHERE r.id=p.request_id AND r.status='reconcile' RETURNING r.id
+), attempt AS (
+  UPDATE hermes_runs h SET state='completed',error=NULL,updated_at=clock_timestamp()
+  FROM finished f WHERE h.request_id=f.id AND h.state='submitting' RETURNING h.request_id
 )
-UPDATE requests r SET status='done',posted_ref=:'target',finished_at=clock_timestamp(),fail_response=NULL
-FROM publication p WHERE r.id=p.request_id AND r.status='reconcile' RETURNING r.id;
+SELECT id FROM finished;
 SQL
 )"
   [[ "$completed" == "$id" ]] || { echo "request=$id target exists but DB completion failed" >&2; continue; }

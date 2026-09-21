@@ -250,6 +250,129 @@ services:
       schema-migrate:
         condition: service_completed_successfully
 
+  hermes-controller:
+    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.hermes-controller
+    container_name: fleet-hermes-controller
+    restart: unless-stopped
+    environment:
+      PGHOST: db-requests
+      PGPORT: "5432"
+      PGUSER: ${REQUESTS_DB_USER:-fleet}
+      PGDATABASE: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      HERMES_API_KEYS_FILE: /run/secrets/hermes_api_keys
+      HERMES_API_BASE_URL: http://host.docker.internal:8642
+      HERMES_CONTROLLER_LEASE_SECONDS: ${HERMES_CONTROLLER_LEASE_SECONDS:-120}
+      HERMES_CONTROLLER_POLL_SECONDS: ${HERMES_CONTROLLER_POLL_SECONDS:-2}
+      DOC_WRITER_STAGE_DIR: /doc-stage
+      DOC_WRITER_INBOX_DIR: /doc-inbox
+      DOC_WRITER_PUBLICATION_BIN: /app/doc-writer-publication
+      PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}
+      PR_SAFETY_POLICY_PATH: ${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}
+      PR_SAFETY_POLICY_VERSION: ${PR_SAFETY_POLICY_VERSION:-v1}
+      PR_SAFETY_POLICY_DIGEST: ${PR_SAFETY_POLICY_DIGEST:-}
+      HANDOFF_ROOT: ${HANDOFF_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-handoffs}
+      MEMORY_SOURCE_ROOT: /memory-sources
+      MEMORY_CURATOR_STATE_DIR: /memory-state
+      HERMES_MEMORY_TEAM_URL: ${HERMES_MEMORY_TEAM_URL:-https://rokt-agent-memory.eng.roktinternal.com/mcp/team-ads-success/}
+      HERMES_MEMORY_ORG_URL: ${HERMES_MEMORY_ORG_URL:-https://rokt-agent-memory.eng.roktinternal.com/mcp/Rokt%20Builders/}
+      HERMES_MEMORY_ORG_NAME_BLOCKLIST: ${HERMES_MEMORY_ORG_NAME_BLOCKLIST:-}
+    secrets:
+      - hermes_api_keys
+    volumes:
+      - ${DOC_WRITER_STAGE_HOST:-/Users/Shared/ai-pr-automation-runtime/doc-writer}:/doc-stage
+      - ${DOC_WRITER_INBOX_HOST:-/Users/zhach/private-docs/inbox}:/doc-inbox
+      - ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}:${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}:ro
+      - ./policy/pr-safety-policy-v1.md:${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}:ro
+      - ${HANDOFF_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-handoffs}:${HANDOFF_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-handoffs}
+      - ${MEMORY_SOURCE_HOST:-/Users/zhach/private-docs}:/memory-sources:ro
+      - ${MEMORY_CURATOR_STATE_HOST:-/Users/Shared/ai-pr-automation-runtime/memory-curator}:/memory-state
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db-requests:
+        condition: service_healthy
+      schema-migrate:
+        condition: service_completed_successfully
+
+  pr-producer-review:
+    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
+    restart: unless-stopped
+    command: ["/app/hermes-compose-producer.sh", "review"]
+    environment:
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      HERMES_AUTHORITY_FILE: /config/authority.yaml
+      GITHUB_TOKEN_FILE: /run/secrets/github_read_token
+      PRODUCER_INTERVAL_SECONDS: ${PR_PRODUCER_INTERVAL_SECONDS:-300}
+    secrets: [github_read_token]
+    volumes:
+      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
+    depends_on:
+      schema-migrate: {condition: service_completed_successfully}
+
+  pr-producer-maintain:
+    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
+    restart: unless-stopped
+    command: ["/app/hermes-compose-producer.sh", "maintain"]
+    environment:
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      HERMES_AUTHORITY_FILE: /config/authority.yaml
+      GITHUB_TOKEN_FILE: /run/secrets/github_read_token
+      PRODUCER_INTERVAL_SECONDS: ${PR_PRODUCER_INTERVAL_SECONDS:-300}
+    secrets: [github_read_token]
+    volumes:
+      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
+    depends_on:
+      schema-migrate: {condition: service_completed_successfully}
+
+  pr-safety-producer:
+    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
+    restart: unless-stopped
+    command: ["/app/hermes-compose-producer.sh", "pr-safety"]
+    environment:
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      HERMES_AUTHORITY_FILE: /config/authority.yaml
+      GITHUB_TOKEN_FILE: /run/secrets/github_read_token
+      PRODUCER_INTERVAL_SECONDS: ${PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}
+      PR_SAFETY_MERGED_PR_AUTHORS: ${PR_SAFETY_MERGED_PR_AUTHORS:-}
+      PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}
+      PR_SAFETY_POLICY_ROOT: /usr/local/etc/ai-pr-automation
+      PR_SAFETY_POLICY_PATH: ${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}
+      PR_SAFETY_POLICY_VERSION: ${PR_SAFETY_POLICY_VERSION:-v1}
+      PR_SAFETY_POLICY_DIGEST: ${PR_SAFETY_POLICY_DIGEST:-}
+    secrets: [github_read_token]
+    volumes:
+      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
+      - ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}:${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}
+      - ./policy/pr-safety-policy-v1.md:${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}:ro
+    depends_on:
+      schema-migrate: {condition: service_completed_successfully}
+
+  memory-curate-producer:
+    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
+    restart: unless-stopped
+    command: ["/app/hermes-compose-producer.sh", "memory"]
+    environment:
+      REQUESTS_DB_HOST: db-requests
+      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
+      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
+      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
+      PRODUCER_INTERVAL_SECONDS: ${HERMES_MEMORY_CURATE_INTERVAL_SECONDS:-21600}
+    depends_on:
+      schema-migrate: {condition: service_completed_successfully}
+
   hermes-api-conformance:
     profiles: ["hermes-api-conformance"]
     image: python:3.11-alpine@sha256:0495f5559318affa673172ec7e35cd0a5213e4aaf4c76d0a66554c0af97b157e
@@ -313,3 +436,5 @@ secrets:
     file: ${UI_BASIC_AUTH_FILE:?set UI_BASIC_AUTH_FILE}
   hermes_api_keys:
     file: ${HERMES_API_KEYS_FILE:?set HERMES_API_KEYS_FILE}
+  github_read_token:
+    file: ${GITHUB_READ_TOKEN_FILE:-/dev/null}
