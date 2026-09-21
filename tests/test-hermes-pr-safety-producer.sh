@@ -46,7 +46,7 @@ repos:
 EOF
 export HERMES_AUTHORITY_FILE="$TMP/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py"
 
-# fake gh: `search prs` returns configured records; `pr view` resolves merge/base; `repo clone` from SOURCE.
+# fake gh: search returns records; Pulls API resolves merge/base; repo clone uses SOURCE.
 cat > "$TMP/bin/gh" <<SH
 #!/usr/bin/env bash
 set -euo pipefail
@@ -55,7 +55,7 @@ case "\$1 \$2" in
     [[ " \$* " == *" --sort updated "* && " \$* " == *" --order desc "* ]] || exit 2
     cat "\$PR_SAFETY_TEST_SEARCH_JSON"
     ;;
-  "pr view")    cat "\$PR_SAFETY_TEST_VIEW_JSON" ;;
+  "api repos"*) cat "\$PR_SAFETY_TEST_VIEW_JSON" ;;
   "repo clone") git clone --no-checkout "$SOURCE" "\$4" >/dev/null 2>&1 ;;
   *) exit 2 ;;
 esac
@@ -68,7 +68,7 @@ fail=0; check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1" >&2; 
 
 # search yields one merged PR; view resolves it to MERGE/BASE
 printf '[{"number":7,"repository":{"nameWithOwner":"owner/repo"}}]\n' > "$TMP/search.json"
-printf '{"number":7,"state":"MERGED","mergeCommit":{"oid":"%s"},"baseRefOid":"%s","mergedAt":"2026-01-01T00:00:00Z"}\n' "$MERGE" "$BASE" > "$TMP/view.json"
+printf '{"number":7,"state":"closed","merge_commit_sha":"%s","base":{"sha":"%s"},"merged_at":"2026-01-01T00:00:00Z"}\n' "$MERGE" "$BASE" > "$TMP/view.json"
 export PR_SAFETY_TEST_SEARCH_JSON="$TMP/search.json" PR_SAFETY_TEST_VIEW_JSON="$TMP/view.json"
 
 bin/hermes-pr-safety-producer
@@ -81,19 +81,19 @@ bin/hermes-pr-safety-producer
 check "duplicate merge sha queues once" "q \"SELECT count(*) FROM requests WHERE kind='pr-safety-review';\" | grep -qx 1 && q \"SELECT count(*) FROM pr_safety_merged_pr_events;\" | grep -qx 1"
 
 # a NEW merge commit (advanced head) is a distinct event -> a second job, and supersedes the older one
-printf '{"number":7,"state":"MERGED","mergeCommit":{"oid":"%s"},"baseRefOid":"%s","mergedAt":"2026-01-02T00:00:00Z"}\n' "$MERGE2" "$BASE" > "$TMP/view.json"
+printf '{"number":7,"state":"closed","merge_commit_sha":"%s","base":{"sha":"%s"},"merged_at":"2026-01-02T00:00:00Z"}\n' "$MERGE2" "$BASE" > "$TMP/view.json"
 bin/hermes-pr-safety-producer
 check "new merge commit creates fresh job" "q \"SELECT count(*) FROM requests WHERE kind='pr-safety-review';\" | grep -qx 2 && q \"SELECT count(*) FROM pr_safety_merged_pr_events;\" | grep -qx 2"
 check "new head supersedes the older queued head for the same PR" "q \"SELECT status FROM requests WHERE kind='pr-safety-review' AND dedupe_key='owner/repo#7@$MERGE';\" | grep -qx superseded && q \"SELECT status FROM requests WHERE kind='pr-safety-review' AND dedupe_key='owner/repo#7@$MERGE2';\" | grep -qx queued"
 
 # non-merged PR (state OPEN) is ignored
-printf '{"number":8,"state":"OPEN","mergeCommit":null,"baseRefOid":"%s","mergedAt":null}\n' "$BASE" > "$TMP/view.json"
+printf '{"number":8,"state":"open","merge_commit_sha":null,"base":{"sha":"%s"},"merged_at":null}\n' "$BASE" > "$TMP/view.json"
 printf '[{"number":8,"repository":{"nameWithOwner":"owner/repo"}}]\n' > "$TMP/search.json"
 bin/hermes-pr-safety-producer
 check "non-merged PR is ignored" "q \"SELECT count(*) FROM requests WHERE kind='pr-safety-review';\" | grep -qx 2 && q \"SELECT count(*) FROM pr_safety_merged_pr_events;\" | grep -qx 2"
 
 # an ungranted repo is skipped entirely (scope-of-attention allowlist), even if merged
-printf '{"number":11,"state":"MERGED","mergeCommit":{"oid":"%s"},"baseRefOid":"%s","mergedAt":"2026-01-03T00:00:00Z"}\n' "$MERGE2" "$BASE" > "$TMP/view.json"
+printf '{"number":11,"state":"closed","merge_commit_sha":"%s","base":{"sha":"%s"},"merged_at":"2026-01-03T00:00:00Z"}\n' "$MERGE2" "$BASE" > "$TMP/view.json"
 printf '[{"number":11,"repository":{"nameWithOwner":"other/repo"}}]\n' > "$TMP/search.json"
 bin/hermes-pr-safety-producer
 check "ungranted repo is never enqueued" "q \"SELECT count(*) FROM requests WHERE payload->>'repo'='other/repo';\" | grep -qx 0"

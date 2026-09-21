@@ -155,12 +155,15 @@ records_for_author() {
   saml_guard "$search"
   while IFS=$'\t' read -r repo pr; do
     [[ -n "$repo" && -n "$pr" ]] || continue
-    if ! view="$(gh pr view "$pr" --repo "$repo" --json number,baseRefOid,mergeCommit,state,mergedAt 2>&1)"; then
-      saml_guard "$view"; log "skip $repo#$pr: pr view failed"; continue
+    # gh pr view does not expose baseRefOid on all installed gh versions. Pulls API has the
+    # authoritative base SHA and merge commit SHA with a stable schema.
+    if ! view="$(gh api "repos/$repo/pulls/$pr" 2>&1)"; then
+      saml_guard "$view"; log "skip $repo#$pr: pulls API failed"; continue
     fi
-    jq -e '.state == "MERGED" and (.mergeCommit.oid | type == "string") and (.baseRefOid | test("^[0-9a-f]{40}$"))' <<<"$view" >/dev/null \
+    jq -e '.state == "closed" and (.merged_at | type == "string") and
+      (.merge_commit_sha | test("^[0-9a-f]{40}$")) and (.base.sha | test("^[0-9a-f]{40}$"))' <<<"$view" >/dev/null \
       || { log "skip $repo#$pr: not merged or missing sha"; continue; }
-    jq -cn --arg repo "$repo" --argjson number "$pr" --arg merge "$(jq -r '.mergeCommit.oid' <<<"$view")" --arg base "$(jq -r '.baseRefOid' <<<"$view")" \
+    jq -cn --arg repo "$repo" --argjson number "$pr" --arg merge "$(jq -r '.merge_commit_sha' <<<"$view")" --arg base "$(jq -r '.base.sha' <<<"$view")" \
       '{repo:$repo,number:$number,mergeSha:$merge,baseSha:$base}' >> "$outfile"
   done < <(jq -r '.[] | [.repository.nameWithOwner, (.number|tostring)] | @tsv' <<<"$search")
 }
