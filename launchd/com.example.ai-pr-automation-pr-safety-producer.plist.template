@@ -8,7 +8,7 @@
   <key>Label</key><string>com.example.ai-pr-automation-producer-pr-safety</string>
   <key>UserName</key><string>__HERMES_USER__</string>
   <key>ProgramArguments</key><array>
-    <string>/bin/bash</string><string>-c</string>
+    <string>/opt/homebrew/bin/bash</string><string>-c</string>
     <string>set -a; . "$HERMES_HOME/.env"; set +a; exec __SUPPORT_ROOT__/hermes-pr-safety-producer</string>
   </array>
   <key>EnvironmentVariables</key><dict>

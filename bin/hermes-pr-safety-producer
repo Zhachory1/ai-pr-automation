@@ -29,12 +29,13 @@ inside_root() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
 log() { printf '%s hermes-pr-safety-producer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
 psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
 
-: "${PR_SAFETY_MERGED_PR_AUTHORS:?set PR_SAFETY_MERGED_PR_AUTHORS (comma-separated GitHub logins)}"
-: "${PR_SAFETY_SNAPSHOT_ROOT:?set PR_SAFETY_SNAPSHOT_ROOT}"
-: "${PR_SAFETY_POLICY_ROOT:?set PR_SAFETY_POLICY_ROOT}"
-: "${PR_SAFETY_POLICY_PATH:?set PR_SAFETY_POLICY_PATH}"
-: "${PR_SAFETY_POLICY_VERSION:?set PR_SAFETY_POLICY_VERSION}"
-: "${PR_SAFETY_POLICY_DIGEST:?set PR_SAFETY_POLICY_DIGEST}"
+for required in PR_SAFETY_MERGED_PR_AUTHORS PR_SAFETY_SNAPSHOT_ROOT PR_SAFETY_POLICY_ROOT \
+  PR_SAFETY_POLICY_PATH PR_SAFETY_POLICY_VERSION PR_SAFETY_POLICY_DIGEST; do
+  if [[ -z "${!required:-}" ]]; then
+    log "disabled: set $required and the other PR_SAFETY_* policy/snapshot settings"
+    exit 0
+  fi
+done
 
 [[ "$PR_SAFETY_POLICY_VERSION" != *$'\n'* && "$PR_SAFETY_POLICY_VERSION" != *$'\r'* ]] || { echo "PR_SAFETY_POLICY_VERSION must be one line" >&2; exit 2; }
 [[ "$PR_SAFETY_POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "PR_SAFETY_POLICY_DIGEST must be lowercase SHA-256" >&2; exit 2; }
