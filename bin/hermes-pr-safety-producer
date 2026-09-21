@@ -91,6 +91,7 @@ snapshot_for() {
   if [[ -e "$snapshot" ]]; then
     diff="$(GIT_OPTIONAL_LOCKS=0 git -C "$snapshot" diff --no-ext-diff "$base" "$head" | digest)"
     valid_snapshot "$snapshot" "$base" "$head" "$diff" || { log "skip $repo: existing snapshot is invalid"; return 1; }
+    chmod -R u=rX,g=rX,o= "$snapshot"
     printf '%s\t%s\n' "$snapshot" "$diff"
     return
   fi
@@ -115,7 +116,9 @@ snapshot_for() {
   fi
   rm -rf "$tmp"
   valid_snapshot "$snapshot" "$base" "$head" "$diff" || { log "skip $repo: snapshot publication race"; return 1; }
-  chmod -R a-w "$snapshot"
+  # Docker Desktop writes bind-mounted files as the host operator. Keep snapshots immutable but
+  # group-readable so host Hermes (hermes-agent, staff) can analyze them.
+  chmod -R u=rX,g=rX,o= "$snapshot"
   printf '%s\t%s\n' "$snapshot" "$diff"
 }
 
