@@ -59,7 +59,7 @@ IFS=',' read -r -a ALLOWED_ORGS <<<"${PR_SAFETY_ALLOWED_ORGS:-}"
 if (( ${#GRANTED[@]} == 0 && ${#ALLOWED_ORGS[@]} == 0 )); then log "no repos/orgs granted; nothing to discover"; exit 0; fi
 repo_granted() {
   local r="$1" g org="${1%%/*}"
-  for g in "${GRANTED[@]}"; do [[ "$g" == "$r" ]] && return 0; done
+  for g in "${GRANTED[@]}"; do [[ "$g" == "$r" || "$g" == "$org/*" ]] && return 0; done
   for g in "${ALLOWED_ORGS[@]}"; do [[ "${g//[[:space:]]/}" == "$org" ]] && return 0; done
   return 1
 }
