@@ -95,12 +95,33 @@ def valid_run_status(value, run_id, terminal=False):
 def parse_typed_output(output):
     if not isinstance(output, str): return None
     text = output.strip()
-    if text.startswith("```json\n") and text.endswith("```"):
-        text = text[len("```json\n"):-3].strip()
-    elif text.startswith("```\n") and text.endswith("```"):
-        text = text[len("```\n"):-3].strip()
+    fences = re.findall(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    if fences:
+        if len(fences) != 1: return None
+        text = fences[0].strip()
     try: return json.loads(text)
-    except json.JSONDecodeError: return None
+    except json.JSONDecodeError: pass
+    decoder = json.JSONDecoder()
+    candidates = []
+    for start, char in enumerate(text):
+        if char != "{": continue
+        try:
+            value, length = decoder.raw_decode(text[start:])
+            if isinstance(value, dict): candidates.append((start, start + length, value))
+        except json.JSONDecodeError: pass
+    maximal = [candidate for candidate in candidates if not any(
+        other[0] <= candidate[0] and candidate[1] <= other[1] and candidate != other for other in candidates)]
+    return maximal[0][2] if len(maximal) == 1 else None
+
+
+def normalize_safety(value):
+    if not isinstance(value, dict): return value
+    value = dict(value)
+    value.pop("snapshot_path", None); value.pop("policy_path", None)
+    incident = value.get("incident")
+    if isinstance(incident, dict) and incident.get("candidate") is True:
+        value["status"] = "incident_candidate"
+    return value
 
 
 def valid_safety(value, payload, nonce):
@@ -303,7 +324,9 @@ class Controller:
                       '"intent":object,"findings":array,"coverage":object,"documentation":object,'
                       '"observability":object,"incident":object,"human_decisions_needed":array}. '
                       'Use exactly these keys; do not include snapshot_path or policy_path')
-            content = canonical(payload)
+            identity = {key: value for key, value in payload.items() if key not in {"snapshot_path", "policy_path"}}
+            content = (canonical(identity) + "\n<trusted-source-paths>\nSnapshot: " + payload["snapshot_path"] +
+                       "\nPolicy: " + payload["policy_path"] + "\n</trusted-source-paths>")
             error = self.safety_preflight(payload)
         else:
             task = "Propose durable memory candidates only from supplied source material."
@@ -538,6 +561,7 @@ class Controller:
         return str(target), hashlib.sha256(data).hexdigest()
 
     def postprocess_safety(self, attempt, value):
+        value = normalize_safety(value)
         if not valid_safety(value, attempt["payload"], attempt["nonce"]): raise ValueError("invalid safety result")
         if value["status"] == "superseded":
             status, detail, proposal, provenance = "superseded", "analyst reported superseded", None, None
