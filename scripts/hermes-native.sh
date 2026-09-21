@@ -57,6 +57,10 @@ install_native() {
   need_root; need_user
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME"
+  # Remove the superseded root watchdog from hosts that installed it before simplification.
+  launchctl bootout system/com.example.ai-pr-automation-watchdog 2>/dev/null || true
+  rm -f /Library/LaunchDaemons/com.example.ai-pr-automation-watchdog.plist \
+    "$SUPPORT_ROOT/hermes-postgres-watchdog" "$LOG_ROOT/watchdog.out.log" "$LOG_ROOT/watchdog.err.log"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer"
   # LaunchDaemons with UserName open StandardOutPath/StandardErrorPath as that user. The root-owned
   # 0755 log directory is intentionally not writable, so pre-create private service-owned files or
