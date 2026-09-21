@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Host-native memory curator. Claims one memory-curate request, gathers recent source material since
+# the watermark, asks the memory-curate Hermes profile what is worth remembering (strict JSON), then
+# DETERMINISTICALLY filters, dedups, and writes the keepers to the remote shared agent-memory service
+# over its Streamable-HTTP MCP (retain/recall JSON-RPC).
+#
+# The model only PROPOSES. This runner is the gate that writes: a base reject-shape filter drops
+# completion/verdict/provenance-only/secret/too-short/too-long content, and a recall-based near-dup
+# check runs, before anything reaches a bank. Two tiers: every keeper goes to the team bank
+# (team-ads-success); a keeper additionally goes to the org bank ONLY if it also passes a stricter
+# gate (>=2 sources, longer min length, no colleague names, no internal-topic terms). The model never
+# holds the write. The Postgres claim/lease/settle path matches bin/hermes-queue-runner. Watermark
+# advances only on a successful model run.
+set -euo pipefail
+umask 077
+
+: "${HERMES_BIN:=hermes}"
+profile=memory-curate-v1
+: "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
+: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
+# Remote agent-memory MCP endpoints (Streamable HTTP, stateless JSON-RPC). Team bank is the default
+# store; org bank receives only keepers that also pass the stricter Tier-2 gate.
+MEM_BASE="${HERMES_MEMORY_MCP_BASE:-https://rokt-agent-memory.eng.roktinternal.com/mcp}"
+TEAM_URL="${HERMES_MEMORY_TEAM_URL:-$MEM_BASE/team-ads-success/}"
+ORG_URL="${HERMES_MEMORY_ORG_URL:-$MEM_BASE/Rokt%20Builders/}"
+CURATOR_VERSION="curator/v1"
+# Colleague-name and internal-topic guards for the org tier. Operator-overridable.
+ORG_NAME_BLOCKLIST="${HERMES_MEMORY_ORG_NAME_BLOCKLIST:-}"
+ORG_TOPIC_BLOCKLIST="${HERMES_MEMORY_ORG_TOPIC_BLOCKLIST:-revenue|forecast|salary|compensation|layoff|acquisition|roadmap|unreleased|customer|consumer|incident|breach|lawsuit|headcount}"
+TASKS_DIR="${MEMORY_CURATOR_TASKS_DIR:-$HOME/.mewrite/agent/tasks}"
+PRIVATE_DOCS="${MEMORY_CURATOR_PRIVATE_DOCS:-$HOME/private-docs}"
+STATE_DIR="${MEMORY_CURATOR_STATE_DIR:-$HOME/.local/share/ai-pr-automation/curator}"
+WATERMARK="$STATE_DIR/last-run"
+MAX_MEMORIES="${MEMORY_CURATOR_MAX_MEMORIES:-15}"
+MAX_SOURCE_DOCS="${MEMORY_CURATOR_MAX_SOURCE_DOCS:-40}"
+LOOKBACK_HOURS="${MEMORY_CURATOR_LOOKBACK_HOURS:-24}"
+PROMPT_MAX_BYTES="${MEMORY_CURATOR_PROMPT_MAX_BYTES:-96000}"
+PER_DOC_BYTES="${MEMORY_CURATOR_PER_DOC_BYTES:-8000}"
+lease="${HERMES_QUEUE_LEASE_SECONDS:-1200}"
+nonce="$(openssl rand -hex 16)"; run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$nonce"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need jq; need curl; need find; need python3
+log() { printf '%s memory-curate %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
+psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || { log "WARN: cannot stat $1; epoch 0"; echo 0; }; }
+mkdir -p "$STATE_DIR"
+
+# memory-curate is a scheduled sweep with no external producer: a cron tick self-enqueues one row
+# (hourly dedupe key prevents pile-up), then the same invocation claims it. The collapsed queue API
+# takes no repo/proof for local roles. A still-active row dedupes to NULL, which is fine.
+if [[ "${1:-}" == --enqueue ]]; then
+  psqlq -c "SELECT hermes_enqueue_request('memory-curate','{}'::jsonb,'memory-curate:'||to_char(now(),'YYYYMMDDHH24'));" >/dev/null || true
+fi
+
+claim="$(psqlq -c "SELECT hermes_claim_request('memory-curate','$run_id','$nonce',$lease);")"
+[[ -n "$claim" ]] || exit 0
+id="$(jq -r .id <<<"$claim")"
+srcdir="$(mktemp -d)"; trap 'rm -rf "$srcdir"' EXIT
+
+(
+  while sleep "$((lease / 4))"; do
+    [[ "$(psqlq -c "SELECT hermes_renew_request($id,'$nonce',$lease);")" == t ]] || { kill -TERM "$PPID"; exit 1; }
+  done
+) & heartbeat=$!
+stop_heartbeat() { kill "$heartbeat" 2>/dev/null || true; wait "$heartbeat" 2>/dev/null || true; }
+
+settle() { # $1 status  $2 detail
+  stop_heartbeat
+  psqlq -v detail="$2" <<<"SELECT hermes_settle_request($id,'$nonce','$1',:'detail');" >/dev/null
+  echo "request=$id status=$1"
+}
+
+# --- gather bounded source slice since the watermark ---------------------------------------------
+since_epoch=0
+[[ -f "$WATERMARK" ]] && since_epoch="$(cat "$WATERMARK" 2>/dev/null || echo 0)"
+[[ "$since_epoch" =~ ^[0-9]+$ ]] || since_epoch=0
+(( since_epoch == 0 )) && since_epoch="$(python3 -c "import time;print(int(time.time())-$LOOKBACK_HOURS*3600)")"
+now_epoch="$(date +%s)"
+manifest="$srcdir/manifest.txt"; : >"$manifest"
+cand="$srcdir/cand.txt"; : >"$cand"
+since_ref="$srcdir/.since"
+touch -t "$(python3 -c "import time;print(time.strftime('%Y%m%d%H%M.%S', time.localtime($since_epoch)))")" "$since_ref"
+add_cand() { local f="$1"; [[ -f "$f" ]] || return 0; printf '%s\t%s\n' "$(mtime_of "$f")" "$f" >>"$cand"; }
+if [[ -d "$TASKS_DIR" ]]; then
+  while IFS= read -r f; do add_cand "$f"; done < <(
+    find "$TASKS_DIR" -type f -name 'final.txt' -newer "$since_ref" 2>/dev/null | grep -v -- '-memory-curat')
+fi
+if [[ -d "$PRIVATE_DOCS" ]]; then
+  if git -C "$PRIVATE_DOCS" rev-parse --git-dir >/dev/null 2>&1; then
+    while IFS= read -r f; do add_cand "$f"; done < <(
+      git -C "$PRIVATE_DOCS" log --since="@$since_epoch" --name-only --pretty=format: -- '*.md' 2>/dev/null \
+        | awk 'NF' | sort -u | sed "s#^#$PRIVATE_DOCS/#")
+  else
+    while IFS= read -r f; do add_cand "$f"; done < <(
+      find "$PRIVATE_DOCS" -type f -name '*.md' -newer "$since_ref" 2>/dev/null)
+  fi
+fi
+total_cand="$(grep -c . "$cand" 2>/dev/null | head -1 || echo 0)"; [[ "$total_cand" =~ ^[0-9]+$ ]] || total_cand=0
+sort -rn "$cand" | head -n "$MAX_SOURCE_DOCS" | cut -f2- >"$manifest"
+watermark_cap="$now_epoch"
+if (( total_cand > MAX_SOURCE_DOCS )); then
+  watermark_cap="$(sort -rn "$cand" | head -n "$MAX_SOURCE_DOCS" | tail -1 | cut -f1)"
+fi
+sort -u "$manifest" -o "$manifest"
+n_src="$(grep -c . "$manifest" 2>/dev/null | head -1 || echo 0)"; [[ "$n_src" =~ ^[0-9]+$ ]] || n_src=0
+if (( n_src == 0 )); then
+  echo "$now_epoch" >"$WATERMARK"
+  settle skipped "no new source material since $since_epoch"
+  exit 0
+fi
+
+# --- build the prompt: source material only; profile SOUL carries the curation contract ----------
+prompt="$srcdir/prompt.md"; result="$srcdir/proposals.json"
+{
+  printf 'Source material for this run. Consider ONLY these documents; cite each by its id.\n\n'
+} >"$prompt"
+included=0
+while IFS= read -r f; do
+  [[ -f "$f" ]] || continue
+  (( $(wc -c <"$prompt") >= PROMPT_MAX_BYTES )) && break
+  { printf '## id: %s\n\n```\n' "$f"; head -c "$PER_DOC_BYTES" "$f" 2>/dev/null; printf '\n```\n\n'; } >>"$prompt"
+  included=$((included+1))
+done <"$manifest"
+printf 'Write ONLY the JSON object {"memories":[...]} to %s. Empty is fine.\n' "$result" >>"$prompt"
+
+# --- run the curate profile (proposes only; no write authority) ----------------------------------
+agent_ok=1
+HERMES_WRITE_SAFE_ROOT="$srcdir" "$HERMES_BIN" -p "$profile" chat --query-file "$prompt" --oneshot \
+  --toolsets file --max-turns 40 --run-budget 1200 --ignore-rules --yolo --in "$srcdir" >/dev/null 2>&1 || agent_ok=0
+if (( agent_ok == 0 )) || [[ ! -f "$result" ]]; then
+  settle reconcile "curate model run failed; watermark held for retry"
+  exit 0
+fi
+json="$(python3 -c '
+import sys,re,json
+try: s=open(sys.argv[1]).read()
+except OSError: print("{\"memories\":[]}"); sys.exit()
+m=re.search(r"\{.*\}", s, re.S)
+if not m: print("{\"memories\":[]}"); sys.exit()
+try: print(json.dumps(json.loads(m.group(0))))
+except Exception: print("{\"memories\":[]}")
+' "$result")"
+
+# --- MCP transport (stateless Streamable-HTTP JSON-RPC over curl) ---------------------------------
+# tools/call against a bank URL. Prints the tool result text (from SSE `data:` frames). The model
+# never invokes these; only this runner does, after the deterministic gate.
+mcp_call() { # $1 url  $2 tool  $3 args-json
+  curl -fsS -m 30 -X POST "$1" -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' \
+    -d "$(jq -cn --arg t "$2" --argjson a "$3" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$t,arguments:$a}}')" 2>/dev/null \
+    | sed -n 's/^data: //p' | tail -1
+}
+mcp_recall_texts() { # $1 url  $2 query -> newline-separated recalled text
+  mcp_call "$1" recall "$(jq -cn --arg q "$2" '{query:$q,max_tokens:600}')" \
+    | python3 -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: sys.exit()
+c=d.get("result",{}).get("content",[])
+for b in c:
+    if isinstance(b,dict) and b.get("type")=="text": print(b.get("text",""))' 2>/dev/null || true
+}
+mcp_retain_ok() { # $1 url  $2 content  $3 tagsjson  -> "ok" on success
+  mcp_call "$1" retain "$(jq -cn --arg c "$2" --argjson tags "$3" --arg ver "$CURATOR_VERSION" \
+      '{content:$c, tags:$tags, metadata:{curator_version:$ver}}')" \
+    | python3 -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(1)
+r=d.get("result",{})
+sys.exit(0 if not r.get("isError") else 1)' && echo ok
+}
+
+# --- deterministic gates (the model output is never trusted verbatim) -----------------------------
+reject_shape() { # base gate: secrets, provenance/verdict noise, size
+  local c="$1"; local len=${#c}
+  (( len < 40 || len > 1200 )) && return 0
+  printf '%s' "$c" | grep -Eqi 'reviewed with (a )?verdict|verdict (of|was) (comment|approve|request)|head (commit|sha) (is|=)|run (id|identifier) (is|=)|^PR [^ ]+#[0-9]+ (reviewed|approved|merged)' && return 0
+  printf '%s' "$c" | grep -Eqi \
+    'gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|ddpat_[A-Za-z0-9]|xox[baprs]-|slack-|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.|-----BEGIN|x-access-token:|https?://[^ ]*:[^ @]*@|(secret|token|password|api[_-]?key|bearer)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9/_+.-]{12,}' && return 0
+  return 1
+}
+org_gate_pass() { # stricter Tier-2 gate for the org bank. $1 content  $2 n_sources
+  local c="$1" n="$2"
+  (( ${n:-0} >= 2 )) || return 1
+  (( ${#c} >= 80 )) || return 1
+  printf '%s' "$c" | grep -Eqi "$ORG_TOPIC_BLOCKLIST" && return 1
+  [[ -n "$ORG_NAME_BLOCKLIST" ]] && printf '%s' "$c" | grep -Eqi "$ORG_NAME_BLOCKLIST" && return 1
+  return 0
+}
+dedup_hit() { # $1 url  $2 content -> 0 if a >=0.6 Jaccard near-dup already exists in that bank
+  local hits; hits="$(mcp_recall_texts "$1" "$2")"
+  [[ -n "$hits" ]] || return 1
+  printf '%s' "$hits" | python3 -c '
+import sys
+cand=set(sys.argv[1].lower().split())
+for line in sys.stdin:
+    b=set(line.lower().split())
+    if b and len(cand&b)/max(1,len(cand|b))>=0.6: sys.exit(0)
+sys.exit(1)
+' "$2"
+}
+
+written=0; org_written=0; rejected=0; deduped=0
+count="$(printf '%s' "$json" | jq '.memories | length' 2>/dev/null || echo 0)"
+[[ "$count" =~ ^[0-9]+$ ]] || count=0
+for (( i=0; i<count; i++ )); do
+  (( written >= MAX_MEMORIES )) && break
+  item="$(printf '%s' "$json" | jq -c ".memories[$i]" 2>/dev/null)" || continue
+  content="$(printf '%s' "$item" | jq -r '.content // empty')"
+  [[ -n "$content" ]] || continue
+  is_conv="$(printf '%s' "$item" | jq -r '.convention // false')"
+  n_sources="$(printf '%s' "$item" | jq -r '(.sources // []) | length')"
+  # base gate
+  if [[ "$is_conv" == "true" && "${n_sources:-0}" -lt 2 ]]; then rejected=$((rejected+1)); continue; fi
+  if reject_shape "$content"; then rejected=$((rejected+1)); continue; fi
+  # Tier 1: team bank (default store). Skip if a near-dup already exists there.
+  if dedup_hit "$TEAM_URL" "$content"; then deduped=$((deduped+1)); continue; fi
+  tags="$(jq -cn --arg ver "$CURATOR_VERSION" '["curator",$ver]')"
+  [[ "$(mcp_retain_ok "$TEAM_URL" "$content" "$tags")" == ok ]] || { log "team retain failed: ${content:0:60}"; continue; }
+  written=$((written+1))
+  # Tier 2: org bank only if the stricter gate passes and no org near-dup exists.
+  if org_gate_pass "$content" "${n_sources:-0}" && ! dedup_hit "$ORG_URL" "$content"; then
+    org_tags="$(jq -cn --arg ver "$CURATOR_VERSION" '["curator",$ver,"org"]')"
+    [[ "$(mcp_retain_ok "$ORG_URL" "$content" "$org_tags")" == ok ]] && org_written=$((org_written+1))
+  fi
+done
+
+# Watermark advances only because the model actually ran.
+[[ -n "$watermark_cap" ]] && echo "$watermark_cap" >"$WATERMARK"
+settle done "team=$written org=$org_written rejected=$rejected deduped=$deduped from $n_src docs"
