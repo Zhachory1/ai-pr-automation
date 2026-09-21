@@ -52,6 +52,14 @@ install_native() {
   need_root; need_user
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME"
+  # LaunchDaemons with UserName open StandardOutPath/StandardErrorPath as that user. The root-owned
+  # 0755 log directory is intentionally not writable, so pre-create private service-owned files or
+  # launchd rejects each job with EX_CONFIG before running its program.
+  local logfile
+  for logfile in gateway.out gateway.err dispatcher.out dispatcher.err \
+    producer-review.out producer-review.err producer-maintain.out producer-maintain.err; do
+    install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"
+  done
   local installer=""
   if [[ "${HERMES_SUPPORT_ONLY:-false}" != true ]]; then
     installer="$(mktemp /private/tmp/hermes-install.XXXXXX)"
