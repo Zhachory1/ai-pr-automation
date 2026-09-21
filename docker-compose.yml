@@ -376,7 +376,7 @@ services:
     profiles: ["hermes-api-conformance"]
     image: python:3.11-alpine@sha256:0495f5559318affa673172ec7e35cd0a5213e4aaf4c76d0a66554c0af97b157e
     restart: "no"
-    command: ["python3", "/app/hermes-api-conformance.py", "--base-url", "http://host.docker.internal:8642", "--keys-file", "/run/secrets/hermes_api_keys"]
+    command: ["python3", "/app/hermes-api-conformance.py", "--base-url", "http://host.docker.internal:8642", "--keys-file", "/run/secrets/hermes_api_keys", "--wait-seconds", "60"]
     volumes:
       - ./scripts/hermes-api-conformance.py:/app/hermes-api-conformance.py:ro
     secrets:
