@@ -23,7 +23,8 @@ while true; do
       /app/hermes-pr-safety-producer || true
       ;;
     memory)
-      psql -v ON_ERROR_STOP=1 -qAt \
+      psql -v ON_ERROR_STOP=1 -qAt -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" \
+        -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" \
         -c "SELECT hermes_enqueue_request('memory-curate','{}'::jsonb,'memory-curate:'||to_char(now(),'YYYYMMDDHH24'));" >/dev/null || true
       ;;
     *) echo "unsupported producer mode: $mode" >&2; exit 2 ;;
