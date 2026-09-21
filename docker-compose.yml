@@ -71,11 +71,8 @@ services:
     container_name: fleet-hindsight
     restart: unless-stopped
     ports:
-      # localhost-only (#94): hindsight has no auth in front of it; the whole shared fleet memory
-      # must not be reachable from the LAN. In-fleet services reach it via the `hindsight` service
-      # DNS on the compose network, not the host port — this only scopes host access to the operator.
+      # API remains loopback-visible for operator diagnostics; UI is routed through ui-proxy.
       - "127.0.0.1:8888:8888"
-      - "127.0.0.1:9999:9999"
     environment:
       # hindsight needs a keyed LLM provider for fact extraction. Keyless subscription providers
       # (claude-code) do not work headless in a container. Set HINDSIGHT_API_LLM_API_KEY in .env.
@@ -133,8 +130,6 @@ services:
       - coderag_cache:/cache
       - ${CODE_ROOT:?set CODE_ROOT}:/code:ro
     command: ["serve-all"]
-    ports:
-      - "127.0.0.1:9749:9749"
     expose:
       - "9750"
     networks:
@@ -215,8 +210,8 @@ services:
       dockerfile: Dockerfile.status
     container_name: fleet-status
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${STATUS_PORT:-8080}:8080"
+    expose:
+      - "8080"
     environment:
       REQUESTS_DB_HOST: db-requests
       REQUESTS_DB_PORT: "5432"
@@ -249,17 +244,42 @@ services:
       - ${HANDOFF_ROOT:?set HANDOFF_ROOT to the native Hermes handoff directory}:${HANDOFF_ROOT}:ro
     networks:
       - status-internal
-      - status-host
     depends_on:
       db-requests:
         condition: service_healthy
       schema-migrate:
         condition: service_completed_successfully
 
+  ui-proxy:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: fleet-ui-proxy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${STATUS_PORT:-8080}:8080"
+    volumes:
+      - ./docker/ui-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/ui-index.html:/usr/share/nginx/html/index.html:ro
+    secrets:
+      - fleet_controller_tls_ca_cert
+      - fleet_controller_tls_cert
+      - fleet_controller_tls_key
+      - ui_basic_auth
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - status-internal
+    depends_on:
+      status:
+        condition: service_started
+      hindsight:
+        condition: service_healthy
+      coderag:
+        condition: service_healthy
+
 networks:
   status-internal:
     internal: true
-  status-host:
 
 volumes:
   requests_pgdata:
@@ -277,3 +297,5 @@ secrets:
     file: ${FLEET_CONTROLLER_TLS_CERT_FILE:?set FLEET_CONTROLLER_TLS_CERT_FILE}
   fleet_controller_tls_key:
     file: ${FLEET_CONTROLLER_TLS_KEY_FILE:?set FLEET_CONTROLLER_TLS_KEY_FILE}
+  ui_basic_auth:
+    file: ${UI_BASIC_AUTH_FILE:?set UI_BASIC_AUTH_FILE}

@@ -36,7 +36,8 @@ the request ID and remote PR:
 --   WHERE id=123 AND status='reconcile';
 ```
 
-Open `https://127.0.0.1:8080` for the Fleet Controller. Blocked `pr-maintain` findings appear in its
+Open `https://localhost:8080` for the unified UI landing page, then `https://fleet.localhost:8080`
+for Fleet Controller. Blocked `pr-maintain` findings appear in its
 human-review queue with an **Open PR** link, agent summary, findings, and local **Reviewed** /
 **Dismiss** controls. These controls do not write to GitHub.
 

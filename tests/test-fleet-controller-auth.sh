@@ -14,6 +14,7 @@ trap cleanup EXIT
 mkdir -m 700 "$tmp/secrets" "$tmp/code"
 printf 'test-controller-password\n' > "$tmp/secrets/password"
 printf '0123456789abcdef0123456789abcdef\n' > "$tmp/secrets/session"
+printf 'fleet:$6$testsalt$012345678901234567890123456789012345678901234567890123456789012345678901234567890\n' > "$tmp/secrets/ui-basic-auth"
 openssl genrsa -out "$tmp/secrets/ca.key" 2048 >/dev/null 2>&1
 openssl req -x509 -new -sha256 -days 2 -key "$tmp/secrets/ca.key" \
   -out "$tmp/secrets/ca.crt" -subj '/CN=Fleet Controller Test CA' \
@@ -25,12 +26,12 @@ cat > "$tmp/leaf.ext" <<'EOF'
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
-subjectAltName=DNS:localhost,IP:127.0.0.1
+subjectAltName=DNS:localhost,IP:127.0.0.1,DNS:fleet.localhost,DNS:hermes.localhost,DNS:memory.localhost,DNS:code.localhost
 EOF
 openssl x509 -req -sha256 -days 2 -in "$tmp/controller.csr" -CA "$tmp/secrets/ca.crt" \
   -CAkey "$tmp/secrets/ca.key" -CAcreateserial -out "$tmp/secrets/controller.crt" \
   -extfile "$tmp/leaf.ext" >/dev/null 2>&1
-chmod 600 "$tmp/secrets/password" "$tmp/secrets/session" "$tmp/secrets/controller.key"
+chmod 600 "$tmp/secrets/password" "$tmp/secrets/session" "$tmp/secrets/controller.key" "$tmp/secrets/ui-basic-auth"
 chmod 644 "$tmp/secrets/ca.crt" "$tmp/secrets/controller.crt"
 rm -f "$tmp/secrets/ca.key" "$tmp/secrets/ca.srl"
 mkdir "$tmp/project"
@@ -43,6 +44,7 @@ FLEET_CONTROLLER_SESSION_SECRET_FILE=$tmp/secrets/session
 FLEET_CONTROLLER_TLS_CA_CERT_FILE=$tmp/secrets/ca.crt
 FLEET_CONTROLLER_TLS_CERT_FILE=$tmp/secrets/controller.crt
 FLEET_CONTROLLER_TLS_KEY_FILE=$tmp/secrets/controller.key
+UI_BASIC_AUTH_FILE=$tmp/secrets/ui-basic-auth
 EOF
 cp "$tmp/test.env" "$tmp/project/.env"
 scripts/validate-fleet-controller-secrets.py --env-file "$tmp/test.env" --repo "$tmp/project" >/dev/null

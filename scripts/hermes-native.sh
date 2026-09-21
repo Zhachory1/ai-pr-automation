@@ -18,6 +18,8 @@ MAINTENANCE_FILE="$CONFIG_ROOT/hermes-maintenance"
 WRAPPER="$SUPPORT_ROOT/hermes-native-gateway"
 PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes.plist"
 LABEL="com.example.ai-pr-automation-hermes"
+DASHBOARD_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes-dashboard.plist"
+DASHBOARD_LABEL="com.example.ai-pr-automation-hermes-dashboard"
 DISPATCHER="$SUPPORT_ROOT/hermes-dispatcher"
 DISPATCHER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-dispatcher.plist"
 DISPATCHER_LABEL="com.example.ai-pr-automation-dispatcher"
@@ -66,7 +68,7 @@ install_native() {
   # 0755 log directory is intentionally not writable, so pre-create private service-owned files or
   # launchd rejects each job with EX_CONFIG before running its program.
   local logfile
-  for logfile in gateway.out gateway.err dispatcher.out dispatcher.err \
+  for logfile in gateway.out gateway.err dashboard.out dashboard.err dispatcher.out dispatcher.err \
     producer-review.out producer-review.err producer-maintain.out producer-maintain.err \
     memory-curate-producer.out memory-curate-producer.err \
     producer-pr-safety.out producer-pr-safety.err; do
@@ -126,6 +128,18 @@ os.chmod(temporary, 0o644)
 os.replace(temporary, target)
 PY
   plutil -lint "$PLIST" >/dev/null
+  python3 - "$ROOT/launchd/com.example.ai-pr-automation-hermes-dashboard.plist.template" "$DASHBOARD_PLIST" \
+    "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$LAUNCHER" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, user, home, hermes_home, binary, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in {"__HERMES_USER__":user,"__SERVICE_HOME__":home,"__HERMES_HOME__":hermes_home,
+                   "__HERMES_BIN__":binary,"__LOG_ROOT__":logs}.items():
+    text = text.replace(key, value)
+temporary = pathlib.Path(target + ".tmp")
+temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "$DASHBOARD_PLIST" >/dev/null
   for mode in review maintain; do
     python3 - "$PRODUCER_TEMPLATE" "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-$mode.plist" \
       "$mode" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" "$AUTHORITY_FILE" "$PRODUCER_INTERVAL" "$LOG_ROOT" <<'PY'
@@ -207,6 +221,14 @@ case "${1:-}" in
     need_root; install -m 0444 /dev/null "$MAINTENANCE_FILE"
     launchctl bootout "system/$LABEL" 2>/dev/null || true
     ;;
+  dashboard-start)
+    need_root
+    launchctl bootstrap system "$DASHBOARD_PLIST" 2>/dev/null || launchctl kickstart -k "system/$DASHBOARD_LABEL"
+    ;;
+  dashboard-stop)
+    need_root
+    launchctl bootout "system/$DASHBOARD_LABEL" 2>/dev/null || true
+    ;;
   dispatcher-start)
     need_root
     launchctl bootstrap system "$DISPATCHER_PLIST" 2>/dev/null || launchctl kickstart -k "system/$DISPATCHER_LABEL"
@@ -236,6 +258,7 @@ case "${1:-}" in
     need_root
     "$ROOT/scripts/hermes-native.sh" sync-support
     "$ROOT/scripts/hermes-native.sh" start
+    "$ROOT/scripts/hermes-native.sh" dashboard-start
     "$ROOT/scripts/hermes-native.sh" dispatcher-start
     "$ROOT/scripts/hermes-native.sh" producer-start
     ;;
@@ -243,10 +266,11 @@ case "${1:-}" in
     need_root
     "$ROOT/scripts/hermes-native.sh" producer-stop
     "$ROOT/scripts/hermes-native.sh" dispatcher-stop
+    "$ROOT/scripts/hermes-native.sh" dashboard-stop
     "$ROOT/scripts/hermes-native.sh" stop
     ;;
   status)
-    for service in "$LABEL" "$DISPATCHER_LABEL" \
+    for service in "$LABEL" "$DASHBOARD_LABEL" "$DISPATCHER_LABEL" \
       com.example.ai-pr-automation-producer-review com.example.ai-pr-automation-producer-maintain \
       com.example.ai-pr-automation-producer-pr-safety "$MEMORY_PRODUCER_LABEL"; do
       launchctl print "system/$service" 2>/dev/null | awk -v name="$service" \
@@ -254,5 +278,5 @@ case "${1:-}" in
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|dispatcher-start|dispatcher-stop|producer-start|producer-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|dashboard-start|dashboard-stop|dispatcher-start|dispatcher-stop|producer-start|producer-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

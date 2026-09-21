@@ -112,8 +112,10 @@ REQUEST_DEADLINE_SECONDS = 10
 ACTIVE_SESSIONS = {}
 SESSION_LOCK = threading.Lock()
 PUBLIC_PORT = int(os.environ.get("FLEET_CONTROLLER_PUBLIC_PORT", str(PORT)))
-ALLOWED_HOSTS = {f"127.0.0.1:{PUBLIC_PORT}", f"localhost:{PUBLIC_PORT}"}
-ALLOWED_ORIGINS = {f"https://127.0.0.1:{PUBLIC_PORT}", f"https://localhost:{PUBLIC_PORT}"}
+ALLOWED_HOSTS = {f"127.0.0.1:{PUBLIC_PORT}", f"localhost:{PUBLIC_PORT}",
+                 f"fleet.localhost:{PUBLIC_PORT}"}
+ALLOWED_ORIGINS = {f"https://127.0.0.1:{PUBLIC_PORT}", f"https://localhost:{PUBLIC_PORT}",
+                   f"https://fleet.localhost:{PUBLIC_PORT}"}
 
 
 def read_secret(name: str, minimum: int) -> str:

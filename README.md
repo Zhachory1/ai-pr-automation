@@ -20,7 +20,7 @@ producers ──enqueue──▶  Postgres `requests`  ──claim──▶  hos
 - **Host-native Hermes** claims a request, renders the task as untrusted data into an immutable
   profile prompt, and does the work in an ephemeral worktree: clone, branch, edit, test, commit, push
   over a per-repository SSH deploy key, and open a **draft** PR. One immutable profile per queue kind.
-- **Fleet Controller** (`status`) is the operator UI at `https://127.0.0.1:8080`: runs, queue, human-review
+- **Fleet Controller** (`status`) is the operator UI at `https://fleet.localhost:8080`: runs, queue, human-review
   queue, and exact-byte document approval. GitHub remains the PR merge UI.
 - The `hermes-agent` account is the security boundary. It holds only provider OAuth, a per-repository
   deploy key, a read-only GitHub API token, approved MCP credentials, and a restricted database role.
@@ -76,7 +76,7 @@ cat > "$cert_tmp/fleet-controller.ext" <<'EOF'
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
-subjectAltName=DNS:localhost,IP:127.0.0.1
+subjectAltName=DNS:localhost,IP:127.0.0.1,DNS:fleet.localhost,DNS:hermes.localhost,DNS:memory.localhost,DNS:code.localhost
 EOF
 openssl x509 -req -sha256 -days 365 -in "$cert_tmp/fleet-controller.csr" \
   -CA "$HOME/.config/ai-pr-automation/fleet-controller-ca.crt" \
@@ -100,8 +100,10 @@ The command destroys the CA signing key after issuing one leaf, so it cannot min
 Never mount or configure a CA key in Compose. Set all five `FLEET_CONTROLLER_*_FILE` paths from
 `.env.example` before `scripts/compose.sh up`.
 
-Open https://127.0.0.1:8080 and sign in. Session lifetime defaults to 12 hours. Fleet Controller
-keeps localhost, Host, Origin, and CSRF checks in addition to login.
+Open https://localhost:8080 for the unified UI landing page. All UIs share port 8080 through nginx
+hostname routing: `fleet.localhost` (Fleet Controller), `hermes.localhost` (Hermes dashboard),
+`memory.localhost` (Hindsight), and `code.localhost` (Coderag). Fleet Controller session lifetime
+defaults to 12 hours and keeps Host, Origin, and CSRF checks in addition to login.
 
 Then install the host-native runtime under `hermes-agent` and grant a repository:
 
@@ -121,6 +123,7 @@ Rollback does not depend on valid new TLS material. Use direct Compose only for 
 recovery path:
 
 ```bash
+docker compose stop ui-proxy
 FLEET_CONTROLLER_PASSWORD_FILE=/dev/null \
 FLEET_CONTROLLER_SESSION_SECRET_FILE=/dev/null \
 FLEET_CONTROLLER_TLS_CA_CERT_FILE=/dev/null \
@@ -172,7 +175,7 @@ Maintenance guardrails:
   before pushing a `fix(ci): ...` commit. Never make a check pass by weakening it — that is an
   escalation, not a fix.
 - ambiguous findings and escalated CI failures enter the local human-review queue at
-  `https://127.0.0.1:8080`; **Reviewed** / **Dismiss** update local state only, never GitHub
+  `https://fleet.localhost:8080`; **Reviewed** / **Dismiss** update local state only, never GitHub
 
 The runtime rebases only when the forge reports a real conflict or staleness (`mergeable ==
 CONFLICTING` or `mergeStateStatus == BEHIND`), never on a local "behind base" count. The enqueue path
