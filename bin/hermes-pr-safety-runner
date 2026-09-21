@@ -187,7 +187,7 @@ stamped="$work/handoff.stamped.md"
 valid_handoff "$draft" || { settle failed "invalid analyst handoff draft"; exit 0; }
 
 tmp="$(mktemp "$HANDOFF_ROOT/.$slug.XXXXXX")"
-cp "$draft" "$tmp"; chmod 600 "$tmp"
+cp "$draft" "$tmp"; chmod 640 "$tmp"
 if ! ln "$tmp" "$final"; then
   rm -f "$tmp"
   valid_handoff "$final" || { settle failed "invalid existing handoff"; exit 0; }
