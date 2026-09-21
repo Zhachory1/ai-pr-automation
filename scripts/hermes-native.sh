@@ -24,6 +24,14 @@ DISPATCHER_LABEL="com.example.ai-pr-automation-dispatcher"
 AUTHORITY_FILE="${HERMES_AUTHORITY_FILE:-$CONFIG_ROOT/authority.yaml}"
 PRODUCER_INTERVAL="${HERMES_PRODUCER_INTERVAL_SECONDS:-900}"
 PRODUCER_TEMPLATE="$ROOT/launchd/com.example.ai-pr-automation-producer.plist.template"
+MEMORY_PRODUCER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-memory-curate-producer.plist"
+MEMORY_PRODUCER_LABEL="com.example.ai-pr-automation-memory-curate-producer"
+MEMORY_PRODUCER_INTERVAL="${HERMES_MEMORY_CURATE_INTERVAL_SECONDS:-21600}"
+WATCHDOG="$SUPPORT_ROOT/hermes-postgres-watchdog"
+WATCHDOG_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-watchdog.plist"
+WATCHDOG_LABEL="com.example.ai-pr-automation-watchdog"
+PR_SAFETY_PRODUCER_INTERVAL="${HERMES_PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}"
+PR_SAFETY_PRODUCER_TEMPLATE="$ROOT/launchd/com.example.ai-pr-automation-pr-safety-producer.plist.template"
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
@@ -52,14 +60,19 @@ install_native() {
   need_root; need_user
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME"
+  install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer"
   # LaunchDaemons with UserName open StandardOutPath/StandardErrorPath as that user. The root-owned
   # 0755 log directory is intentionally not writable, so pre-create private service-owned files or
   # launchd rejects each job with EX_CONFIG before running its program.
   local logfile
   for logfile in gateway.out gateway.err dispatcher.out dispatcher.err \
-    producer-review.out producer-review.err producer-maintain.out producer-maintain.err; do
+    producer-review.out producer-review.err producer-maintain.out producer-maintain.err \
+    memory-curate-producer.out memory-curate-producer.err \
+    producer-pr-safety.out producer-pr-safety.err; do
     install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"
   done
+  install -m 0600 -o root -g wheel /dev/null "$LOG_ROOT/watchdog.out.log"
+  install -m 0600 -o root -g wheel /dev/null "$LOG_ROOT/watchdog.err.log"
   local installer=""
   if [[ "${HERMES_SUPPORT_ONLY:-false}" != true ]]; then
     installer="$(mktemp /private/tmp/hermes-install.XXXXXX)"
@@ -76,11 +89,17 @@ install_native() {
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
   [[ ! -x "$ROOT/bin/hermes-queue-runner" ]] || install -m 0555 "$ROOT/bin/hermes-queue-runner" "$SUPPORT_ROOT/hermes-queue-runner"
   [[ ! -x "$ROOT/bin/hermes-pr-producer" ]] || install -m 0555 "$ROOT/bin/hermes-pr-producer" "$SUPPORT_ROOT/hermes-pr-producer"
+  [[ ! -x "$ROOT/bin/hermes-pr-safety-producer" ]] || install -m 0555 "$ROOT/bin/hermes-pr-safety-producer" "$SUPPORT_ROOT/hermes-pr-safety-producer"
+  [[ ! -x "$ROOT/bin/hermes-pr-safety-runner" ]] || install -m 0555 "$ROOT/bin/hermes-pr-safety-runner" "$SUPPORT_ROOT/hermes-pr-safety-runner"
+  [[ ! -f "$ROOT/bin/pr-safety-json-repair.py" ]] || install -m 0555 "$ROOT/bin/pr-safety-json-repair.py" "$SUPPORT_ROOT/pr-safety-json-repair.py"
   [[ ! -f "$ROOT/scripts/hermes-authority.py" ]] || install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
   [[ ! -x "$ROOT/bin/hermes-memory-curate" ]] || install -m 0555 "$ROOT/bin/hermes-memory-curate" "$SUPPORT_ROOT/hermes-memory-curate"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
+  [[ ! -x "$ROOT/bin/hermes-doc-write-runner" ]] || install -m 0555 "$ROOT/bin/hermes-doc-write-runner" "$SUPPORT_ROOT/hermes-doc-write-runner"
+  [[ ! -x "$ROOT/bin/doc-writer-publication" ]] || install -m 0555 "$ROOT/bin/doc-writer-publication" "$SUPPORT_ROOT/doc-writer-publication"
+  [[ ! -x "$ROOT/bin/doc-writer-reconcile" ]] || install -m 0555 "$ROOT/bin/doc-writer-reconcile" "$SUPPORT_ROOT/doc-writer-reconcile"
   [[ ! -x "$ROOT/bin/hermes-dispatcher" ]] || install -m 0555 "$ROOT/bin/hermes-dispatcher" "$DISPATCHER"
-  [[ ! -x "$ROOT/bin/hermes-postgres-watchdog" ]] || install -m 0555 "$ROOT/bin/hermes-postgres-watchdog" "$SUPPORT_ROOT/hermes-postgres-watchdog"
+  [[ ! -x "$ROOT/bin/hermes-postgres-watchdog" ]] || install -m 0555 "$ROOT/bin/hermes-postgres-watchdog" "$WATCHDOG"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-dispatcher.plist.template" "$DISPATCHER_PLIST" \
     "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" "$DISPATCHER" "$MAINTENANCE_FILE" "$LOG_ROOT" <<'PY'
 import os, pathlib, sys
@@ -124,6 +143,44 @@ temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, ta
 PY
     plutil -lint "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-$mode.plist" >/dev/null
   done
+  python3 - "$ROOT/launchd/com.example.ai-pr-automation-memory-curate-producer.plist.template" \
+    "$MEMORY_PRODUCER_PLIST" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" \
+    "$MEMORY_PRODUCER_INTERVAL" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, user, home, hermes_home, support, interval, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in {"__HERMES_USER__":user,"__SERVICE_HOME__":home,"__HERMES_HOME__":hermes_home,
+                   "__SUPPORT_ROOT__":support,"__INTERVAL_SECONDS__":interval,"__LOG_ROOT__":logs}.items():
+    text = text.replace(key, value)
+temporary = pathlib.Path(target + ".tmp")
+temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "$MEMORY_PRODUCER_PLIST" >/dev/null
+  python3 - "$PR_SAFETY_PRODUCER_TEMPLATE" "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-pr-safety.plist" \
+    "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" "$AUTHORITY_FILE" "$PR_SAFETY_PRODUCER_INTERVAL" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, user, home, hermes_home, support, authority, interval, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in {"__HERMES_USER__":user,"__SERVICE_HOME__":home,
+                   "__HERMES_HOME__":hermes_home,"__SUPPORT_ROOT__":support,
+                   "__AUTHORITY_FILE__":authority,"__INTERVAL_SECONDS__":interval,"__LOG_ROOT__":logs}.items():
+    text = text.replace(key, value)
+temporary = pathlib.Path(target + ".tmp")
+temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-pr-safety.plist" >/dev/null
+  python3 - "$ROOT/launchd/com.example.ai-pr-automation-watchdog.plist.template" "$WATCHDOG_PLIST" \
+    "$WATCHDOG" "$MAINTENANCE_FILE" "${REQUESTS_DB_PORT:-5432}" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, watchdog, maintenance, port, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in {"__WATCHDOG__":watchdog,"__MAINTENANCE_FILE__":maintenance,
+                   "__DB_PORT__":port,"__LOG_ROOT__":logs}.items():
+    text = text.replace(key, value)
+temporary = pathlib.Path(target + ".tmp")
+temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "$WATCHDOG_PLIST" >/dev/null
   python3 - "$MANIFEST" "$HERMES_NATIVE_VERSION" "$HERMES_NATIVE_COMMIT" \
     "$HERMES_INSTALLER_SHA256" "$LAUNCHER" "$ROOT/agent-config/hermes/profiles/smoke-v1" <<'PY'
 import hashlib, json, os, pathlib, sys
@@ -167,26 +224,51 @@ case "${1:-}" in
   dispatcher-start)
     need_root
     launchctl bootstrap system "$DISPATCHER_PLIST" 2>/dev/null || launchctl kickstart -k "system/$DISPATCHER_LABEL"
+    launchctl bootstrap system "$WATCHDOG_PLIST" 2>/dev/null || launchctl kickstart -k "system/$WATCHDOG_LABEL"
     ;;
   dispatcher-stop)
     need_root
+    launchctl bootout "system/$WATCHDOG_LABEL" 2>/dev/null || true
     # SIGTERM lets the dispatcher drain in-flight executors before exiting; bootout sends it.
     launchctl bootout "system/$DISPATCHER_LABEL" 2>/dev/null || true
     ;;
   producer-start)
     need_root
-    for mode in review maintain; do
+    for mode in review maintain pr-safety; do
       launchctl bootstrap system "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-$mode.plist" 2>/dev/null \
         || launchctl kickstart -k "system/com.example.ai-pr-automation-producer-$mode"
     done
+    launchctl bootstrap system "$MEMORY_PRODUCER_PLIST" 2>/dev/null \
+      || launchctl kickstart -k "system/$MEMORY_PRODUCER_LABEL"
     ;;
   producer-stop)
     need_root
-    for mode in review maintain; do
+    launchctl bootout "system/$MEMORY_PRODUCER_LABEL" 2>/dev/null || true
+    for mode in review maintain pr-safety; do
       launchctl bootout "system/com.example.ai-pr-automation-producer-$mode" 2>/dev/null || true
     done
     ;;
-  status) launchctl print "system/$LABEL" 2>/dev/null; launchctl print "system/$DISPATCHER_LABEL" 2>/dev/null || true ;;
-  logs) tail -n 200 "$LOG_ROOT"/gateway.*.log "$LOG_ROOT"/dispatcher.*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|dispatcher-start|dispatcher-stop|producer-start|producer-stop|status|logs" >&2; exit 2 ;;
+  up)
+    need_root
+    "$ROOT/scripts/hermes-native.sh" sync-support
+    "$ROOT/scripts/hermes-native.sh" start
+    "$ROOT/scripts/hermes-native.sh" dispatcher-start
+    "$ROOT/scripts/hermes-native.sh" producer-start
+    ;;
+  down)
+    need_root
+    "$ROOT/scripts/hermes-native.sh" producer-stop
+    "$ROOT/scripts/hermes-native.sh" dispatcher-stop
+    "$ROOT/scripts/hermes-native.sh" stop
+    ;;
+  status)
+    for service in "$LABEL" "$DISPATCHER_LABEL" "$WATCHDOG_LABEL" \
+      com.example.ai-pr-automation-producer-review com.example.ai-pr-automation-producer-maintain \
+      com.example.ai-pr-automation-producer-pr-safety "$MEMORY_PRODUCER_LABEL"; do
+      launchctl print "system/$service" 2>/dev/null | awk -v name="$service" \
+        '/^[[:space:]]*state =/{print name ": " $0; found=1; exit} END{if(!found) print name ": not loaded"}'
+    done
+    ;;
+  logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
+  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|dispatcher-start|dispatcher-stop|producer-start|producer-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

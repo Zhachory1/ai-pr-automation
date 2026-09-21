@@ -34,13 +34,17 @@ declare -A EXEC=(
   [pr-review]="hermes-queue-runner pr-review"
   [pr-maintain]="hermes-queue-runner pr-maintain"
   [swe-implement]="hermes-queue-runner swe-implement"
+  [doc-write]="hermes-doc-write-runner"
   [memory-curate]="hermes-memory-curate"
+  [pr-safety-review]="hermes-pr-safety-runner"
 )
 declare -A CAP=(
   [pr-review]="${HERMES_CAP_PR_REVIEW:-1}"
   [pr-maintain]="${HERMES_CAP_PR_MAINTAIN:-3}"
   [swe-implement]="${HERMES_CAP_SWE_IMPLEMENT:-1}"
+  [doc-write]="${HERMES_CAP_DOC_WRITE:-1}"
   [memory-curate]="${HERMES_CAP_MEMORY_CURATE:-1}"
+  [pr-safety-review]="${HERMES_CAP_PR_SAFETY_REVIEW:-1}"
 )
 
 log() { printf '%s hermes-dispatcher %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }

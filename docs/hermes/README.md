@@ -153,6 +153,23 @@ pushes with force-with-lease, and resolves addressed threads; the three-round ca
 supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
 human-owned.
 
+`pr-safety-review` uses a dedicated executor, `bin/hermes-pr-safety-runner` (not the shared
+`hermes-queue-runner`), because its contract differs from every other kind: it validates the claimed
+payload's snapshot path, head/base SHA, diff hash, and policy digest against the immutable Git
+snapshot and pinned policy file BEFORE invoking the Anthropic profile, and settles through
+`hermes_settle_pr_safety_request`. A `clear` result settles `done` with no pending row. A non-clear,
+non-superseded result is published as an immutable local handoff under `HANDOFF_ROOT`; ONLY
+`incident.candidate=true` additionally inserts a `pending_maintenance_reviews` row in the same SQL
+transaction as the `done` settle. Read-only merged-PR discovery is
+`bin/hermes-pr-safety-producer`; its event ledger is keyed by merge SHA.
+
+`bin/hermes-doc-write-runner` owns `doc-write` with immutable Anthropic profile `doc-write-v1`.
+Configure `DOC_WRITER_STAGE_DIR` and required `DOC_WRITER_INBOX_DIR` in the service account's
+`~/.hermes/.env`. Fleet Controller mounts the same stage via Compose `DOC_WRITER_STAGE_HOST` and
+verifies staged regular-file bytes and digest before approval. Hermes receives neither database nor
+inbox credentials; publication-only claims skip the model and copy only the approved bytes. Prepared
+publication crashes recover through the deterministic `doc-writer-reconcile` operator tool.
+
 ## Dispatcher
 
 Queue execution is driven by a long-running dispatcher, not interval timers. `bin/hermes-dispatcher`
@@ -161,15 +178,28 @@ with a free slot and unclaimed depth (`hermes_queue_depth`), it spawns one execu
 and tracks its PID to enforce a per-kind concurrency cap. Work starts within a couple of seconds of
 enqueue; there are no per-role timers to tune.
 
-Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `memory-curate=1`.
+Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `doc-write=1`,
+`memory-curate=1`, `pr-safety-review=1`.
 A crashed executor's row is reclaimed on lease expiry; a crashed dispatcher is restarted by launchd
 and in-flight rows are never lost (claim/settle is transactional and nonce-fenced). SIGTERM drains
 in-flight executors before exit; the maintenance file pauses new claims. The dispatcher replaces the
 consumer cron jobs entirely — do not run both.
 
 ```bash
-sudo scripts/hermes-native.sh dispatcher-start   # load the dispatcher daemon
-sudo scripts/hermes-native.sh dispatcher-stop    # SIGTERM, drain, unload
+sudo scripts/hermes-native.sh dispatcher-start   # dispatcher + root Postgres watchdog
+sudo scripts/hermes-native.sh dispatcher-stop    # watchdog off, SIGTERM/drain dispatcher
+```
+
+The root watchdog probes Postgres every 10s. After two failures it creates the maintenance fence and
+boots out dispatcher + gateway, preventing new claims. The memory-curate producer enqueues one row
+every six hours (`--enqueue-only`); the dispatcher owns the claim and its `memory-curate=1` cap.
+
+For normal operation use the single wrapper:
+
+```bash
+scripts/fleet.sh up       # Compose support, then native gateway/watchdog/dispatcher/producers
+scripts/fleet.sh status
+scripts/fleet.sh down     # producers off, dispatcher drains, gateway off, Compose down
 ```
 
 ## Per-Role Activation
@@ -193,6 +223,8 @@ bash tests/test-hermes-queue-runner.sh
 bash tests/test-hermes-queue-authority.sh
 bash tests/test-hermes-authority.sh
 bash tests/test-hermes-native-foundation.sh
+bash tests/test-hermes-doc-write-native.sh
+bash tests/test-hermes-doc-write-schema.sh
 bash tests/test-hermes-state-roundtrip.sh
 python3 tests/test-status-server.py
 ```

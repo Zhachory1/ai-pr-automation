@@ -46,11 +46,13 @@ psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_P
 mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || { log "WARN: cannot stat $1; epoch 0"; echo 0; }; }
 mkdir -p "$STATE_DIR"
 
-# memory-curate is a scheduled sweep with no external producer: a cron tick self-enqueues one row
-# (hourly dedupe key prevents pile-up), then the same invocation claims it. The collapsed queue API
-# takes no repo/proof for local roles. A still-active row dedupes to NULL, which is fine.
-if [[ "${1:-}" == --enqueue ]]; then
-  psqlq -c "SELECT hermes_enqueue_request('memory-curate','{}'::jsonb,'memory-curate:'||to_char(now(),'YYYYMMDDHH24'));" >/dev/null || true
+# memory-curate is a scheduled sweep with no event source. The producer timer enqueues only; the
+# continuous dispatcher observes depth and starts the consumer under its per-kind cap. `--enqueue`
+# remains enqueue+consume for manual compatibility; `--enqueue-only` preserves producer/consumer
+# separation for standing operation. Hourly dedupe prevents pile-up if a timer is retriggered.
+if [[ "${1:-}" == --enqueue || "${1:-}" == --enqueue-only ]]; then
+  psqlq <<<"SELECT hermes_enqueue_request('memory-curate','{}'::jsonb,'memory-curate:'||to_char(now(),'YYYYMMDDHH24'));" >/dev/null || true
+  [[ "${1:-}" != --enqueue-only ]] || exit 0
 fi
 
 claim="$(psqlq -c "SELECT hermes_claim_request('memory-curate','$run_id','$nonce',$lease);")"

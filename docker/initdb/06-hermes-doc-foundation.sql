@@ -1,5 +1,11 @@
--- M2a: durable Hermes doc-run identity and exact-byte publication approval state.
+-- Durable Hermes doc state and least-privilege document settlement API.
 BEGIN;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='hermes_worker') THEN
+    CREATE ROLE hermes_worker NOLOGIN;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS hermes_doc_runs (
   request_id          BIGINT NOT NULL REFERENCES requests(id),
@@ -25,12 +31,9 @@ CREATE TABLE IF NOT EXISTS hermes_doc_runs (
 );
 
 CREATE INDEX IF NOT EXISTS hermes_doc_runs_open
-  ON hermes_doc_runs(replay_until)
-  WHERE state = 'submitting';
-
+  ON hermes_doc_runs(replay_until) WHERE state = 'submitting';
 CREATE UNIQUE INDEX IF NOT EXISTS hermes_doc_runs_one_open_per_request
-  ON hermes_doc_runs(request_id)
-  WHERE state = 'submitting';
+  ON hermes_doc_runs(request_id) WHERE state = 'submitting';
 
 CREATE TABLE IF NOT EXISTS doc_publications (
   request_id          BIGINT PRIMARY KEY REFERENCES requests(id),
@@ -43,6 +46,7 @@ CREATE TABLE IF NOT EXISTS doc_publications (
   document_generation TEXT NOT NULL CHECK (document_generation ~ '^(legacy|hermes):[0-9a-f]{64}$'),
   approved_at         TIMESTAMPTZ,
   published_at        TIMESTAMPTZ,
+  prepared_by_nonce   TEXT CHECK (prepared_by_nonce IS NULL OR prepared_by_nonce ~ '^[0-9a-f]{32}$'),
   error               TEXT,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -56,10 +60,11 @@ CREATE TABLE IF NOT EXISTS doc_publications (
   )
 );
 
+ALTER TABLE doc_publications ADD COLUMN IF NOT EXISTS prepared_by_nonce TEXT
+  CHECK (prepared_by_nonce IS NULL OR prepared_by_nonce ~ '^[0-9a-f]{32}$');
+
 CREATE OR REPLACE FUNCTION reject_doc_publication_binding_change()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.staged_path IS DISTINCT FROM OLD.staged_path
      OR NEW.target_path IS DISTINCT FROM OLD.target_path
@@ -75,5 +80,162 @@ DROP TRIGGER IF EXISTS doc_publication_binding_immutable ON doc_publications;
 CREATE TRIGGER doc_publication_binding_immutable
 BEFORE UPDATE ON doc_publications
 FOR EACH ROW EXECUTE FUNCTION reject_doc_publication_binding_change();
+
+CREATE OR REPLACE FUNCTION hermes_settle_doc_questions(
+  target_id BIGINT, target_nonce TEXT, target_proposal JSONB, target_provenance JSONB)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+BEGIN
+  IF jsonb_typeof(target_proposal) <> 'object'
+     OR target_proposal->>'kind' <> 'doc-open-questions'
+     OR target_proposal->>'draft_path' <> 'requests/'||target_id||'/draft.md'
+     OR jsonb_typeof(target_proposal->'open_questions') <> 'array'
+     OR jsonb_array_length(target_proposal->'open_questions') < 1
+     OR jsonb_typeof(target_provenance) <> 'object' THEN
+    RAISE EXCEPTION 'invalid document questions result';
+  END IF;
+  WITH eligible AS (
+    SELECT id FROM requests WHERE id=target_id AND kind='doc-write' AND status='running'
+      AND run_nonce=target_nonce AND lease_expires_at>clock_timestamp() FOR UPDATE
+  ), review AS (
+    INSERT INTO pending_maintenance_reviews(request_id,proposal,provenance)
+    SELECT id,target_proposal,target_provenance FROM eligible ON CONFLICT DO NOTHING RETURNING request_id
+  )
+  UPDATE requests r SET status='done',finished_at=clock_timestamp(),
+    posted_ref='queued: awaiting document answers',lease_expires_at=NULL
+  FROM review h WHERE r.id=h.request_id;
+  RETURN FOUND;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION hermes_stage_doc_publication(
+  target_id BIGINT, target_nonce TEXT, target_staged_path TEXT, target_path TEXT,
+  target_digest TEXT, target_generation TEXT, target_proposal JSONB, target_provenance JSONB)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+BEGIN
+  IF target_staged_path <> 'requests/'||target_id||'/publish.md'
+     OR target_digest !~ '^[0-9a-f]{64}$'
+     OR target_generation !~ '^hermes:[0-9a-f]{64}$'
+     OR jsonb_typeof(target_proposal) <> 'object'
+     OR target_proposal->>'kind' <> 'doc-publication-approval'
+     OR target_proposal->>'staged_path' IS DISTINCT FROM target_staged_path
+     OR target_proposal->>'target_path' IS DISTINCT FROM target_path
+     OR target_proposal->>'content_digest' IS DISTINCT FROM target_digest
+     OR target_proposal->>'document_generation' IS DISTINCT FROM target_generation
+     OR jsonb_typeof(target_provenance) <> 'object' THEN
+    RAISE EXCEPTION 'invalid document publication result';
+  END IF;
+  WITH eligible AS (
+    SELECT id FROM requests WHERE id=target_id AND kind='doc-write' AND status='running'
+      AND run_nonce=target_nonce AND lease_expires_at>clock_timestamp() FOR UPDATE
+  ), publication AS (
+    INSERT INTO doc_publications(request_id,state,staged_path,target_path,content_digest,document_generation)
+    SELECT id,'awaiting_approval',target_staged_path,target_path,target_digest,target_generation
+    FROM eligible ON CONFLICT DO NOTHING RETURNING request_id
+  ), review AS (
+    INSERT INTO pending_maintenance_reviews(request_id,proposal,provenance)
+    SELECT request_id,target_proposal,target_provenance FROM publication
+    ON CONFLICT DO NOTHING RETURNING request_id
+  )
+  UPDATE requests r SET status='done',finished_at=clock_timestamp(),
+    posted_ref='queued: awaiting exact publication approval',lease_expires_at=NULL
+  FROM review h WHERE r.id=h.request_id;
+  RETURN FOUND;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION hermes_doc_publication_claimed(target_id BIGINT,target_nonce TEXT)
+RETURNS JSONB LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public,pg_temp AS $$
+  SELECT jsonb_build_object('staged_path',p.staged_path,'target_path',p.target_path,
+    'content_digest',p.content_digest,'document_generation',p.document_generation)
+  FROM doc_publications p JOIN requests r ON r.id=p.request_id
+  WHERE p.request_id=target_id AND p.state='approved' AND p.approved_at IS NOT NULL
+    AND r.kind='doc-write' AND r.status='running' AND r.run_nonce=target_nonce
+    AND r.lease_expires_at>clock_timestamp() AND r.payload->>'publication_only'='true';
+$$;
+
+CREATE OR REPLACE FUNCTION hermes_prepare_doc_publication(target_id BIGINT,target_nonce TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+DECLARE prepared JSONB;
+BEGIN
+  WITH eligible AS (
+    SELECT p.request_id,p.staged_path,p.target_path,p.content_digest,p.document_generation
+    FROM doc_publications p JOIN requests r ON r.id=p.request_id
+    WHERE p.request_id=target_id AND p.state='approved' AND p.approved_at IS NOT NULL
+      AND r.kind='doc-write' AND r.status='running' AND r.run_nonce=target_nonce
+      AND r.lease_expires_at>clock_timestamp() AND r.payload->>'publication_only'='true'
+    FOR UPDATE OF p,r
+  ), publication AS (
+    UPDATE doc_publications p SET state='prepared',prepared_by_nonce=target_nonce,
+      updated_at=clock_timestamp()
+    FROM eligible e WHERE p.request_id=e.request_id RETURNING e.*
+  ), quarantined AS (
+    UPDATE requests r SET status='reconcile',side_effect_at=clock_timestamp(),
+      finished_at=clock_timestamp(),fail_response='doc publication prepared; verify exact target',
+      lease_expires_at=NULL
+    FROM publication p WHERE r.id=p.request_id RETURNING p.*
+  )
+  SELECT jsonb_build_object('staged_path',staged_path,'target_path',target_path,
+    'content_digest',content_digest,'document_generation',document_generation)
+  INTO prepared FROM quarantined;
+  RETURN prepared;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION hermes_reconcile_doc_publication(
+  target_id BIGINT,target_nonce TEXT,target_error TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+BEGIN
+  WITH eligible AS (
+    SELECT p.request_id FROM doc_publications p JOIN requests r ON r.id=p.request_id
+    WHERE p.request_id=target_id AND p.state='approved' AND p.approved_at IS NOT NULL
+      AND r.status='running' AND r.run_nonce=target_nonce AND r.lease_expires_at>clock_timestamp()
+    FOR UPDATE OF p,r
+  ), publication AS (
+    UPDATE doc_publications p SET state='reconcile',error=left(target_error,500),updated_at=clock_timestamp()
+    FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
+  )
+  UPDATE requests r SET status='reconcile',finished_at=clock_timestamp(),
+    fail_response=left(target_error,500),lease_expires_at=NULL
+  FROM publication p WHERE r.id=p.request_id;
+  RETURN FOUND;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION hermes_mark_doc_published(
+  target_id BIGINT,target_nonce TEXT,target_target_path TEXT,target_digest TEXT,target_generation TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+BEGIN
+  WITH eligible AS (
+    SELECT p.request_id FROM doc_publications p JOIN requests r ON r.id=p.request_id
+    WHERE p.request_id=target_id AND p.state='prepared' AND p.approved_at IS NOT NULL
+      AND p.target_path=target_target_path AND p.content_digest=target_digest
+      AND p.document_generation=target_generation AND p.prepared_by_nonce=target_nonce
+      AND r.status='reconcile' AND r.run_nonce=target_nonce
+    FOR UPDATE OF p,r
+  ), publication AS (
+    UPDATE doc_publications p SET state='published',published_at=clock_timestamp(),
+      updated_at=clock_timestamp(),error=NULL
+    FROM eligible e WHERE p.request_id=e.request_id RETURNING p.request_id
+  )
+  UPDATE requests r SET status='done',posted_ref=target_target_path,finished_at=clock_timestamp(),fail_response=NULL
+  FROM publication p WHERE r.id=p.request_id;
+  RETURN FOUND;
+END;
+$$;
+
+REVOKE ALL ON hermes_doc_runs,doc_publications,pending_maintenance_reviews,requests FROM hermes_worker;
+REVOKE ALL ON FUNCTION hermes_settle_doc_questions(BIGINT,TEXT,JSONB,JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_stage_doc_publication(BIGINT,TEXT,TEXT,TEXT,TEXT,TEXT,JSONB,JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_doc_publication_claimed(BIGINT,TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_prepare_doc_publication(BIGINT,TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_reconcile_doc_publication(BIGINT,TEXT,TEXT) FROM PUBLIC;
+DROP FUNCTION IF EXISTS hermes_mark_doc_published(BIGINT,TEXT,TEXT,TEXT);
+REVOKE ALL ON FUNCTION hermes_mark_doc_published(BIGINT,TEXT,TEXT,TEXT,TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION hermes_settle_doc_questions(BIGINT,TEXT,JSONB,JSONB) TO hermes_worker;
+GRANT EXECUTE ON FUNCTION hermes_stage_doc_publication(BIGINT,TEXT,TEXT,TEXT,TEXT,TEXT,JSONB,JSONB) TO hermes_worker;
+GRANT EXECUTE ON FUNCTION hermes_doc_publication_claimed(BIGINT,TEXT) TO hermes_worker;
+GRANT EXECUTE ON FUNCTION hermes_prepare_doc_publication(BIGINT,TEXT) TO hermes_worker;
+GRANT EXECUTE ON FUNCTION hermes_reconcile_doc_publication(BIGINT,TEXT,TEXT) TO hermes_worker;
+GRANT EXECUTE ON FUNCTION hermes_mark_doc_published(BIGINT,TEXT,TEXT,TEXT,TEXT) TO hermes_worker;
 
 COMMIT;

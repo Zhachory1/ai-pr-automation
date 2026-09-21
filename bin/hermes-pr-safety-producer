@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# hermes-pr-safety-producer — read-only merged-PR producer for the host-native fleet. Discovers
+# merged PRs authored by the configured GitHub logins, snapshots each merge commit read-only, and
+# enqueues one pr-safety-review request per merge SHA. Makes zero model calls.
+#
+# Ported from the retired Docker producer (bin/pr-safety-merged-pr-producer, git show
+# 9ec1d3d~1:bin/pr-safety-merged-pr-producer): same immutable-snapshot identity (clean checkout at
+# the merge commit, base ref oid, git-diff SHA-256), same event-ledger dedupe (merge SHA is the event
+# identity), same stale-head supersede. The event ledger + queue insert now go through the
+# SECURITY DEFINER hermes_enqueue_pr_safety_event (hermes_worker has no direct table DML), and repo
+# scope is additionally filtered through the operator authority YAML (see hermes-pr-producer),
+# matching the rest of the native fleet's scope-of-attention model.
+set -euo pipefail
+umask 077
+
+HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || echo /usr/local/libexec/ai-pr-automation)"
+: "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
+: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
+AUTHORITY="${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}"
+AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
+[[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
+need gh; need git; need jq; need psql; need python3
+
+digest() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
+resolve_path() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+inside_root() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
+log() { printf '%s hermes-pr-safety-producer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
+psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
+
+for required in PR_SAFETY_MERGED_PR_AUTHORS PR_SAFETY_SNAPSHOT_ROOT PR_SAFETY_POLICY_ROOT \
+  PR_SAFETY_POLICY_PATH PR_SAFETY_POLICY_VERSION PR_SAFETY_POLICY_DIGEST; do
+  if [[ -z "${!required:-}" ]]; then
+    log "disabled: set $required and the other PR_SAFETY_* policy/snapshot settings"
+    exit 0
+  fi
+done
+
+[[ "$PR_SAFETY_POLICY_VERSION" != *$'\n'* && "$PR_SAFETY_POLICY_VERSION" != *$'\r'* ]] || { echo "PR_SAFETY_POLICY_VERSION must be one line" >&2; exit 2; }
+[[ "$PR_SAFETY_POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "PR_SAFETY_POLICY_DIGEST must be lowercase SHA-256" >&2; exit 2; }
+
+SEARCH_LIMIT="${PR_SAFETY_MERGED_PR_SEARCH_LIMIT:-10}"
+SNAPSHOT_KEEP="${PR_SAFETY_SNAPSHOT_KEEP:-25}"
+
+SNAPSHOT_ROOT="$(resolve_path "$PR_SAFETY_SNAPSHOT_ROOT")"
+POLICY_ROOT="$(resolve_path "$PR_SAFETY_POLICY_ROOT")"
+POLICY_PATH="$(resolve_path "$PR_SAFETY_POLICY_PATH")"
+mkdir -p "$SNAPSHOT_ROOT"
+inside_root "$POLICY_PATH" "$POLICY_ROOT" && [[ -f "$POLICY_PATH" && ! -L "$POLICY_PATH" ]] \
+  || { echo "PR_SAFETY_POLICY_PATH must be regular file beneath PR_SAFETY_POLICY_ROOT" >&2; exit 2; }
+[[ "$(digest < "$POLICY_PATH")" == "$PR_SAFETY_POLICY_DIGEST" ]] \
+  || { echo "PR_SAFETY_POLICY_DIGEST does not match policy file" >&2; exit 2; }
+
+# Load the granted-repo allowlist once. Empty grant = nothing to do (not an error). Mirrors
+# hermes-pr-producer: this is scope-of-attention, not security (see DD-authority-and-memory.md).
+mapfile -t GRANTED < <(python3 "$AUTHORITY_BIN" --file "$AUTHORITY" 2>/dev/null | jq -r '.repos[]?' || true)
+if (( ${#GRANTED[@]} == 0 )); then log "no repos granted in $AUTHORITY; nothing to discover"; exit 0; fi
+repo_granted() { local r="$1"; local g; for g in "${GRANTED[@]}"; do [[ "$g" == "$r" ]] && return 0; done; return 1; }
+
+# Distinct, loud alert for expired org SAML authorization. SAML re-auth is a human-only browser step;
+# never treat a SAML 403 as an empty result set.
+saml_guard() {
+  case "$1" in
+    *"organization SAML enforcement"*|*"SAML SSO"*)
+      log "FATAL: GitHub token SAML authorization expired for the org. Re-authorize the token, then rerun." >&2
+      log "  $1" >&2
+      exit 4
+      ;;
+  esac
+}
+
+valid_snapshot() {
+  local path="$1" base="$2" head="$3" diff="$4"
+  [[ -d "$path/.git" ]] &&
+    [[ "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" rev-parse HEAD 2>/dev/null || true)" == "$head" ]] &&
+    GIT_OPTIONAL_LOCKS=0 git -C "$path" cat-file -e "${base}^{commit}" 2>/dev/null &&
+    [[ -z "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" status --porcelain --untracked-files=all)" ]] &&
+    [[ "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" diff --no-ext-diff "$base" "$head" | digest)" == "$diff" ]]
+}
+
+# Snapshot the merge commit read-only. base = PR base ref oid, head = merge commit oid.
+snapshot_for() {
+  local repo="$1" base="$2" head="$3" op="$4" snapshot="$SNAPSHOT_ROOT/$op" tmp diff
+  if [[ -e "$snapshot" ]]; then
+    diff="$(GIT_OPTIONAL_LOCKS=0 git -C "$snapshot" diff --no-ext-diff "$base" "$head" | digest)"
+    valid_snapshot "$snapshot" "$base" "$head" "$diff" || { log "skip $repo: existing snapshot is invalid"; return 1; }
+    printf '%s\t%s\n' "$snapshot" "$diff"
+    return
+  fi
+  tmp="$(mktemp -d "$SNAPSHOT_ROOT/.${op}.XXXXXX")"
+  if ! gh repo clone "$repo" "$tmp/repo" -- --no-checkout --depth=1 >/dev/null 2>&1 ||
+    ! git -C "$tmp/repo" fetch --no-tags --depth=1 origin "$base" "$head" >/dev/null 2>&1 ||
+    ! git -C "$tmp/repo" checkout --detach "$head" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    log "skip $repo: could not create read-only snapshot"
+    return 1
+  fi
+  diff="$(git -C "$tmp/repo" diff --no-ext-diff "$base" "$head" | digest)"
+  if ! valid_snapshot "$tmp/repo" "$base" "$head" "$diff"; then
+    rm -rf "$tmp"
+    log "skip $repo: incomplete snapshot"
+    return 1
+  fi
+  if [[ ! -e "$snapshot" ]] && ! mv "$tmp/repo" "$snapshot"; then
+    rm -rf "$tmp"
+    log "skip $repo: snapshot publication race"
+    return 1
+  fi
+  rm -rf "$tmp"
+  valid_snapshot "$snapshot" "$base" "$head" "$diff" || { log "skip $repo: snapshot publication race"; return 1; }
+  chmod -R a-w "$snapshot"
+  printf '%s\t%s\n' "$snapshot" "$diff"
+}
+
+# Review one merged PR record: {repo, number, mergeSha, baseSha}. The merge commit is the immutable
+# head; base is the PR base ref oid. diff_hash is computed from the snapshot, not trusted from input.
+process_pr() {
+  local record="$1" repo pr merge base op snapshot_info snapshot diff payload event_digest inserted
+  repo="$(jq -r '.repo' <<<"$record")"; pr="$(jq -r '.number' <<<"$record")"
+  merge="$(jq -r '.mergeSha' <<<"$record")"; base="$(jq -r '.baseSha' <<<"$record")"
+  [[ "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { log "skip: bad repo '$repo'"; return 0; }
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || { log "skip $repo: bad pr '$pr'"; return 0; }
+  [[ "$merge" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]] || { log "skip $repo#$pr: missing merge/base sha"; return 0; }
+  repo_granted "$repo" || { log "skip $repo#$pr: repo not granted"; return 0; }
+
+  op="pr-safety-$(printf '%s' "$repo#$pr@$merge" | digest)"
+  if ! snapshot_info="$(snapshot_for "$repo" "$base" "$merge" "$op")"; then return 0; fi
+  IFS=$'\t' read -r snapshot diff <<<"$snapshot_info"
+  payload="$(jq -cn --arg op "$op" --arg repo "$repo" --arg pr "$pr" --arg head "$merge" --arg base "$base" \
+    --arg diff "$diff" --arg policy_version "$PR_SAFETY_POLICY_VERSION" --arg policy_digest "$PR_SAFETY_POLICY_DIGEST" \
+    --arg snapshot "$snapshot" --arg policy_path "$POLICY_PATH" \
+    '{operation_id:$op,repo:$repo,pr:($pr|tonumber),head_sha:$head,base_sha:$base,diff_hash:$diff,policy_version:$policy_version,policy_digest:$policy_digest,snapshot_path:$snapshot,policy_path:$policy_path}')"
+  event_digest="$(jq -cS . <<<"$record" | digest)"
+  inserted="$(psqlq -v merge_sha="$merge" -v event_digest="$event_digest" -v payload="$payload" \
+    -v dk="$repo#$pr@$merge" -v lineage="$repo#$pr" \
+    <<<"SELECT hermes_enqueue_pr_safety_event(:'merge_sha', :'event_digest', :'payload'::jsonb, :'dk', :'lineage');" 2>/dev/null || true)"
+  if [[ "$inserted" =~ ^[0-9]+$ ]]; then log "enqueued $repo#$pr@$merge (#$inserted)"; else log "recorded or deduped $repo#$pr@$merge"; fi
+}
+
+# Resolve one author's merged PRs to normalized {repo, number, mergeSha, baseSha} records, written
+# one-per-line to $1. Runs in the MAIN shell (not a pipe subshell) so a SAML fatal can exit the
+# process. The gh search only yields repo+number; a per-PR view resolves the merge/base SHAs.
+records_for_author() {
+  local author="$1" outfile="$2" search view repo pr
+  if ! search="$(gh search prs --author "$author" --merged --sort updated --order desc --limit "$SEARCH_LIMIT" --json number,repository 2>&1)"; then
+    saml_guard "$search"; log "author $author: search failed: $search"; return 0
+  fi
+  saml_guard "$search"
+  while IFS=$'\t' read -r repo pr; do
+    [[ -n "$repo" && -n "$pr" ]] || continue
+    if ! view="$(gh pr view "$pr" --repo "$repo" --json number,baseRefOid,mergeCommit,state,mergedAt 2>&1)"; then
+      saml_guard "$view"; log "skip $repo#$pr: pr view failed"; continue
+    fi
+    jq -e '.state == "MERGED" and (.mergeCommit.oid | type == "string") and (.baseRefOid | test("^[0-9a-f]{40}$"))' <<<"$view" >/dev/null \
+      || { log "skip $repo#$pr: not merged or missing sha"; continue; }
+    jq -cn --arg repo "$repo" --argjson number "$pr" --arg merge "$(jq -r '.mergeCommit.oid' <<<"$view")" --arg base "$(jq -r '.baseRefOid' <<<"$view")" \
+      '{repo:$repo,number:$number,mergeSha:$merge,baseSha:$base}' >> "$outfile"
+  done < <(jq -r '.[] | [.repository.nameWithOwner, (.number|tostring)] | @tsv' <<<"$search")
+}
+
+# Test hook: a local JSON-lines fixture of normalized records, makes no network request.
+if [[ -n "${PR_SAFETY_MERGED_PR_INPUT_FILE:-}" ]]; then
+  [[ -f "$PR_SAFETY_MERGED_PR_INPUT_FILE" && ! -L "$PR_SAFETY_MERGED_PR_INPUT_FILE" ]] \
+    || { echo "PR_SAFETY_MERGED_PR_INPUT_FILE must be regular JSON-lines fixture" >&2; exit 2; }
+  while IFS= read -r rec; do [[ -n "$rec" ]] && process_pr "$rec"; done < "$PR_SAFETY_MERGED_PR_INPUT_FILE"
+  exit 0
+fi
+
+# Remove old snapshots beyond SNAPSHOT_KEEP newest (by mtime), but never one still referenced by a
+# queued/running review. Snapshot dir name is the operation_id.
+gc_snapshots() {
+  [[ "$SNAPSHOT_KEEP" -gt 0 ]] || return 0
+  local dirs op active
+  dirs=$(ls -dt "$SNAPSHOT_ROOT"/pr-safety-* 2>/dev/null || true)
+  [[ -n "$dirs" ]] || return 0
+  local i=0
+  while IFS= read -r snap; do
+    [[ -n "$snap" ]] || continue
+    i=$((i+1))
+    (( i <= SNAPSHOT_KEEP )) && continue
+    op="$(basename "$snap")"
+    active="$(psqlq -v op="$op" <<<"SELECT hermes_pr_safety_operation_active(:'op');" 2>/dev/null || true)"
+    if [[ "$active" == t ]]; then log "gc keep (in-flight): $op"; continue; fi
+    chmod -R u+w "$snap" 2>/dev/null || true
+    rm -rf "$snap" && log "gc removed snapshot $op"
+  done <<<"$dirs"
+}
+
+records="$(mktemp)"; trap 'rm -f "$records"' EXIT
+IFS=',' read -r -a authors <<<"$PR_SAFETY_MERGED_PR_AUTHORS"
+for author in "${authors[@]}"; do
+  author="$(printf '%s' "$author" | tr -d '[:space:]')"
+  [[ -n "$author" ]] || continue
+  records_for_author "$author" "$records"
+done
+while IFS= read -r rec; do [[ -n "$rec" ]] && process_pr "$rec"; done < "$records"
+gc_snapshots

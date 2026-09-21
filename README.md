@@ -46,7 +46,8 @@ Bring up the support substrate, then install and enroll the host-native runtime.
 
 ```bash
 cp .env.example .env    # fill CODE_ROOT, DB/Fleet Controller secrets, Hindsight provider, vault path
-scripts/compose.sh up -d --build   # validates vault path, then builds and starts SUPPORT services
+scripts/fleet.sh up                # Compose support + host-native Hermes jobs
+scripts/fleet.sh status
 scripts/m0-verify.sh               # substrate checks (Postgres, Hindsight, swarmvault, coderag)
 ```
 
@@ -197,6 +198,9 @@ bash tests/test-hermes-queue-runner.sh
 # collapsed queue API + YAML authority allowlist
 bash tests/test-hermes-queue-authority.sh
 bash tests/test-hermes-authority.sh
+# pr-safety producer dedupe/snapshot identity and incident-only queue routing
+bash tests/test-hermes-pr-safety-producer.sh
+bash tests/test-hermes-pr-safety-runner.sh
 # Fleet Controller auth and session controls
 python3 tests/test-status-server.py
 ```
