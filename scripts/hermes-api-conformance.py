@@ -45,6 +45,22 @@ def load_keys(path):
     return data
 
 
+def wait_ready(client, keys, seconds):
+    profile, key = next(iter(keys["profiles"].items()))
+    deadline = time.time() + seconds
+    last = None
+    while time.time() < deadline:
+        try:
+            status, _, _ = client.request("GET", f"/p/{profile}/v1/models", key)
+            if status == 200:
+                return
+            last = f"HTTP {status}"
+        except urllib.error.URLError as error:
+            last = str(error.reason)
+        time.sleep(0.5)
+    raise SystemExit(f"Hermes API not ready within {seconds}s: {last}")
+
+
 def auth_probe(client, keys):
     profiles = keys["profiles"]
     for profile, key in profiles.items():
@@ -110,8 +126,11 @@ def main():
     parser.add_argument("--keys-file", required=True)
     parser.add_argument("--run-profile", help="optional paid no-effect run probe")
     parser.add_argument("--run-timeout", type=int, default=180)
+    parser.add_argument("--wait-seconds", type=int, default=0)
     args = parser.parse_args()
     keys = load_keys(args.keys_file); client = Client(args.base_url)
+    if args.wait_seconds:
+        wait_ready(client, keys, args.wait_seconds)
     auth_probe(client, keys)
     if args.run_profile:
         run_probe(client, keys, args.run_profile, args.run_timeout)

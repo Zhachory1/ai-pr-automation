@@ -96,8 +96,14 @@ def main():
         fail("key bundle must be outside the repository and Git parents")
     import pwd
     user = pwd.getpwnam(args.service_user)
+    operator_uid = int(os.environ.get("SUDO_UID", "0"))
+    operator = pwd.getpwuid(operator_uid)
     args.keys_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chown(args.keys_file.parent, operator.pw_uid, operator.pw_gid)
+    os.chmod(args.keys_file.parent, 0o700)
     data = load_or_create(args.keys_file)
+    os.chown(args.keys_file, operator.pw_uid, operator.pw_gid)
+    os.chmod(args.keys_file, 0o600)
     root_env = args.hermes_home / ".env"
     listener_key = ""
     if root_env.exists():

@@ -6,7 +6,7 @@ SHARED_RUNTIME="${HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-run
 # Exported values override stale/missing .env values and match the service-account role bootstrap.
 export DOC_WRITER_STAGE_HOST="${DOC_WRITER_STAGE_HOST:-$SHARED_RUNTIME/doc-writer}"
 export HANDOFF_ROOT="${HANDOFF_ROOT:-$SHARED_RUNTIME/safety-handoffs}"
-export HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/zhach-ai-pr-automation/hermes-api-keys.json}"
+export HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 
 case "${1:-}" in
   up)
