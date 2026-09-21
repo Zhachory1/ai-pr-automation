@@ -25,10 +25,16 @@ else
 fi
 SH
 
-# Fake psql: capture the full invocation (has -v payload/dk/kind and the -c SQL); return an id.
+# Fake psql: capture the invocation and return an id. Fidelity guard: real psql does NOT interpolate
+# :'var' in a -c string (only via stdin/file), so reject that exact broken form the producer once had.
 cat > "$tmp/bin/psql" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$TEST_STATE/psql.log"
+args="$*"; sql="$(cat 2>/dev/null || true)"
+printf '%s\n' "$args" >> "$TEST_STATE/psql.log"
+[[ -n "$sql" ]] && printf 'STDIN_SQL: %s\n' "$sql" >> "$TEST_STATE/psql.log"
+if [[ "$args" == *" -c "* && "$args" == *":'"* ]]; then
+  echo "psql: -c cannot interpolate :'var' (use stdin)" >&2; exit 1
+fi
 echo 101
 SH
 chmod +x "$tmp/bin/gh" "$tmp/bin/psql"
@@ -40,11 +46,14 @@ out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" \
   bin/hermes-pr-producer review 2>&1)"
 
 # Exactly one enqueue (granted repo only); ungranted repo skipped.
-n_enq="$(grep -c 'hermes_enqueue_request' "$tmp/psql.log" 2>/dev/null | tr -dc 0-9 || echo 0)"
+# The enqueue SQL must arrive via stdin (with the :'var' substitutions), not a -c string.
+grep -q 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" \
+  || { echo 'FAIL: enqueue not fed via stdin (psql -c would not interpolate :var)' >&2; cat "$tmp/psql.log" >&2; exit 1; }
+n_enq="$(grep -c 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" 2>/dev/null | tr -dc 0-9 || echo 0)"
 [[ "${n_enq:-0}" == 1 ]] || { echo "FAIL: expected 1 enqueue, got ${n_enq:-0}" >&2; echo "$out" >&2; cat "$tmp/psql.log" >&2; exit 1; }
-grep -q "pr-review" "$tmp/psql.log" || { echo 'FAIL: wrong kind' >&2; exit 1; }
-# Per-commit dedupe key present.
-grep -q 'Zhachory1/ai-pr-automation#7@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$tmp/psql.log" \
+grep -q "kind=pr-review" "$tmp/psql.log" || { echo 'FAIL: wrong kind' >&2; exit 1; }
+# Per-commit dedupe key present (passed as a -v var).
+grep -q 'dk=Zhachory1/ai-pr-automation#7@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$tmp/psql.log" \
   || { echo 'FAIL: dedupe key not per-commit' >&2; cat "$tmp/psql.log" >&2; exit 1; }
 grep -q 'other/repo' "$tmp/psql.log" && { echo 'FAIL: ungranted repo enqueued' >&2; exit 1; }
 echo "$out" | grep -q 'enqueued=1' || { echo "FAIL: summary wrong: $out" >&2; exit 1; }

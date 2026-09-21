@@ -24,7 +24,7 @@ HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || echo /usr/local/libexec/ai
 : "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
 GH_TIMEOUT_SECONDS="${PR_PRODUCER_GH_TIMEOUT_SECONDS:-60}"
 MAX_UPDATED_AGE_DAYS="${PR_PRODUCER_MAX_UPDATED_AGE_DAYS:-0}"   # 0 disables
-AUTHORITY="${HERMES_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml}"
+AUTHORITY="${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}"
 AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
 
@@ -64,8 +64,10 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   payload="$(jq -cn --arg repo "$repo" --arg pr "$number" --arg url "$url" --arg title "$title" \
     '{repo:$repo, number:($pr|tonumber), url:$url, title:$title}')"
   dedupe_key="${repo}#${number}@${sha}"
+  # psql -c does NOT interpolate :'var'; feed the SQL via stdin so :'var' substitution applies.
+  # A NULL return (dedupe/cap skip) prints empty; a numeric id means a row was inserted.
   inserted="$(psqlq -v payload="$payload" -v dk="$dedupe_key" -v kind="$KIND" \
-    -c "SELECT hermes_enqueue_request(:'kind', :'payload'::jsonb, :'dk');" 2>/dev/null || true)"
+    <<<"SELECT hermes_enqueue_request(:'kind', :'payload'::jsonb, :'dk');" 2>/dev/null || true)"
   if [[ "$inserted" =~ ^[0-9]+$ ]]; then enq=$((enq+1)); log "enqueued $KIND $dedupe_key (#$inserted)"; else dedupe=$((dedupe+1)); fi
 done <<< "$prs"
 

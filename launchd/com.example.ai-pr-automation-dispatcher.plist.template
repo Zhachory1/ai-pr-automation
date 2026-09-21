@@ -3,8 +3,9 @@
 <plist version="1.0"><dict>
   <key>Label</key><string>com.example.ai-pr-automation-dispatcher</string>
   <key>UserName</key><string>__HERMES_USER__</string>
+  <!-- Homebrew bash (>=4) required for associative arrays; macOS /bin/bash is 3.2. -->
   <key>ProgramArguments</key><array>
-    <string>/bin/bash</string><string>-c</string>
+    <string>/opt/homebrew/bin/bash</string><string>-c</string>
     <string>set -a; . "$HERMES_HOME/.env"; set +a; exec __DISPATCHER__</string>
   </array>
   <key>EnvironmentVariables</key><dict>

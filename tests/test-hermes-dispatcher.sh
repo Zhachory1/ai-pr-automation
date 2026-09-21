@@ -23,6 +23,7 @@ chmod +x "$tmp/bin/psql"
 cat > "$tmp/libexec/hermes-queue-runner" <<SH
 #!/usr/bin/env bash
 kind="\$1"
+[[ -n "\${HERMES_WORK_ROOT:-}" ]] || { echo 'missing HERMES_WORK_ROOT' >> "$tmp/run/log"; exit 2; }
 echo "start \$kind \$\$" >> "$tmp/run/log"
 # block so the dispatcher sees us as active; released when the test writes to the gate file
 while [[ ! -e "$tmp/run/release" ]]; do sleep 0.1; done
@@ -54,6 +55,7 @@ fail=0
 [[ "$peak_review" == 1 ]] || { echo "FAIL: pr-review peaked at $peak_review, cap 1" >&2; fail=1; }
 [[ "$peak_swe" == 1 ]] || { echo "FAIL: swe-implement peaked at $peak_swe, cap 1" >&2; fail=1; }
 [[ "$peak_mem" == 0 ]] || { echo "FAIL: memory-curate spawned $peak_mem with depth 0" >&2; fail=1; }
+if grep -q 'missing HERMES_WORK_ROOT' "$tmp/run/log"; then echo 'FAIL: dispatcher omitted executor work root' >&2; fail=1; fi
 (( fail == 0 )) || exit 1
 
 echo 'PASS: dispatcher honors per-kind caps and only spawns on unclaimed depth'

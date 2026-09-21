@@ -21,7 +21,7 @@ LABEL="com.example.ai-pr-automation-hermes"
 DISPATCHER="$SUPPORT_ROOT/hermes-dispatcher"
 DISPATCHER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-dispatcher.plist"
 DISPATCHER_LABEL="com.example.ai-pr-automation-dispatcher"
-AUTHORITY_FILE="${HERMES_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml}"
+AUTHORITY_FILE="${HERMES_AUTHORITY_FILE:-$CONFIG_ROOT/authority.yaml}"
 PRODUCER_INTERVAL="${HERMES_PRODUCER_INTERVAL_SECONDS:-900}"
 PRODUCER_TEMPLATE="$ROOT/launchd/com.example.ai-pr-automation-producer.plist.template"
 

@@ -12,11 +12,22 @@
 # Producers (what enqueues repo-role work) are separate; this only consumes.
 set -euo pipefail
 
+# Requires bash 4+ for associative arrays (macOS /bin/bash is 3.2 and lacks them). Fail loudly rather
+# than silently iterating empty EXEC/CAP maps and never spawning.
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "hermes-dispatcher requires bash >= 4 (found $BASH_VERSION); install/point at homebrew bash" >&2
+  exit 2
+fi
+
 : "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
 : "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
 SUPPORT_ROOT="${HERMES_NATIVE_SUPPORT_ROOT:-/usr/local/libexec/ai-pr-automation}"
 MAINTENANCE_FILE="${HERMES_MAINTENANCE_FILE:-/usr/local/etc/ai-pr-automation/hermes-maintenance}"
 POLL_SECONDS="${HERMES_DISPATCH_POLL_SECONDS:-2}"
+# Queue executors require a writable work root. Manual pilots supplied this explicitly; the daemon
+# must provide the service-account default or the executor exits before claiming.
+export HERMES_WORK_ROOT="${HERMES_WORK_ROOT:-$HOME/.local/share/ai-pr-automation/swe-work}"
+mkdir -p "$HERMES_WORK_ROOT"
 
 # kind -> "executor-invocation|max-concurrent". Executors live in SUPPORT_ROOT.
 declare -A EXEC=(
