@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One operator command for the two appropriate runtimes:
 #   Compose: Postgres, Fleet Controller, Hindsight, Coderag, SwarmVault
-#   launchd: host-native Hermes gateway, dispatcher, producers, Postgres watchdog
+#   launchd: host-native Hermes gateway, dispatcher, producers
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SHARED_RUNTIME="${HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime}"

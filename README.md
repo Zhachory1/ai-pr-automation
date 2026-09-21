@@ -212,7 +212,7 @@ The queue tests use a throwaway `postgres:16` container. They do not contact Git
 - GitHub search is capped at 1,000 results. Reaching the cap fails loudly; narrow repository scope.
 - A `reconcile` row means an effect boundary was crossed with an unknown outcome. Verify GitHub state
   before marking it `done` or returning it to `queued`; automatic retries stay blocked for that head.
-- The Postgres-loss watchdog stops the runtime before it can make new claims against a missing queue.
+- If Postgres is unavailable, claims fail and queued work remains durable until Docker is restarted.
 - Logs, prompts, and worktrees can contain private code or review text. Keep them on encrypted local
   storage and choose retention appropriate for your environment.
 

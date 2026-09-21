@@ -142,8 +142,8 @@ scripts/hermes-native.sh logs
 
 `bin/hermes-queue-runner <kind>` claims one request, renders it as untrusted task data into the
 matching immutable profile, does the work in an ephemeral worktree, and settles a typed result. The
-kind→profile map is fixed. `bin/hermes-postgres-watchdog` stops the gateway before it can claim
-against a missing queue.
+kind→profile map is fixed. If Postgres is unavailable, claims fail and queued work stays durable
+until Docker is restarted.
 
 Mapped kinds: `swe-implement` → `swe-implement-v1` (typed SWE settle, draft-PR URL); `pr-review` →
 `pr-review-v1` (generic settle, exact-head marker); `pr-maintain` → `pr-maintain-v1` (generic settle,
@@ -186,18 +186,18 @@ in-flight executors before exit; the maintenance file pauses new claims. The dis
 consumer cron jobs entirely — do not run both.
 
 ```bash
-sudo scripts/hermes-native.sh dispatcher-start   # dispatcher + root Postgres watchdog
-sudo scripts/hermes-native.sh dispatcher-stop    # watchdog off, SIGTERM/drain dispatcher
+sudo scripts/hermes-native.sh dispatcher-start   # load dispatcher
+sudo scripts/hermes-native.sh dispatcher-stop    # SIGTERM/drain dispatcher
 ```
 
-The root watchdog probes Postgres every 10s. After two failures it creates the maintenance fence and
-boots out dispatcher + gateway, preventing new claims. The memory-curate producer enqueues one row
-every six hours (`--enqueue-only`); the dispatcher owns the claim and its `memory-curate=1` cap.
+The memory-curate producer enqueues one row every six hours (`--enqueue-only`); the dispatcher owns
+the claim and its `memory-curate=1` cap. Postgres recovery is operator-driven: restart Docker or run
+`fleet.sh up`; durable queued/leased work remains in Postgres and lease fencing prevents stale settle.
 
 For normal operation use the single wrapper:
 
 ```bash
-scripts/fleet.sh up       # Compose support, then native gateway/watchdog/dispatcher/producers
+scripts/fleet.sh up       # Compose support, then native gateway/dispatcher/producers
 scripts/fleet.sh status
 scripts/fleet.sh down     # producers off, dispatcher drains, gateway off, Compose down
 ```
