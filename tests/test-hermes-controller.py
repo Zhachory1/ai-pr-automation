@@ -57,6 +57,8 @@ class ControllerContractTest(unittest.TestCase):
     def test_typed_output_accepts_only_plain_or_single_json_fence(self):
         self.assertEqual(controller.parse_typed_output('{"x":1}'), {"x":1})
         self.assertEqual(controller.parse_typed_output('```json\n{"x":1}\n```'), {"x":1})
+        self.assertEqual(controller.parse_typed_output('analysis first\n```json\n{"x":1}\n```'), {"x":1})
+        self.assertIsNone(controller.parse_typed_output('```json\n{"x":1}\n```\n```json\n{"x":2}\n```'))
         self.assertIsNone(controller.parse_typed_output('prose {"x":1}'))
 
     def test_poll_method_is_not_shadowed_by_interval(self):
@@ -96,6 +98,10 @@ class ControllerContractTest(unittest.TestCase):
         self.assertFalse(controller.valid_safety(dict(value, findings=[{"claim":"x"}]), payload, nonce))
         self.assertFalse(controller.valid_safety(dict(value, incident={"candidate":True}), payload, nonce))
         self.assertFalse(controller.valid_safety(dict(value, nonce="b" * 32), payload, nonce))
+        normalized = controller.normalize_safety(dict(value, status="needs_human_decision",
+            incident={"candidate":True}, policy_path="/policy", snapshot_path="/snapshot"))
+        self.assertEqual(normalized["status"], "incident_candidate")
+        self.assertNotIn("policy_path", normalized); self.assertNotIn("snapshot_path", normalized)
 
     def test_memory_gates_reject_noise_secrets_and_weak_org_evidence(self):
         valid = {"content":"Use one stable operation key to prevent duplicate external effects after uncertain submissions.",
