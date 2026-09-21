@@ -40,7 +40,7 @@ services:
       - ./docker/initdb:/migrations:ro
     # 01-schema.sql is the immutable fresh-install baseline; existing volumes receive upgrades only.
     # $$f is escaped so the shell (not compose) expands the loop var; ${REQUESTS_DB_*} stay for compose.
-    command: ["sh", "-ec", "for f in /migrations/0[2-9]-*.sql; do echo \"applying $$f\"; psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f \"$$f\"; done"]
+    command: ["sh", "-ec", "for f in /migrations/0[2-9]-*.sql /migrations/1[0-9]-*.sql; do echo \"applying $$f\"; psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f \"$$f\"; done"]
     depends_on:
       db-requests:
         condition: service_healthy
@@ -227,7 +227,7 @@ services:
       PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
       PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
       DOC_WRITE_DAILY_CAP: ${DOC_WRITE_DAILY_CAP:-30}
-      DOC_WRITER_STAGE_DIR: /work/stage
+      DOC_WRITER_STAGE_DIR: /work
       HINDSIGHT_URL: http://hindsight:8888
       HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against PR-safety server paths
       STATUS_BIND: 0.0.0.0
@@ -245,7 +245,7 @@ services:
       - fleet_controller_tls_cert
       - fleet_controller_tls_key
     volumes:
-      - doc_writer_work:/work:ro
+      - ${DOC_WRITER_STAGE_HOST:?set DOC_WRITER_STAGE_HOST to the native Hermes stage directory}:/work:ro
     networks:
       - status-internal
       - status-host
@@ -264,7 +264,6 @@ volumes:
   requests_pgdata:
   hindsight_pgdata:
   coderag_cache:
-  doc_writer_work:
 
 secrets:
   fleet_controller_tls_ca_cert:

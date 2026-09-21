@@ -156,18 +156,19 @@ human-owned.
 `pr-safety-review` uses a dedicated executor, `bin/hermes-pr-safety-runner` (not the shared
 `hermes-queue-runner`), because its contract differs from every other kind: it validates the claimed
 payload's snapshot path, head/base SHA, diff hash, and policy digest against the immutable Git
-snapshot and pinned policy file BEFORE invoking the model (`pr-safety-v1`, OpenAI provider only), and
-settles through `hermes_settle_pr_safety_request` instead of the generic settle path. A `clear`
-result settles `done` with no pending row. A non-clear, non-superseded result is published as an
-immutable local handoff under `HANDOFF_ROOT`; ONLY `incident.candidate=true` additionally inserts a
-`pending_maintenance_reviews` row (in the same SQL transaction as the `done` settle, so a row can
-never be marked done while its incident review silently failed to queue). A snapshot/policy digest
-mismatch or moved head settles `superseded`; a malformed analyst result settles `failed`. Read-only
-merged-PR discovery for this kind is `bin/hermes-pr-safety-producer`, which snapshots each merge
-commit read-only and enqueues through the security-definer `hermes_enqueue_pr_safety_event`
-(event ledger keyed by merge SHA, so a merge commit is reviewed at most once); a new head for the
-same PR supersedes any still-queued review of an older head. See
-[`pr-safety-review.md`](../pr-safety-review.md) for the full contract.
+snapshot and pinned policy file BEFORE invoking the Anthropic profile, and settles through
+`hermes_settle_pr_safety_request`. A `clear` result settles `done` with no pending row. A non-clear,
+non-superseded result is published as an immutable local handoff under `HANDOFF_ROOT`; ONLY
+`incident.candidate=true` additionally inserts a `pending_maintenance_reviews` row in the same SQL
+transaction as the `done` settle. Read-only merged-PR discovery is
+`bin/hermes-pr-safety-producer`; its event ledger is keyed by merge SHA.
+
+`bin/hermes-doc-write-runner` owns `doc-write` with immutable Anthropic profile `doc-write-v1`.
+Configure `DOC_WRITER_STAGE_DIR` and required `DOC_WRITER_INBOX_DIR` in the service account's
+`~/.hermes/.env`. Fleet Controller mounts the same stage via Compose `DOC_WRITER_STAGE_HOST` and
+verifies staged regular-file bytes and digest before approval. Hermes receives neither database nor
+inbox credentials; publication-only claims skip the model and copy only the approved bytes. Prepared
+publication crashes recover through the deterministic `doc-writer-reconcile` operator tool.
 
 ## Dispatcher
 
@@ -177,8 +178,8 @@ with a free slot and unclaimed depth (`hermes_queue_depth`), it spawns one execu
 and tracks its PID to enforce a per-kind concurrency cap. Work starts within a couple of seconds of
 enqueue; there are no per-role timers to tune.
 
-Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `memory-curate=1`,
-`pr-safety-review=1`.
+Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `doc-write=1`,
+`memory-curate=1`, `pr-safety-review=1`.
 A crashed executor's row is reclaimed on lease expiry; a crashed dispatcher is restarted by launchd
 and in-flight rows are never lost (claim/settle is transactional and nonce-fenced). SIGTERM drains
 in-flight executors before exit; the maintenance file pauses new claims. The dispatcher replaces the
@@ -222,6 +223,8 @@ bash tests/test-hermes-queue-runner.sh
 bash tests/test-hermes-queue-authority.sh
 bash tests/test-hermes-authority.sh
 bash tests/test-hermes-native-foundation.sh
+bash tests/test-hermes-doc-write-native.sh
+bash tests/test-hermes-doc-write-schema.sh
 bash tests/test-hermes-state-roundtrip.sh
 python3 tests/test-status-server.py
 ```

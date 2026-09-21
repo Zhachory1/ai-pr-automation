@@ -1,0 +1,18 @@
+model:
+  provider: anthropic
+  default: claude-sonnet-4-6
+platform_toolsets:
+  cli: []
+  api_server: [no_mcp]
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+auxiliary:
+  background_review:
+    enabled: false
+skills:
+  creation_nudge_interval: 0
+agent:
+  max_turns: 20
+  run_budget_seconds: 1000
+  api_max_retries: 0

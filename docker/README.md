@@ -14,7 +14,7 @@ scripts/m0-verify.sh      # substrate checks (Postgres, Hindsight, swarmvault, c
 ```
 
 Schema upgrades for an existing database volume run through the `schema-migrate` service, which
-reapplies additive `docker/initdb/0[2-9]-*.sql` migrations. `01-schema.sql` is the immutable
+reapplies additive numbered migrations (`02`–`19`). `01-schema.sql` is the immutable
 fresh-install baseline.
 
 ## Queue and reconciliation
