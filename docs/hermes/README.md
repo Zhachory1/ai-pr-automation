@@ -137,6 +137,25 @@ pushes with force-with-lease, and resolves addressed threads; the three-round ca
 supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
 human-owned.
 
+## Dispatcher
+
+Queue execution is driven by a long-running dispatcher, not interval timers. `bin/hermes-dispatcher`
+runs under launchd as `hermes-agent` and continuously drains the queue: each pass, for every kind
+with a free slot and unclaimed depth (`hermes_queue_depth`), it spawns one executor in the background
+and tracks its PID to enforce a per-kind concurrency cap. Work starts within a couple of seconds of
+enqueue; there are no per-role timers to tune.
+
+Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `memory-curate=1`.
+A crashed executor's row is reclaimed on lease expiry; a crashed dispatcher is restarted by launchd
+and in-flight rows are never lost (claim/settle is transactional and nonce-fenced). SIGTERM drains
+in-flight executors before exit; the maintenance file pauses new claims. The dispatcher replaces the
+consumer cron jobs entirely — do not run both.
+
+```bash
+sudo scripts/hermes-native.sh dispatcher-start   # load the dispatcher daemon
+sudo scripts/hermes-native.sh dispatcher-stop    # SIGTERM, drain, unload
+```
+
 ## Per-Role Activation
 
 Each role activates behind the same exclusive cutover:

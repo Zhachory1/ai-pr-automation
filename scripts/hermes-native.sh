@@ -18,6 +18,9 @@ MAINTENANCE_FILE="$CONFIG_ROOT/hermes-maintenance"
 WRAPPER="$SUPPORT_ROOT/hermes-native-gateway"
 PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes.plist"
 LABEL="com.example.ai-pr-automation-hermes"
+DISPATCHER="$SUPPORT_ROOT/hermes-dispatcher"
+DISPATCHER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-dispatcher.plist"
+DISPATCHER_LABEL="com.example.ai-pr-automation-dispatcher"
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
@@ -60,7 +63,21 @@ install_native() {
   [[ ! -x "$ROOT/bin/hermes-queue-runner" ]] || install -m 0555 "$ROOT/bin/hermes-queue-runner" "$SUPPORT_ROOT/hermes-queue-runner"
   [[ ! -x "$ROOT/bin/hermes-memory-curate" ]] || install -m 0555 "$ROOT/bin/hermes-memory-curate" "$SUPPORT_ROOT/hermes-memory-curate"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
+  [[ ! -x "$ROOT/bin/hermes-dispatcher" ]] || install -m 0555 "$ROOT/bin/hermes-dispatcher" "$DISPATCHER"
   [[ ! -x "$ROOT/bin/hermes-postgres-watchdog" ]] || install -m 0555 "$ROOT/bin/hermes-postgres-watchdog" "$SUPPORT_ROOT/hermes-postgres-watchdog"
+  python3 - "$ROOT/launchd/com.example.ai-pr-automation-dispatcher.plist.template" "$DISPATCHER_PLIST" \
+    "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" "$DISPATCHER" "$MAINTENANCE_FILE" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, user, home, hermes_home, support, dispatcher, maintenance, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in {"__HERMES_USER__":user,"__SERVICE_HOME__":home,"__HERMES_HOME__":hermes_home,
+                   "__SUPPORT_ROOT__":support,"__DISPATCHER__":dispatcher,
+                   "__MAINTENANCE_FILE__":maintenance,"__LOG_ROOT__":logs}.items():
+    text = text.replace(key, value)
+temporary = pathlib.Path(target + ".tmp")
+temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "$DISPATCHER_PLIST" >/dev/null
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-hermes.plist.template" "$PLIST" \
     "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$LAUNCHER" "$WRAPPER" "$MAINTENANCE_FILE" "$LOG_ROOT" <<'PY'
 import os, pathlib, sys
@@ -115,7 +132,16 @@ case "${1:-}" in
     need_root; install -m 0444 /dev/null "$MAINTENANCE_FILE"
     launchctl bootout "system/$LABEL" 2>/dev/null || true
     ;;
-  status) launchctl print "system/$LABEL" ;;
-  logs) tail -n 200 "$LOG_ROOT"/gateway.*.log ;;
-  *) echo "usage: $0 install|sync-profiles|preflight|start|stop|status|logs" >&2; exit 2 ;;
+  dispatcher-start)
+    need_root
+    launchctl bootstrap system "$DISPATCHER_PLIST" 2>/dev/null || launchctl kickstart -k "system/$DISPATCHER_LABEL"
+    ;;
+  dispatcher-stop)
+    need_root
+    # SIGTERM lets the dispatcher drain in-flight executors before exiting; bootout sends it.
+    launchctl bootout "system/$DISPATCHER_LABEL" 2>/dev/null || true
+    ;;
+  status) launchctl print "system/$LABEL" 2>/dev/null; launchctl print "system/$DISPATCHER_LABEL" 2>/dev/null || true ;;
+  logs) tail -n 200 "$LOG_ROOT"/gateway.*.log "$LOG_ROOT"/dispatcher.*.log 2>/dev/null ;;
+  *) echo "usage: $0 install|sync-profiles|preflight|start|stop|dispatcher-start|dispatcher-stop|status|logs" >&2; exit 2 ;;
 esac
