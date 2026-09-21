@@ -27,9 +27,6 @@ PRODUCER_TEMPLATE="$ROOT/launchd/com.example.ai-pr-automation-producer.plist.tem
 MEMORY_PRODUCER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-memory-curate-producer.plist"
 MEMORY_PRODUCER_LABEL="com.example.ai-pr-automation-memory-curate-producer"
 MEMORY_PRODUCER_INTERVAL="${HERMES_MEMORY_CURATE_INTERVAL_SECONDS:-21600}"
-WATCHDOG="$SUPPORT_ROOT/hermes-postgres-watchdog"
-WATCHDOG_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-watchdog.plist"
-WATCHDOG_LABEL="com.example.ai-pr-automation-watchdog"
 PR_SAFETY_PRODUCER_INTERVAL="${HERMES_PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}"
 PR_SAFETY_PRODUCER_TEMPLATE="$ROOT/launchd/com.example.ai-pr-automation-pr-safety-producer.plist.template"
 
@@ -60,6 +57,10 @@ install_native() {
   need_root; need_user
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME"
+  # Remove the superseded root watchdog from hosts that installed it before simplification.
+  launchctl bootout system/com.example.ai-pr-automation-watchdog 2>/dev/null || true
+  rm -f /Library/LaunchDaemons/com.example.ai-pr-automation-watchdog.plist \
+    "$SUPPORT_ROOT/hermes-postgres-watchdog" "$LOG_ROOT/watchdog.out.log" "$LOG_ROOT/watchdog.err.log"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer"
   # LaunchDaemons with UserName open StandardOutPath/StandardErrorPath as that user. The root-owned
   # 0755 log directory is intentionally not writable, so pre-create private service-owned files or
@@ -71,8 +72,6 @@ install_native() {
     producer-pr-safety.out producer-pr-safety.err; do
     install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"
   done
-  install -m 0600 -o root -g wheel /dev/null "$LOG_ROOT/watchdog.out.log"
-  install -m 0600 -o root -g wheel /dev/null "$LOG_ROOT/watchdog.err.log"
   local installer=""
   if [[ "${HERMES_SUPPORT_ONLY:-false}" != true ]]; then
     installer="$(mktemp /private/tmp/hermes-install.XXXXXX)"
@@ -99,7 +98,6 @@ install_native() {
   [[ ! -x "$ROOT/bin/doc-writer-publication" ]] || install -m 0555 "$ROOT/bin/doc-writer-publication" "$SUPPORT_ROOT/doc-writer-publication"
   [[ ! -x "$ROOT/bin/doc-writer-reconcile" ]] || install -m 0555 "$ROOT/bin/doc-writer-reconcile" "$SUPPORT_ROOT/doc-writer-reconcile"
   [[ ! -x "$ROOT/bin/hermes-dispatcher" ]] || install -m 0555 "$ROOT/bin/hermes-dispatcher" "$DISPATCHER"
-  [[ ! -x "$ROOT/bin/hermes-postgres-watchdog" ]] || install -m 0555 "$ROOT/bin/hermes-postgres-watchdog" "$WATCHDOG"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-dispatcher.plist.template" "$DISPATCHER_PLIST" \
     "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" "$DISPATCHER" "$MAINTENANCE_FILE" "$LOG_ROOT" <<'PY'
 import os, pathlib, sys
@@ -169,18 +167,6 @@ temporary = pathlib.Path(target + ".tmp")
 temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
 PY
   plutil -lint "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-pr-safety.plist" >/dev/null
-  python3 - "$ROOT/launchd/com.example.ai-pr-automation-watchdog.plist.template" "$WATCHDOG_PLIST" \
-    "$WATCHDOG" "$MAINTENANCE_FILE" "${REQUESTS_DB_PORT:-5432}" "$LOG_ROOT" <<'PY'
-import os, pathlib, sys
-source, target, watchdog, maintenance, port, logs = sys.argv[1:]
-text = pathlib.Path(source).read_text()
-for key, value in {"__WATCHDOG__":watchdog,"__MAINTENANCE_FILE__":maintenance,
-                   "__DB_PORT__":port,"__LOG_ROOT__":logs}.items():
-    text = text.replace(key, value)
-temporary = pathlib.Path(target + ".tmp")
-temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
-PY
-  plutil -lint "$WATCHDOG_PLIST" >/dev/null
   python3 - "$MANIFEST" "$HERMES_NATIVE_VERSION" "$HERMES_NATIVE_COMMIT" \
     "$HERMES_INSTALLER_SHA256" "$LAUNCHER" "$ROOT/agent-config/hermes/profiles/smoke-v1" <<'PY'
 import hashlib, json, os, pathlib, sys
@@ -224,11 +210,9 @@ case "${1:-}" in
   dispatcher-start)
     need_root
     launchctl bootstrap system "$DISPATCHER_PLIST" 2>/dev/null || launchctl kickstart -k "system/$DISPATCHER_LABEL"
-    launchctl bootstrap system "$WATCHDOG_PLIST" 2>/dev/null || launchctl kickstart -k "system/$WATCHDOG_LABEL"
     ;;
   dispatcher-stop)
     need_root
-    launchctl bootout "system/$WATCHDOG_LABEL" 2>/dev/null || true
     # SIGTERM lets the dispatcher drain in-flight executors before exiting; bootout sends it.
     launchctl bootout "system/$DISPATCHER_LABEL" 2>/dev/null || true
     ;;
@@ -262,7 +246,7 @@ case "${1:-}" in
     "$ROOT/scripts/hermes-native.sh" stop
     ;;
   status)
-    for service in "$LABEL" "$DISPATCHER_LABEL" "$WATCHDOG_LABEL" \
+    for service in "$LABEL" "$DISPATCHER_LABEL" \
       com.example.ai-pr-automation-producer-review com.example.ai-pr-automation-producer-maintain \
       com.example.ai-pr-automation-producer-pr-safety "$MEMORY_PRODUCER_LABEL"; do
       launchctl print "system/$service" 2>/dev/null | awk -v name="$service" \

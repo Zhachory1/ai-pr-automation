@@ -60,7 +60,6 @@ fi
 
 plutil -lint launchd/com.example.ai-pr-automation-hermes.plist.template >/dev/null
 plutil -lint launchd/com.example.ai-pr-automation-dispatcher.plist.template >/dev/null
-plutil -lint launchd/com.example.ai-pr-automation-watchdog.plist.template >/dev/null
 # Producer templates contain integer placeholders and become valid only after render; install_native
 # renders then plutil-lints both outputs.
 grep -Fq '<key>StartInterval</key><integer>__INTERVAL_SECONDS__</integer>' launchd/com.example.ai-pr-automation-producer.plist.template
@@ -72,6 +71,7 @@ grep -Fq 'chmod 0444 "$installer"' scripts/hermes-native.sh
 # installer URL. Full install still keeps the digest gate.
 grep -Fq 'sync-support) HERMES_SUPPORT_ONLY=true install_native' scripts/hermes-native.sh
 grep -Fq "if [[ \"\${HERMES_SUPPORT_ONLY:-false}\" != true ]]" scripts/hermes-native.sh
+grep -Fq 'launchctl bootout system/com.example.ai-pr-automation-watchdog' scripts/hermes-native.sh
 grep -Fq "hermes-doc-write-runner\" \"\$SUPPORT_ROOT/hermes-doc-write-runner\"" scripts/hermes-native.sh
 grep -Fq "doc-writer-publication\" \"\$SUPPORT_ROOT/doc-writer-publication\"" scripts/hermes-native.sh
 grep -Fq 'provider: anthropic' agent-config/hermes/profiles/doc-write-v1/config.yaml
