@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Read-only memory recall shim (stdio MCP server).
+
+Worker agents (pr-review, pr-maintain, swe) should be able to `recall` shared memory before acting,
+but the remote agent-memory service exposes `retain` (write), `recall`, and `reflect` on one endpoint
+with no server-side read-only lock, and a Hermes profile mcp.json cannot expose recall while hiding
+retain. Handing a worker the raw endpoint would also grant unfiltered `retain` to the company-readable
+bank, defeating the deterministic curate gate.
+
+This shim sits in front of the service and exposes ONLY recall and reflect. It refuses retain and any
+other write. Workers wire this stdio server (bare `recall`/`reflect` tools); the raw endpoint is never
+in a worker profile. The curate runner remains the sole writer, over its own direct curl path.
+
+Transport: newline-delimited JSON-RPC 2.0 on stdio (MCP stdio). Upstream: the memory service's
+Streamable-HTTP MCP, called with urllib (stateless; no session id needed).
+
+Config via env:
+  HERMES_MEMORY_MCP_BASE   default https://rokt-agent-memory.eng.roktinternal.com/mcp
+  HERMES_MEMORY_BANK       bank path segment, default team-ads-success
+"""
+import json
+import os
+import sys
+import urllib.request
+
+BASE = os.environ.get("HERMES_MEMORY_MCP_BASE", "https://rokt-agent-memory.eng.roktinternal.com/mcp")
+BANK = os.environ.get("HERMES_MEMORY_BANK", "team-ads-success")
+UPSTREAM = f"{BASE.rstrip('/')}/{BANK}/"
+READ_ONLY = ("recall", "reflect")
+PROTOCOL = "2024-11-05"
+
+
+def upstream_call(method, params, req_id=1, timeout=30):
+    body = json.dumps({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}).encode()
+    request = urllib.request.Request(
+        UPSTREAM, data=body,
+        headers={"content-type": "application/json", "accept": "application/json, text/event-stream"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        text = response.read().decode("utf-8", "replace")
+    # Streamable-HTTP frames results as SSE `data:` lines; take the last JSON object.
+    payload = None
+    for line in text.splitlines():
+        line = line[5:].strip() if line.startswith("data:") else line.strip()
+        if line.startswith("{"):
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                pass
+    return payload
+
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def error(req_id, code, message):
+    send({"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}})
+
+
+def main():
+    tools_cache = None
+    for raw in sys.stdin:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            msg = json.loads(raw)
+        except ValueError:
+            continue
+        req_id = msg.get("id")
+        method = msg.get("method")
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": req_id, "result": {
+                "protocolVersion": PROTOCOL,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "hermes-memory-recall-shim", "version": "1.0.0"}}})
+        elif method in ("notifications/initialized", "initialized"):
+            continue
+        elif method == "tools/list":
+            if tools_cache is None:
+                upstream = upstream_call("tools/list", {}, req_id) or {}
+                allt = upstream.get("result", {}).get("tools", [])
+                tools_cache = [t for t in allt if t.get("name") in READ_ONLY]
+            send({"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools_cache}})
+        elif method == "tools/call":
+            name = (msg.get("params") or {}).get("name")
+            if name not in READ_ONLY:
+                # Hard refusal: this shim never writes. retain and anything else are denied.
+                send({"jsonrpc": "2.0", "id": req_id, "result": {
+                    "isError": True,
+                    "content": [{"type": "text",
+                                 "text": f"tool {name!r} is not permitted; this endpoint is recall-only"}]}})
+                continue
+            upstream = upstream_call("tools/call", msg.get("params") or {}, req_id)
+            if upstream is None:
+                error(req_id, -32603, "upstream memory service did not respond")
+                continue
+            if "result" in upstream:
+                send({"jsonrpc": "2.0", "id": req_id, "result": upstream["result"]})
+            else:
+                error(req_id, -32603, json.dumps(upstream.get("error", "upstream error")))
+        elif req_id is not None:
+            error(req_id, -32601, f"method {method!r} not supported by recall shim")
+
+
+if __name__ == "__main__":
+    main()
