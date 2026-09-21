@@ -1,7 +1,8 @@
 # DD: GitHub Authority Auto-Reauth and Two-Tier Memory Curation
 
-Status: GitHub-authority half IMPLEMENTED (enrollment collapsed to a YAML allowlist); memory half
-still proposed. Extends [DD-host-native-agent-engine.md](DD-host-native-agent-engine.md) and
+Status: GitHub-authority half IMPLEMENTED (enrollment collapsed to a YAML allowlist); memory WRITE
+half implemented (two-tier curate over MCP); memory READ (recall for workers) still OPEN — see
+"Reading memory back" below. Extends [DD-host-native-agent-engine.md](DD-host-native-agent-engine.md) and
 [plan-host-native-autonomous-hermes.md](plan-host-native-autonomous-hermes.md). Covers two runtime
 gaps found while activating the host-native fleet: per-task GitHub reauth friction, and the wrong
 authority model for shared-memory curation.
@@ -76,6 +77,38 @@ moves from local Hindsight REST to MCP `retain`/`recall` against that service.
 `zhach-private-docs` is **not** a memory target. It is the operator's long-form file brain (docs,
 plans, designs, reports) under `~/private-docs`, curated by the existing brain-capture workflow, not
 by memory-curate.
+
+## Reading memory back (OPEN)
+
+Writing alone is a half-loop: curate writes to `team-ads-success` (and the org bank), but a memory is
+only useful if the worker agents (`pr-review`, `pr-maintain`, `swe-implement`) can `recall` it before
+acting. As built, no worker profile declares the memory MCP servers, so nothing reads yet.
+
+The obstacle is tool asymmetry on one endpoint. The remote memory service exposes `retain` (write),
+`recall`, and `reflect` (both read) on the same URL, and this endpoint serves all three to any caller
+(verified: no server-side read-only lock, unlike the Hindsight `fleet-shared` MCP lock). Hermes
+profile `mcp.json` only carries `type`/`url`/`headers` — it cannot expose `recall` while hiding
+`retain`. So wiring the memory server into a worker profile would also hand that worker `retain`, and
+any agent could write unfiltered to the company-readable bank — defeating the deterministic curate
+gate.
+
+Options (undecided):
+
+1. **Server-side read-only role for workers.** Ask the memory-service owners for a recall-only
+   endpoint or token scope (mirror of the Hindsight `fleet-shared` read-only lock). Workers wire that
+   endpoint; `retain` is impossible for them at the server. Cleanest; needs a change we do not own.
+2. **Hermes per-tool disable.** If a supported mechanism can drop `retain` from a server's exposed
+   tool set per profile (not found in profile `mcp.json`; `hermes mcp configure` is interactive and
+   operates on the account, not a distributed profile), use it. Unconfirmed it can be baked into an
+   immutable profile.
+3. **A recall shim.** A small local read-only MCP (or CLI the profile calls) that proxies only
+   `recall`/`reflect` to the service and refuses `retain`. Workers get the shim, never the raw
+   endpoint. More moving parts, but keeps the write path exclusively in the curate runner.
+4. **Defer recall.** Ship write-only now; wire recall once 1–3 is decided. Memory accumulates and
+   becomes readable later; no worker reads in the interim.
+
+Until one is chosen, worker profiles stay without memory MCP. Writing is safe and useful to seed the
+bank; reading is the follow-up.
 
 ## Why not the alternatives
 
