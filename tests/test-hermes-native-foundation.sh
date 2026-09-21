@@ -66,6 +66,9 @@ grep -Fq 'chmod 0444 "$installer"' scripts/hermes-native.sh
 # installer URL. Full install still keeps the digest gate.
 grep -Fq 'sync-support) HERMES_SUPPORT_ONLY=true install_native' scripts/hermes-native.sh
 grep -Fq 'if [[ "${HERMES_SUPPORT_ONLY:-false}" != true ]]' scripts/hermes-native.sh
+# LaunchDaemon log files must exist before bootstrap; hermes-agent cannot create files in root-owned
+# LOG_ROOT and launchd otherwise exits EX_CONFIG before running the program.
+grep -Fq 'install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"' scripts/hermes-native.sh
 mkdir -p "$tmp/runtime"
 cat > "$tmp/fake-hermes" <<'SH'
 #!/usr/bin/env bash
