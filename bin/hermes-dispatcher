@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Long-running queue dispatcher: run jobs as they arrive, up to a per-kind concurrency cap.
+#
+# Replaces the interval consumer crons. The Postgres queue is already a safe message queue
+# (hermes_claim_request uses FOR UPDATE SKIP LOCKED + per-claim nonce + lease), so this supervisor
+# just keeps draining it: each loop, for every kind with a free slot and unclaimed depth, it spawns
+# one executor in the background. Executors are unchanged — they claim one row, heartbeat, work, and
+# settle, then exit; the dispatcher tracks their PIDs to enforce the cap. A crashed executor's row is
+# reclaimed by lease expiry, and a crashed dispatcher is restarted by launchd (KeepAlive); in-flight
+# rows are never lost because claim/settle is transactional and nonce-fenced.
+#
+# Producers (what enqueues repo-role work) are separate; this only consumes.
+set -euo pipefail
+
+: "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
+: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
+SUPPORT_ROOT="${HERMES_NATIVE_SUPPORT_ROOT:-/usr/local/libexec/ai-pr-automation}"
+MAINTENANCE_FILE="${HERMES_MAINTENANCE_FILE:-/usr/local/etc/ai-pr-automation/hermes-maintenance}"
+POLL_SECONDS="${HERMES_DISPATCH_POLL_SECONDS:-2}"
+
+# kind -> "executor-invocation|max-concurrent". Executors live in SUPPORT_ROOT.
+declare -A EXEC=(
+  [pr-review]="hermes-queue-runner pr-review"
+  [pr-maintain]="hermes-queue-runner pr-maintain"
+  [swe-implement]="hermes-queue-runner swe-implement"
+  [memory-curate]="hermes-memory-curate"
+)
+declare -A CAP=(
+  [pr-review]="${HERMES_CAP_PR_REVIEW:-1}"
+  [pr-maintain]="${HERMES_CAP_PR_MAINTAIN:-3}"
+  [swe-implement]="${HERMES_CAP_SWE_IMPLEMENT:-1}"
+  [memory-curate]="${HERMES_CAP_MEMORY_CURATE:-1}"
+)
+
+log() { printf '%s hermes-dispatcher %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
+psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
+
+# active PIDs per kind
+declare -A PIDS=()  # kind -> space-separated PIDs
+
+running=true
+drain=false
+trap 'drain=true; log "SIGTERM: draining in-flight, no new claims"' TERM INT
+
+reap() { # drop finished PIDs; returns current count for a kind via echo
+  local kind="$1" alive="" pid
+  for pid in ${PIDS[$kind]:-}; do
+    kill -0 "$pid" 2>/dev/null && alive+="$pid "
+  done
+  PIDS[$kind]="$alive"
+  # shellcheck disable=SC2206
+  local arr=($alive); echo "${#arr[@]}"
+}
+
+spawn() { # $1 kind
+  local kind="$1" invocation="${EXEC[$1]}"
+  # shellcheck disable=SC2086
+  "$SUPPORT_ROOT"/$invocation >/dev/null 2>&1 &
+  PIDS[$kind]="${PIDS[$kind]:-}$! "
+}
+
+log "start; caps: $(for k in "${!CAP[@]}"; do printf '%s=%s ' "$k" "${CAP[$k]}"; done)"
+while $running; do
+  if [[ -e "$MAINTENANCE_FILE" ]]; then
+    # maintenance: stop claiming, let in-flight finish, idle until the file clears
+    sleep "$POLL_SECONDS"; continue
+  fi
+  spawned_this_pass=0
+  for kind in "${!EXEC[@]}"; do
+    active="$(reap "$kind")"
+    cap="${CAP[$kind]}"
+    (( active >= cap )) && continue
+    $drain && continue
+    # only spawn if there is unclaimed queued work for this kind
+    depth="$(psqlq -c "SELECT hermes_queue_depth('$kind');" 2>/dev/null || echo 0)"
+    [[ "$depth" =~ ^[0-9]+$ ]] || depth=0
+    (( depth == 0 )) && continue
+    # fill free slots up to the cap or the visible depth, whichever is smaller
+    free=$(( cap - active )); launch=$(( free < depth ? free : depth ))
+    for (( i=0; i<launch; i++ )); do spawn "$kind"; spawned_this_pass=$((spawned_this_pass+1)); done
+  done
+  # drain complete? (SIGTERM received and nothing left running)
+  if $drain; then
+    total=0; for kind in "${!EXEC[@]}"; do total=$(( total + $(reap "$kind") )); done
+    (( total == 0 )) && { log "drained; exiting"; running=false; continue; }
+  fi
+  # short sleep unless we just spawned a burst (then loop again immediately to keep filling)
+  (( spawned_this_pass == 0 )) && sleep "$POLL_SECONDS"
+done
