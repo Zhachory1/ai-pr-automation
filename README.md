@@ -57,7 +57,6 @@ then rebuild `status`:
 ```bash
 install -d -m 700 "$HOME/.config/ai-pr-automation"
 umask 077
-openssl rand -base64 24 > "$HOME/.config/ai-pr-automation/fleet-controller-password"
 openssl rand -hex 32 > "$HOME/.config/ai-pr-automation/fleet-controller-session-secret"
 openssl genrsa -out "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" 3072
 openssl req -x509 -new -sha256 -days 3650 \
@@ -97,13 +96,13 @@ scripts/compose.sh up -d --build --force-recreate status
 
 Trusting the CA certificate changes the human login Keychain and remains an explicit operator action.
 The command destroys the CA signing key after issuing one leaf, so it cannot mint other trusted identities.
-Never mount or configure a CA key in Compose. Set all five `FLEET_CONTROLLER_*_FILE` paths from
-`.env.example` before `scripts/compose.sh up`.
+Never mount or configure a CA key in Compose. Set the session/TLS `FLEET_CONTROLLER_*_FILE` paths
+from `.env.example` before `scripts/compose.sh up`.
 
 Open https://localhost:8080 for the unified UI landing page. All UIs share port 8080 through nginx
 hostname routing: `fleet.localhost` (Fleet Controller), `hermes.localhost` (Hermes dashboard),
-`memory.localhost` (Hindsight), and `code.localhost` (Coderag). Fleet Controller session lifetime
-defaults to 12 hours and keeps Host, Origin, and CSRF checks in addition to login.
+`memory.localhost` (Hindsight), and `code.localhost` (Coderag). The proxy is loopback-only and
+passwordless. Fleet Controller still enforces exact Host, Origin, and CSRF checks for writes.
 
 Then install the host-native runtime under `hermes-agent` and grant a repository:
 

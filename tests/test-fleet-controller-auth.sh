@@ -14,7 +14,6 @@ trap cleanup EXIT
 mkdir -m 700 "$tmp/secrets" "$tmp/code"
 printf 'test-controller-password\n' > "$tmp/secrets/password"
 printf '0123456789abcdef0123456789abcdef\n' > "$tmp/secrets/session"
-printf 'fleet:$6$testsalt$012345678901234567890123456789012345678901234567890123456789012345678901234567890\n' > "$tmp/secrets/ui-basic-auth"
 openssl genrsa -out "$tmp/secrets/ca.key" 2048 >/dev/null 2>&1
 openssl req -x509 -new -sha256 -days 2 -key "$tmp/secrets/ca.key" \
   -out "$tmp/secrets/ca.crt" -subj '/CN=Fleet Controller Test CA' \
@@ -31,7 +30,7 @@ EOF
 openssl x509 -req -sha256 -days 2 -in "$tmp/controller.csr" -CA "$tmp/secrets/ca.crt" \
   -CAkey "$tmp/secrets/ca.key" -CAcreateserial -out "$tmp/secrets/controller.crt" \
   -extfile "$tmp/leaf.ext" >/dev/null 2>&1
-chmod 600 "$tmp/secrets/password" "$tmp/secrets/session" "$tmp/secrets/controller.key" "$tmp/secrets/ui-basic-auth"
+chmod 600 "$tmp/secrets/password" "$tmp/secrets/session" "$tmp/secrets/controller.key"
 chmod 644 "$tmp/secrets/ca.crt" "$tmp/secrets/controller.crt"
 rm -f "$tmp/secrets/ca.key" "$tmp/secrets/ca.srl"
 mkdir "$tmp/project"
@@ -44,7 +43,6 @@ FLEET_CONTROLLER_SESSION_SECRET_FILE=$tmp/secrets/session
 FLEET_CONTROLLER_TLS_CA_CERT_FILE=$tmp/secrets/ca.crt
 FLEET_CONTROLLER_TLS_CERT_FILE=$tmp/secrets/controller.crt
 FLEET_CONTROLLER_TLS_KEY_FILE=$tmp/secrets/controller.key
-UI_BASIC_AUTH_FILE=$tmp/secrets/ui-basic-auth
 EOF
 cp "$tmp/test.env" "$tmp/project/.env"
 scripts/validate-fleet-controller-secrets.py --env-file "$tmp/test.env" --repo "$tmp/project" >/dev/null
@@ -57,18 +55,18 @@ if COMPOSE_FILE="$tmp/project/docker-compose.yml" \
   echo 'FAIL: startup wrapper accepted COMPOSE_FILE override' >&2; exit 1
 fi
 
-chmod 644 "$tmp/secrets/password"
+chmod 644 "$tmp/secrets/session"
 if scripts/validate-fleet-controller-secrets.py --env-file "$tmp/test.env" --repo "$tmp/project" >/dev/null 2>&1; then
-  echo 'FAIL: preflight accepted loose password permissions' >&2; exit 1
+  echo 'FAIL: preflight accepted loose session-secret permissions' >&2; exit 1
 fi
-chmod 600 "$tmp/secrets/password"
-printf 'short\n' > "$tmp/secrets/password"
+chmod 600 "$tmp/secrets/session"
+printf 'short\n' > "$tmp/secrets/session"
 if scripts/validate-fleet-controller-secrets.py --env-file "$tmp/test.env" --repo "$tmp/project" >/dev/null 2>&1; then
-  echo 'FAIL: preflight accepted short password' >&2; exit 1
+  echo 'FAIL: preflight accepted short session secret' >&2; exit 1
 fi
-printf 'test-controller-password\n' > "$tmp/secrets/password"
-ln -s "$tmp/secrets/password" "$tmp/secrets/password-link"
-sed "s#^FLEET_CONTROLLER_PASSWORD_FILE=.*#FLEET_CONTROLLER_PASSWORD_FILE=$tmp/secrets/password-link#" \
+printf '0123456789abcdef0123456789abcdef\n' > "$tmp/secrets/session"
+ln -s "$tmp/secrets/session" "$tmp/secrets/session-link"
+sed "s#^FLEET_CONTROLLER_SESSION_SECRET_FILE=.*#FLEET_CONTROLLER_SESSION_SECRET_FILE=$tmp/secrets/session-link#" \
   "$tmp/test.env" > "$tmp/symlink.env"
 if scripts/validate-fleet-controller-secrets.py --env-file "$tmp/symlink.env" --repo "$tmp/project" >/dev/null 2>&1; then
   echo 'FAIL: preflight accepted symlink secret' >&2; exit 1

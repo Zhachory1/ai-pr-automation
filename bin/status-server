@@ -102,6 +102,7 @@ HANDOFF_ROOT = os.environ.get("HANDOFF_ROOT", "")   # for validating swe-impleme
 DOC_WRITER_STAGE_DIR = os.environ.get("DOC_WRITER_STAGE_DIR", "/work/stage")
 CSRF_TOKEN = secrets.token_urlsafe(32)          # per-process; page embeds it, POST must echo it
 AUTH_USERNAME = os.environ.get("FLEET_CONTROLLER_USERNAME", "fleet")
+TRUST_LOCAL_PROXY = os.environ.get("FLEET_CONTROLLER_TRUST_LOCAL_PROXY", "false").lower() == "true"
 SESSION_SECONDS = int(os.environ.get("FLEET_CONTROLLER_SESSION_SECONDS", "43200"))
 SESSION_COOKIE = "__Host-fleet_controller_session"
 MAX_FORM_BYTES = 1024 * 1024
@@ -139,7 +140,7 @@ def read_secret(name: str, minimum: int) -> str:
     return value
 
 
-AUTH_PASSWORD = read_secret("FLEET_CONTROLLER_PASSWORD_FILE", 16)
+AUTH_PASSWORD = "" if TRUST_LOCAL_PROXY else read_secret("FLEET_CONTROLLER_PASSWORD_FILE", 16)
 SESSION_SECRET = read_secret("FLEET_CONTROLLER_SESSION_SECRET_FILE", 32)
 if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", AUTH_USERNAME):
     raise RuntimeError("FLEET_CONTROLLER_USERNAME is invalid")
@@ -1184,6 +1185,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _actor(self) -> str | None:
+        if (TRUST_LOCAL_PROXY and self.headers.get("X-Fleet-Local-Proxy") == "1"
+                and self.headers.get("Host") == f"fleet.localhost:{PUBLIC_PORT}"):
+            return AUTH_USERNAME
         return session_actor(self.headers.get("Cookie", ""))
 
     def _host_origin_ok(self) -> bool:

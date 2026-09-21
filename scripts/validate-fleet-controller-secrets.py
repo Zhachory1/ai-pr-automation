@@ -8,10 +8,8 @@ import subprocess
 from pathlib import Path
 
 PRIVATE = (
-    "FLEET_CONTROLLER_PASSWORD_FILE",
     "FLEET_CONTROLLER_SESSION_SECRET_FILE",
     "FLEET_CONTROLLER_TLS_KEY_FILE",
-    "UI_BASIC_AUTH_FILE",
 )
 CERT = "FLEET_CONTROLLER_TLS_CERT_FILE"
 CA_CERT = "FLEET_CONTROLLER_TLS_CA_CERT_FILE"
@@ -32,10 +30,8 @@ def compose_values(repo, env_file):
     if not isinstance(config, dict):
         fail("Docker Compose configuration is invalid")
     names = {
-        "FLEET_CONTROLLER_PASSWORD_FILE": "fleet_controller_password",
         "FLEET_CONTROLLER_SESSION_SECRET_FILE": "fleet_controller_session_secret",
         "FLEET_CONTROLLER_TLS_KEY_FILE": "fleet_controller_tls_key",
-        "UI_BASIC_AUTH_FILE": "ui_basic_auth",
         CERT: "fleet_controller_tls_cert",
         CA_CERT: "fleet_controller_tls_ca_cert",
     }
@@ -137,14 +133,7 @@ def main():
     files = {name: checked_file(name, values.get(name, ""), True, repo, code_root) for name in PRIVATE}
     files[CERT] = checked_file(CERT, values.get(CERT, ""), False, repo, code_root)
     files[CA_CERT] = checked_file(CA_CERT, values.get(CA_CERT, ""), False, repo, code_root)
-    checked_secret("FLEET_CONTROLLER_PASSWORD_FILE", files["FLEET_CONTROLLER_PASSWORD_FILE"], 16)
     checked_secret("FLEET_CONTROLLER_SESSION_SECRET_FILE", files["FLEET_CONTROLLER_SESSION_SECRET_FILE"], 32)
-    descriptor = os.open(files["UI_BASIC_AUTH_FILE"], os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(descriptor) as source:
-        auth_lines = [line.rstrip("\n") for line in source]
-    if (len(auth_lines) != 1 or ":" not in auth_lines[0]
-            or len(auth_lines[0].split(":", 1)[1]) < 20):
-        fail("UI_BASIC_AUTH_FILE must contain one username:password-hash entry")
     checked_certificate(CERT, files[CERT])
     checked_certificate(CA_CERT, files[CA_CERT])
 
