@@ -55,8 +55,14 @@ inside_root "$POLICY_PATH" "$POLICY_ROOT" && [[ -f "$POLICY_PATH" && ! -L "$POLI
 # Load the granted-repo allowlist once. Empty grant = nothing to do (not an error). Mirrors
 # hermes-pr-producer: this is scope-of-attention, not security (see DD-authority-and-memory.md).
 mapfile -t GRANTED < <(python3 "$AUTHORITY_BIN" --file "$AUTHORITY" 2>/dev/null | jq -r '.repos[]?' || true)
-if (( ${#GRANTED[@]} == 0 )); then log "no repos granted in $AUTHORITY; nothing to discover"; exit 0; fi
-repo_granted() { local r="$1"; local g; for g in "${GRANTED[@]}"; do [[ "$g" == "$r" ]] && return 0; done; return 1; }
+IFS=',' read -r -a ALLOWED_ORGS <<<"${PR_SAFETY_ALLOWED_ORGS:-}"
+if (( ${#GRANTED[@]} == 0 && ${#ALLOWED_ORGS[@]} == 0 )); then log "no repos/orgs granted; nothing to discover"; exit 0; fi
+repo_granted() {
+  local r="$1" g org="${1%%/*}"
+  for g in "${GRANTED[@]}"; do [[ "$g" == "$r" ]] && return 0; done
+  for g in "${ALLOWED_ORGS[@]}"; do [[ "${g//[[:space:]]/}" == "$org" ]] && return 0; done
+  return 1
+}
 
 # Distinct, loud alert for expired org SAML authorization. SAML re-auth is a human-only browser step;
 # never treat a SAML 403 as an empty result set.

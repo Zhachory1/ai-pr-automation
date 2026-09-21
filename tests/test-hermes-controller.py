@@ -45,6 +45,18 @@ class LostSubmitHermes(BaseHTTPRequestHandler):
 
 
 class ControllerContractTest(unittest.TestCase):
+    def test_run_status_allows_nonterminal_without_output(self):
+        running = {"object":"hermes.run","run_id":"r","status":"running","created_at":1.0,
+                   "updated_at":2.0,"last_event":"run.started","session_id":"s","model":"m"}
+        self.assertTrue(controller.valid_run_status(running, "r"))
+        self.assertFalse(controller.valid_run_status(running, "r", terminal=True))
+        self.assertTrue(controller.valid_run_status(dict(running, status="completed", output="{}", usage={}), "r", terminal=True))
+
+    def test_typed_output_accepts_only_plain_or_single_json_fence(self):
+        self.assertEqual(controller.parse_typed_output('{"x":1}'), {"x":1})
+        self.assertEqual(controller.parse_typed_output('```json\n{"x":1}\n```'), {"x":1})
+        self.assertIsNone(controller.parse_typed_output('prose {"x":1}'))
+
     def test_poll_method_is_not_shadowed_by_interval(self):
         instance = controller.Controller.__new__(controller.Controller)
         instance.poll_interval = 2.0

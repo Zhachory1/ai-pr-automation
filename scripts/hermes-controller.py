@@ -81,6 +81,25 @@ def valid_generic(kind, value, nonce, payload, dedupe_key):
     return value
 
 
+def valid_run_status(value, run_id, terminal=False):
+    required = {"object", "run_id", "status", "created_at", "updated_at", "last_event", "session_id", "model"}
+    if (not isinstance(value, dict) or not required <= set(value) or value.get("object") != "hermes.run"
+            or value.get("run_id") != run_id):
+        return False
+    return not terminal or ("output" in value and isinstance(value.get("usage"), dict))
+
+
+def parse_typed_output(output):
+    if not isinstance(output, str): return None
+    text = output.strip()
+    if text.startswith("```json\n") and text.endswith("```"):
+        text = text[len("```json\n"):-3].strip()
+    elif text.startswith("```\n") and text.endswith("```"):
+        text = text[len("```\n"):-3].strip()
+    try: return json.loads(text)
+    except json.JSONDecodeError: return None
+
+
 def valid_safety(value, payload):
     required = {"operation_id", "repo", "pr", "head_sha", "base_sha", "diff_hash",
                 "policy_version", "policy_digest", "status", "intent", "findings", "coverage",
@@ -397,9 +416,7 @@ class Controller:
                 return None
             if status != 200:
                 time.sleep(self.poll_interval); continue
-            required = {"object", "run_id", "status", "created_at", "updated_at", "last_event",
-                        "session_id", "model", "output", "usage"}
-            if not required <= set(current) or current.get("object") != "hermes.run" or current.get("run_id") != run_id:
+            if not valid_run_status(current, run_id):
                 direct = attempt["kind"] in DIRECT_EFFECT
                 self.settle(attempt, "reconcile" if direct else "failed", "malformed Hermes run status",
                             attempt_state="reconcile" if direct else "failed")
@@ -407,6 +424,11 @@ class Controller:
             terminal = current["status"]
             if terminal not in TERMINAL:
                 time.sleep(self.poll_interval); continue
+            if not valid_run_status(current, run_id, terminal=True):
+                direct = attempt["kind"] in DIRECT_EFFECT
+                self.settle(attempt, "reconcile" if direct else "failed", "malformed Hermes terminal status",
+                            attempt_state="reconcile" if direct else "failed")
+                return None
             output = current.get("output", "")
             if not isinstance(output, str): output = ""
             raw = output.encode()
@@ -582,8 +604,7 @@ class Controller:
                 direct = attempt["kind"] in DIRECT_EFFECT
                 self.settle(attempt, "reconcile" if direct else "failed", f"Hermes terminal status {status}",
                             attempt_state="reconcile" if direct else "failed"); return
-            try: value = json.loads(output)
-            except json.JSONDecodeError: value = None
+            value = parse_typed_output(output)
             kind = attempt["kind"]
             if kind in DIRECT_EFFECT:
                 result = valid_generic(kind, value, attempt["nonce"], attempt["payload"], attempt["dedupe_key"])
