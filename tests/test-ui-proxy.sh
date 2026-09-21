@@ -29,6 +29,9 @@ done
 [[ "$(grep -c 'auth_basic_user_file /run/secrets/ui_basic_auth;' docker/ui-proxy.conf)" == 3 ]]
 grep -Fq 'proxy_set_header Host $http_host;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Origin $http_origin;' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header Host 127.0.0.1:9119;' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header Host 127.0.0.1:9999;' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header Host 127.0.0.1:9749;' docker/ui-proxy.conf
 if grep -Fq 'proxy_set_header Origin https://127.0.0.1' docker/ui-proxy.conf; then
   echo 'FAIL: proxy spoofs an allowed Origin and bypasses Fleet CSRF checks' >&2; exit 1
 fi
