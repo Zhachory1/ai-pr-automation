@@ -45,6 +45,11 @@ class LostSubmitHermes(BaseHTTPRequestHandler):
 
 
 class ControllerContractTest(unittest.TestCase):
+    def test_poll_method_is_not_shadowed_by_interval(self):
+        instance = controller.Controller.__new__(controller.Controller)
+        instance.poll_interval = 2.0
+        self.assertTrue(callable(instance.poll))
+
     def test_lost_submit_replays_identical_bytes_and_key(self):
         LostSubmitHermes.bodies = []; LostSubmitHermes.keys = {}; LostSubmitHermes.lost = True
         server = ThreadingHTTPServer(("127.0.0.1", 0), LostSubmitHermes)
