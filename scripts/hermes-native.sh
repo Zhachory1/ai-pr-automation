@@ -52,6 +52,7 @@ install_native() {
   need_root; need_user
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME"
+  install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer"
   # LaunchDaemons with UserName open StandardOutPath/StandardErrorPath as that user. The root-owned
   # 0755 log directory is intentionally not writable, so pre-create private service-owned files or
   # launchd rejects each job with EX_CONFIG before running its program.
@@ -79,6 +80,8 @@ install_native() {
   [[ ! -f "$ROOT/scripts/hermes-authority.py" ]] || install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
   [[ ! -x "$ROOT/bin/hermes-memory-curate" ]] || install -m 0555 "$ROOT/bin/hermes-memory-curate" "$SUPPORT_ROOT/hermes-memory-curate"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
+  [[ ! -x "$ROOT/bin/hermes-doc-write-runner" ]] || install -m 0555 "$ROOT/bin/hermes-doc-write-runner" "$SUPPORT_ROOT/hermes-doc-write-runner"
+  [[ ! -x "$ROOT/bin/doc-writer-publication" ]] || install -m 0555 "$ROOT/bin/doc-writer-publication" "$SUPPORT_ROOT/doc-writer-publication"
   [[ ! -x "$ROOT/bin/hermes-dispatcher" ]] || install -m 0555 "$ROOT/bin/hermes-dispatcher" "$DISPATCHER"
   [[ ! -x "$ROOT/bin/hermes-postgres-watchdog" ]] || install -m 0555 "$ROOT/bin/hermes-postgres-watchdog" "$SUPPORT_ROOT/hermes-postgres-watchdog"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-dispatcher.plist.template" "$DISPATCHER_PLIST" \

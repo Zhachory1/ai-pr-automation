@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import PurePosixPath
+
+MAX_BYTES = 256 * 1024
+STAGED_RE = re.compile(r"requests/([1-9]\d*)/(draft|publish)\.md$")
+TARGET_RE = re.compile(r"^(seprd|mlprd|launchpad|dd)-\d{4}-\d{2}-\d{2}-[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:-\d+)?\.md$")
+
+
+def emit(**values):
+    print(json.dumps(values, sort_keys=True, separators=(",", ":")))
+
+
+def fail(message):
+    emit(status="error", error=message)
+    raise SystemExit(2)
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def bounded(stream):
+    data = stream.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        fail(f"content exceeds {MAX_BYTES} bytes")
+    return data
+
+
+def open_root(path):
+    return os.open(os.path.abspath(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+
+def open_staged(root_fd, value):
+    match = STAGED_RE.fullmatch(value or "")
+    if not match:
+        fail("invalid staged path")
+    requests_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+    try:
+        request_fd = os.open(match.group(1), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                             dir_fd=requests_fd)
+    finally:
+        os.close(requests_fd)
+    try:
+        descriptor = os.open(f"{match.group(2)}.md", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=request_fd)
+        with os.fdopen(descriptor, "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                fail("staged path is not a regular file")
+            return bounded(source)
+    finally:
+        os.close(request_fd)
+
+
+def write_once(directory_fd, name, data):
+    try:
+        descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory_fd)
+    except FileExistsError:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        with os.fdopen(descriptor, "rb") as existing:
+            if not stat.S_ISREG(os.fstat(existing.fileno()).st_mode) or bounded(existing) != data:
+                fail("staged file already exists with different bytes")
+        return
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    os.fsync(directory_fd)
+
+
+def stage(args):
+    if args.request_id < 1 or args.name not in {"draft.md", "publish.md"}:
+        fail("invalid stage destination")
+    data = bounded(sys.stdin.buffer)
+    root_fd = open_root(args.stage_root)
+    try:
+        try:
+            os.mkdir("requests", 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        requests_fd = os.open("requests", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        try:
+            request = str(args.request_id)
+            try:
+                os.mkdir(request, 0o700, dir_fd=requests_fd)
+            except FileExistsError:
+                pass
+            request_fd = os.open(request, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                 dir_fd=requests_fd)
+        finally:
+            os.close(requests_fd)
+        try:
+            write_once(request_fd, args.name, data)
+        finally:
+            os.close(request_fd)
+    finally:
+        os.close(root_fd)
+    emit(status="staged", staged_path=f"requests/{args.request_id}/{args.name}",
+         content_digest=digest(data))
+
+
+def read_staged(args):
+    root_fd = open_root(args.stage_root)
+    try:
+        data = open_staged(root_fd, args.staged_path)
+    finally:
+        os.close(root_fd)
+    if args.digest and digest(data) != args.digest:
+        fail("staged publication digest mismatch")
+    sys.stdout.buffer.write(data)
+
+
+def publish(args):
+    if not TARGET_RE.fullmatch(args.target_path or ""):
+        fail("invalid publication target")
+    stage_fd = open_root(args.stage_root)
+    try:
+        data = open_staged(stage_fd, args.staged_path)
+    finally:
+        os.close(stage_fd)
+    if digest(data) != args.digest:
+        fail("staged publication digest mismatch")
+
+    inbox_fd = open_root(args.inbox_root)
+    try:
+        try:
+            existing = os.open(args.target_path, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=inbox_fd)
+        except FileNotFoundError:
+            pass
+        else:
+            os.close(existing)
+            fail("publication target already exists")
+        try:
+            os.mkdir(".ai-pr-automation-staging", 0o700, dir_fd=inbox_fd)
+        except FileExistsError:
+            pass
+        hidden_fd = os.open(".ai-pr-automation-staging",
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=inbox_fd)
+        temporary = f"request-{STAGED_RE.fullmatch(args.staged_path).group(1)}-{args.digest}.tmp"
+        try:
+            write_once(hidden_fd, temporary, data)
+            try:
+                os.link(temporary, args.target_path, src_dir_fd=hidden_fd,
+                        dst_dir_fd=inbox_fd, follow_symlinks=False)
+            except FileExistsError:
+                fail("publication target already exists")
+            os.unlink(temporary, dir_fd=hidden_fd)
+            os.fsync(hidden_fd)
+            os.fsync(inbox_fd)
+        finally:
+            os.close(hidden_fd)
+    finally:
+        os.close(inbox_fd)
+    emit(status="published", target_path=args.target_path, content_digest=args.digest)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+    stage_parser = commands.add_parser("stage")
+    stage_parser.add_argument("--stage-root", required=True)
+    stage_parser.add_argument("--request-id", type=int, required=True)
+    stage_parser.add_argument("--name", required=True)
+    read_parser = commands.add_parser("read")
+    read_parser.add_argument("--stage-root", required=True)
+    read_parser.add_argument("--staged-path", required=True)
+    read_parser.add_argument("--digest")
+    publish_parser = commands.add_parser("publish")
+    publish_parser.add_argument("--stage-root", required=True)
+    publish_parser.add_argument("--inbox-root", required=True)
+    publish_parser.add_argument("--staged-path", required=True)
+    publish_parser.add_argument("--target-path", required=True)
+    publish_parser.add_argument("--digest", required=True)
+    args = parser.parse_args()
+    if getattr(args, "digest", None) and not re.fullmatch(r"[0-9a-f]{64}", args.digest):
+        fail("digest must be lowercase SHA-256")
+    {"stage": stage, "read": read_staged, "publish": publish}[args.command](args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError) as error:
+        fail(str(error))

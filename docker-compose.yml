@@ -227,7 +227,7 @@ services:
       PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
       PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
       DOC_WRITE_DAILY_CAP: ${DOC_WRITE_DAILY_CAP:-30}
-      DOC_WRITER_STAGE_DIR: /work/stage
+      DOC_WRITER_STAGE_DIR: /work
       HINDSIGHT_URL: http://hindsight:8888
       HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against PR-safety server paths
       STATUS_BIND: 0.0.0.0
@@ -245,7 +245,7 @@ services:
       - fleet_controller_tls_cert
       - fleet_controller_tls_key
     volumes:
-      - doc_writer_work:/work:ro
+      - ${DOC_WRITER_STAGE_HOST:?set DOC_WRITER_STAGE_HOST to the native Hermes stage directory}:/work:ro
     networks:
       - status-internal
       - status-host
@@ -264,7 +264,6 @@ volumes:
   requests_pgdata:
   hindsight_pgdata:
   coderag_cache:
-  doc_writer_work:
 
 secrets:
   fleet_controller_tls_ca_cert:

@@ -153,6 +153,12 @@ pushes with force-with-lease, and resolves addressed threads; the three-round ca
 supersede are enforced server-side in `hermes_enqueue_request`. Branch protection keeps merge
 human-owned.
 
+`bin/hermes-doc-write-runner` owns `doc-write` with immutable Anthropic profile `doc-write-v1`.
+Configure `DOC_WRITER_STAGE_DIR` and required `DOC_WRITER_INBOX_DIR` in the service account's
+`~/.hermes/.env`. Fleet Controller mounts the same stage via Compose `DOC_WRITER_STAGE_HOST` and
+verifies staged regular-file bytes and digest before approval. Hermes receives neither database nor
+inbox credentials; publication-only claims skip the model and copy only the approved bytes.
+
 ## Dispatcher
 
 Queue execution is driven by a long-running dispatcher, not interval timers. `bin/hermes-dispatcher`
@@ -161,7 +167,8 @@ with a free slot and unclaimed depth (`hermes_queue_depth`), it spawns one execu
 and tracks its PID to enforce a per-kind concurrency cap. Work starts within a couple of seconds of
 enqueue; there are no per-role timers to tune.
 
-Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `memory-curate=1`.
+Per-kind caps (env-overridable): `pr-maintain=3`, `pr-review=1`, `swe-implement=1`, `doc-write=1`,
+`memory-curate=1`.
 A crashed executor's row is reclaimed on lease expiry; a crashed dispatcher is restarted by launchd
 and in-flight rows are never lost (claim/settle is transactional and nonce-fenced). SIGTERM drains
 in-flight executors before exit; the maintenance file pauses new claims. The dispatcher replaces the
@@ -193,6 +200,8 @@ bash tests/test-hermes-queue-runner.sh
 bash tests/test-hermes-queue-authority.sh
 bash tests/test-hermes-authority.sh
 bash tests/test-hermes-native-foundation.sh
+bash tests/test-hermes-doc-write-native.sh
+bash tests/test-hermes-doc-write-schema.sh
 bash tests/test-hermes-state-roundtrip.sh
 python3 tests/test-status-server.py
 ```
