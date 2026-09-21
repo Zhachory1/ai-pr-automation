@@ -62,6 +62,10 @@ plutil -lint launchd/com.example.ai-pr-automation-hermes.plist.template >/dev/nu
 grep -Fq 'mktemp /private/tmp/hermes-install.XXXXXX' scripts/hermes-native.sh
 # shellcheck disable=SC2016
 grep -Fq 'chmod 0444 "$installer"' scripts/hermes-native.sh
+# Existing pinned installs can sync profiles/binaries/plists without downloading the mutable
+# installer URL. Full install still keeps the digest gate.
+grep -Fq 'sync-support) HERMES_SUPPORT_ONLY=true install_native' scripts/hermes-native.sh
+grep -Fq 'if [[ "${HERMES_SUPPORT_ONLY:-false}" != true ]]' scripts/hermes-native.sh
 mkdir -p "$tmp/runtime"
 cat > "$tmp/fake-hermes" <<'SH'
 #!/usr/bin/env bash
