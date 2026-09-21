@@ -9,14 +9,16 @@ mkdir -p "$tmp/bin"
 cat > "$tmp/authority.yaml" <<'EOF'
 repos:
   - Zhachory1/ai-pr-automation
+  - ROKT/*
 EOF
 
-# Fake gh: search returns two PRs (one granted, one not); pr view resolves a head sha.
+# Fake gh: search returns exact, organization-wide, and ungranted PRs; pr view resolves a head sha.
 cat > "$tmp/bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == search && "$2" == prs ]]; then
   printf 'Zhachory1/ai-pr-automation\t7\thttps://x/7\tGranted PR\t1700000000\n'
+  printf 'ROKT/ml\t8\thttps://x/8\tOrganization PR\t1700000000\n'
   printf 'other/repo\t9\thttps://x/9\tUngranted PR\t1700000000\n'
 elif [[ "$1" == pr && "$2" == view ]]; then
   printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n'
@@ -45,18 +47,18 @@ out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" \
   REQUESTS_DB_USER=x PGPASSWORD=x \
   bin/hermes-pr-producer review 2>&1)"
 
-# Exactly one enqueue (granted repo only); ungranted repo skipped.
+# Exact and organization-wide grants enqueue; ungranted repo is skipped.
 # The enqueue SQL must arrive via stdin (with the :'var' substitutions), not a -c string.
 grep -q 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" \
   || { echo 'FAIL: enqueue not fed via stdin (psql -c would not interpolate :var)' >&2; cat "$tmp/psql.log" >&2; exit 1; }
 n_enq="$(grep -c 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" 2>/dev/null | tr -dc 0-9 || echo 0)"
-[[ "${n_enq:-0}" == 1 ]] || { echo "FAIL: expected 1 enqueue, got ${n_enq:-0}" >&2; echo "$out" >&2; cat "$tmp/psql.log" >&2; exit 1; }
+[[ "${n_enq:-0}" == 2 ]] || { echo "FAIL: expected 2 enqueues, got ${n_enq:-0}" >&2; echo "$out" >&2; cat "$tmp/psql.log" >&2; exit 1; }
 grep -q "kind=pr-review" "$tmp/psql.log" || { echo 'FAIL: wrong kind' >&2; exit 1; }
 # Per-commit dedupe key present (passed as a -v var).
 grep -q 'dk=Zhachory1/ai-pr-automation#7@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$tmp/psql.log" \
   || { echo 'FAIL: dedupe key not per-commit' >&2; cat "$tmp/psql.log" >&2; exit 1; }
 grep -q 'other/repo' "$tmp/psql.log" && { echo 'FAIL: ungranted repo enqueued' >&2; exit 1; }
-echo "$out" | grep -q 'enqueued=1' || { echo "FAIL: summary wrong: $out" >&2; exit 1; }
+echo "$out" | grep -q 'enqueued=2' || { echo "FAIL: summary wrong: $out" >&2; exit 1; }
 
 # maintain mode uses the author filter and pr-maintain kind.
 : > "$tmp/psql.log"

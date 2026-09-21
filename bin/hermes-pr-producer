@@ -39,7 +39,7 @@ psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_P
 # Load the granted-repo allowlist once. Empty grant = nothing to do (not an error).
 mapfile -t GRANTED < <(python3 "$AUTHORITY_BIN" --file "$AUTHORITY" 2>/dev/null | jq -r '.repos[]?' || true)
 if (( ${#GRANTED[@]} == 0 )); then log "no repos granted in $AUTHORITY; nothing to discover"; exit 0; fi
-repo_granted() { local r="$1"; local g; for g in "${GRANTED[@]}"; do [[ "$g" == "$r" ]] && return 0; done; return 1; }
+repo_granted() { local r="$1"; local g; for g in "${GRANTED[@]}"; do [[ "$g" == "$r" || "$g" == "${r%%/*}/*" ]] && return 0; done; return 1; }
 
 log "discovering PRs ($GH_FILTER @me) across ${#GRANTED[@]} granted repo(s)"
 gh_status=0

@@ -11,6 +11,8 @@ YAML shape (no digests, no freshness, no proof):
 
     repos:
       - Zhachory1/ai-pr-automation
+      - ROKT/*
+    # `owner/*` grants every repo in one GitHub organization.
     # local roles (doc-write, memory-curate) are not repo-scoped and need no grant.
 
 Default path: $HERMES_AUTHORITY_FILE or /Users/Shared/zhach-ai-pr-automation/authority.yaml
@@ -23,6 +25,7 @@ import sys
 from pathlib import Path
 
 DEFAULT = os.environ.get("HERMES_AUTHORITY_FILE", "/usr/local/etc/ai-pr-automation/authority.yaml")
+GRANT_RE = re.compile(r"^[A-Za-z0-9._-]+/(?:[A-Za-z0-9._-]+|\*)$")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 
@@ -42,8 +45,8 @@ def load(path):
             continue
         if in_repos and re.match(r"^\s*-\s+", line):
             repo = line.split("-", 1)[1].strip().strip('"').strip("'")
-            if not REPO_RE.match(repo):
-                raise SystemExit(f"invalid repo in authority file: {repo!r}")
+            if not GRANT_RE.fullmatch(repo):
+                raise SystemExit(f"invalid repo grant in authority file: {repo!r}")
             repos.append(repo)
         elif not line.startswith(" "):
             in_repos = (line == "repos:")
@@ -58,7 +61,9 @@ def main():
     args = parser.parse_args()
     repos = load(args.file)
     if args.check:
-        if args.check in repos:
+        if not REPO_RE.fullmatch(args.check):
+            raise SystemExit(f"invalid repo: {args.check!r}")
+        if args.check in repos or f"{args.check.split('/', 1)[0]}/*" in repos:
             print(json.dumps({"repo": args.check, "granted": True}))
             return
         print(json.dumps({"repo": args.check, "granted": False}), file=sys.stderr)

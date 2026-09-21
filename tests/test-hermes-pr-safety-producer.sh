@@ -42,7 +42,7 @@ export PR_SAFETY_POLICY_DIGEST="$(shasum -a 256 "$POLICY_ROOT/policy.md" | awk '
 mkdir -p "$TMP/bin"
 cat > "$TMP/authority.yaml" <<'EOF'
 repos:
-  - owner/repo
+  - owner/*
 EOF
 export HERMES_AUTHORITY_FILE="$TMP/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py"
 
