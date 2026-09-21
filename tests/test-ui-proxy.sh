@@ -32,6 +32,9 @@ grep -Fq 'proxy_set_header Origin $http_origin;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9119;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9999;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9749;' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header Origin http://127.0.0.1:9119;' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header Origin http://127.0.0.1:9999;' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header Origin http://127.0.0.1:9749;' docker/ui-proxy.conf
 if grep -Fq 'proxy_set_header Origin https://127.0.0.1' docker/ui-proxy.conf; then
   echo 'FAIL: proxy spoofs an allowed Origin and bypasses Fleet CSRF checks' >&2; exit 1
 fi
