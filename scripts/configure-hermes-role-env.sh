@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One-time non-secret role defaults for the dedicated service account. Preserves provider/GitHub/DB
-# credentials already in ~/.hermes/.env; only replaces the named role-path settings below.
+# One-time non-secret role defaults for the dedicated service account. Preserves provider/GitHub
+# credentials, removes retired queue DB credentials, and replaces named role-path settings below.
 set -euo pipefail
 [[ "$EUID" == 0 ]] || { echo 'run as root' >&2; exit 2; }
 SERVICE_USER="${HERMES_SERVICE_USER:-hermes-agent}"
@@ -20,14 +20,13 @@ SNAPSHOTS="$STATE/safety-snapshots"
 POLICY="$CONFIG_ROOT/pr-safety-policy-v1.md"
 
 install -d -m 0755 -o root -g wheel "$STATE"
-install -d -m 0750 -o "$SERVICE_USER" -g staff "$DOC_STAGE" "$HANDOFF"
-install -d -m 0700 -o "$SERVICE_USER" -g staff "$MEMORY_STATE" "$SNAPSHOTS"
+install -d -m 0770 -o "$SERVICE_USER" -g staff "$DOC_STAGE" "$HANDOFF" "$MEMORY_STATE" "$SNAPSHOTS"
 install -m 0444 -o root -g wheel "$ROOT/policy/pr-safety-policy-v1.md" "$POLICY"
 POLICY_DIGEST="$(shasum -a 256 "$POLICY" | awk '{print $1}')"
 
 tmp="$(mktemp /private/tmp/hermes-role-env.XXXXXX)"; trap 'rm -f "$tmp"' EXIT
 if [[ -f "$ENV_FILE" ]]; then
-  grep -vE '^(DOC_WRITER_STAGE_DIR|DOC_WRITER_INBOX_DIR|MEMORY_CURATOR_PRIVATE_DOCS|MEMORY_CURATOR_STATE_DIR|PR_SAFETY_MERGED_PR_AUTHORS|PR_SAFETY_SNAPSHOT_ROOT|PR_SAFETY_POLICY_ROOT|PR_SAFETY_POLICY_PATH|PR_SAFETY_POLICY_VERSION|PR_SAFETY_POLICY_DIGEST|HANDOFF_ROOT)=' "$ENV_FILE" > "$tmp" || true
+  grep -vE '^(PGPASSWORD|REQUESTS_DB_USER|REQUESTS_DB_NAME|REQUESTS_DB_HOST|REQUESTS_DB_PORT|DOC_WRITER_STAGE_DIR|DOC_WRITER_INBOX_DIR|MEMORY_CURATOR_PRIVATE_DOCS|MEMORY_CURATOR_STATE_DIR|PR_SAFETY_MERGED_PR_AUTHORS|PR_SAFETY_SNAPSHOT_ROOT|PR_SAFETY_POLICY_ROOT|PR_SAFETY_POLICY_PATH|PR_SAFETY_POLICY_VERSION|PR_SAFETY_POLICY_DIGEST|HANDOFF_ROOT)=' "$ENV_FILE" > "$tmp" || true
 fi
 cat >> "$tmp" <<EOF
 DOC_WRITER_STAGE_DIR=$DOC_STAGE

@@ -5,26 +5,26 @@ autonomous agent fleet**.
 
 ## Architecture
 
-AI execution runs host-native. A single pinned [Hermes](https://github.com/NousResearch/hermes)
-runtime executes every role under a dedicated, non-admin `hermes-agent` macOS account. Docker Compose
-renders only the **support substrate**; it no longer runs any AI worker.
+A single pinned [Hermes](https://github.com/NousResearch/hermes) runtime executes profiles under the
+non-admin `hermes-agent` macOS account. Docker Compose owns producers, queue claims, leases, strict
+result handling, and deterministic effects. Controller calls host Hermes through profile-scoped Runs
+API keys; host launchd keeps only gateway and dashboard.
 
 ```
-producers ──enqueue──▶  Postgres `requests`  ──claim──▶  host-native Hermes  ──▶  branch + draft PR
-(host cron)             (dedupe + leased claims)         (profile per queue kind)   (human merges)
+Compose producers ──▶ Postgres queue/attempts ──▶ Compose controller ──Runs API──▶ host Hermes
 ```
 
-- **Postgres queue** keeps dedupe, leased claims, retry caps, the 3-round maintenance cap, exact-byte
-  document approval, and reconcile state. Enrollment and the security-definer queue functions are the
-  sole runtime repository authority.
-- **Host-native Hermes** claims a request, renders the task as untrusted data into an immutable
-  profile prompt, and does the work in an ephemeral worktree: clone, branch, edit, test, commit, push
-  over a per-repository SSH deploy key, and open a **draft** PR. One immutable profile per queue kind.
+- **Postgres queue** keeps dedupe, fixed per-kind caps, route generations, exact request bytes,
+  stable idempotency keys, leased claims, exact-byte document approval, and reconcile state.
+- **Compose controller** claims and renews queue work, replays lost submissions with identical bytes,
+  polls/stops Hermes runs, strictly parses output, and nonce-fences settlement.
+- **Host-native Hermes** owns profile/model/tool execution and host credentials. One immutable profile
+  maps to each queue kind; direct-effect uncertainty enters human reconcile and never blind-retries.
 - **Fleet Controller** (`status`) is the operator UI at `https://fleet.localhost:8080`: runs, queue, human-review
   queue, and exact-byte document approval. GitHub remains the PR merge UI.
-- The `hermes-agent` account is the security boundary. It holds only provider OAuth, a per-repository
-  deploy key, a read-only GitHub API token, approved MCP credentials, and a restricted database role.
-  It cannot read the human GitHub token, SSH, Keychain, or Fleet Controller secrets.
+- The `hermes-agent` account is the execution boundary. It holds provider OAuth, repository deploy
+  keys, GitHub API access, and approved MCP credentials, but no queue database credential. Compose
+  controller cannot read those host credentials or service home.
 
 Server-side GitHub branch protection keeps merge, protected-branch push, unsafe workflow execution,
 deployment, and administration out of the agent's reach. Merge stays a human operating decision.
@@ -35,18 +35,18 @@ Full design and rollout: **[`docs/hermes/README.md`](docs/hermes/README.md)**. S
 ## Requirements
 
 - macOS host with a dedicated non-admin `hermes-agent` account
-- Docker (support substrate only)
-- [GitHub CLI](https://cli.github.com/) authenticated as the operator
-- `jq`, `psql` client
+- Docker Desktop for Compose controller/producers and support services
+- Read-only GitHub token for Compose producers
+- `jq`, `psql` client for operator diagnostics
 - A pinned Hermes install for the service account (`scripts/hermes-native.sh install`)
 
 ## Quick start
 
-Bring up the support substrate, then install and enroll the host-native runtime.
+Configure `.env`, install the pinned host Hermes runtime, then start the fleet.
 
 ```bash
-cp .env.example .env    # fill CODE_ROOT, DB/Fleet Controller secrets, Hindsight provider, vault path
-scripts/fleet.sh up                # Compose support + host-native Hermes jobs
+cp .env.example .env    # fill DB/UI secrets, API key bundle, producer token, and runtime paths
+scripts/fleet.sh up                # Compose controller/producers + host gateway/dashboard
 scripts/fleet.sh status
 scripts/m0-verify.sh               # substrate checks (Postgres, Hindsight, swarmvault, coderag)
 ```
@@ -137,7 +137,7 @@ test "$(curl -sS -o /tmp/fleet-controller-rollback.html -w '%{http_code}' \
 grep -q 'agent-fleet' /tmp/fleet-controller-rollback.html
 ```
 
-This rollback restores anonymous HTTP Fleet Controller. Stop the host-native runtime before using it.
+This rollback restores anonymous HTTP Fleet Controller. Stop the fleet before using it.
 
 ## Modes
 
@@ -148,6 +148,7 @@ This rollback restores anonymous HTTP Fleet Controller. Stop the host-native run
 | `swe-implement` | Enrolled repository | Implement a bounded task on a fresh branch and open a draft PR |
 | `doc-write` | Fleet Controller | Draft a PRD/DD; exact bytes require human approval before filing |
 | `pr-safety-review` | Merged PRs | Read-only safety analysis; only incident candidates surface |
+| `memory-curate` | Bounded local source slice | Propose memories; deterministic team/org gates own writes |
 
 Each kind maps to one immutable Hermes profile under `agent-config/hermes/profiles/`.
 
@@ -196,14 +197,17 @@ Required posture:
 bash tests/test-queue-injection.sh
 # concurrent claims, lease expiry/reclaim, and nonce fencing
 bash tests/test-single-instance.sh
-# host-native queue runner: kind→profile map and typed settle
-bash tests/test-hermes-queue-runner.sh
-# collapsed queue API + YAML authority allowlist
-bash tests/test-hermes-queue-authority.sh
+# Runs ledger, caps, exact replay, route/operation fences, and lease loss
+bash tests/test-hermes-control-plane.sh
+python3 tests/test-hermes-controller.py
+# Compose producer/controller ownership and host lifecycle cleanup
+bash tests/test-hermes-compose-wiring.sh
+# Producer authority and deterministic invariant regression tests
 bash tests/test-hermes-authority.sh
-# pr-safety producer dedupe/snapshot identity and incident-only queue routing
 bash tests/test-hermes-pr-safety-producer.sh
 bash tests/test-hermes-pr-safety-runner.sh
+bash tests/test-hermes-doc-write-schema.sh
+bash tests/test-hermes-memory-curate.sh
 # Fleet Controller auth and session controls
 python3 tests/test-status-server.py
 ```

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# One operator command for the two appropriate runtimes:
-#   Compose: Postgres, Fleet Controller, Hindsight, Coderag, SwarmVault
-#   launchd: host-native Hermes gateway, dispatcher, producers
+# One operator command: Compose owns queue control; launchd keeps only Hermes gateway/dashboard.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SHARED_RUNTIME="${HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime}"
@@ -15,15 +13,14 @@ case "${1:-}" in
     sudo "$ROOT/scripts/configure-hermes-role-env.sh"
     # Provision profile API keys/listener before Compose resolves its controller-only secret.
     sudo "$ROOT/scripts/hermes-native.sh" sync-support
-    "$ROOT/scripts/compose.sh" up -d --build
     sudo "$ROOT/scripts/hermes-native.sh" start
     sudo "$ROOT/scripts/hermes-native.sh" dashboard-start
-    sudo "$ROOT/scripts/hermes-native.sh" dispatcher-start
-    sudo "$ROOT/scripts/hermes-native.sh" producer-start
+    "$ROOT/scripts/compose.sh" --profile hermes-api-conformance run --rm hermes-api-conformance
+    "$ROOT/scripts/compose.sh" up -d --build
     ;;
   down)
-    sudo "$ROOT/scripts/hermes-native.sh" down
     "$ROOT/scripts/compose.sh" down
+    sudo "$ROOT/scripts/hermes-native.sh" down
     ;;
   status)
     echo '=== Compose support services ==='
@@ -32,6 +29,8 @@ case "${1:-}" in
     "$ROOT/scripts/hermes-native.sh" status
     ;;
   logs)
+    echo '=== Compose controller/producers ==='
+    "$ROOT/scripts/compose.sh" logs --tail=200 hermes-controller pr-producer-review pr-producer-maintain pr-safety-producer memory-curate-producer
     echo '=== Host-native Hermes ==='
     sudo "$ROOT/scripts/hermes-native.sh" logs
     ;;

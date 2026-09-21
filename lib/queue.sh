@@ -332,97 +332,6 @@ COMMIT;
 SQL
 }
 
-hermes_doc_run_begin() {
-  local id="$1" phase="$2" request_digest="$3" generation="$4" replay_seconds="$5" nonce="$6"
-  _psql -v id="$id" -v phase="$phase" -v digest="$request_digest" -v generation="$generation" \
-    -v replay="$replay_seconds" -v nonce="$nonce" <<'SQL'
-WITH eligible AS (
-  SELECT 1 FROM requests
-   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
-     AND lease_expires_at>clock_timestamp()
-   FOR UPDATE
-), inserted AS (
-  INSERT INTO hermes_doc_runs(request_id,phase,request_digest,runtime_generation,state,replay_until)
-  SELECT :'id', :'phase', :'digest', :'generation', 'submitting',
-         clock_timestamp()+make_interval(secs=>:'replay'::int)
-    FROM eligible
-  ON CONFLICT (request_id,phase) DO NOTHING
-  RETURNING json_build_object('state',state,'request_digest',request_digest,
-            'runtime_generation',runtime_generation,'submit_count',submit_count,
-            'hermes_run_id',hermes_run_id,'replay_until',replay_until,
-            'raw_status',raw_status,'output_digest',output_digest,'usage',usage,'error',error)::text AS value
-), existing AS (
-  SELECT json_build_object('state',h.state,'request_digest',h.request_digest,
-         'runtime_generation',h.runtime_generation,'submit_count',h.submit_count,
-         'hermes_run_id',h.hermes_run_id,'replay_until',h.replay_until,
-         'raw_status',h.raw_status,'output_digest',h.output_digest,'usage',h.usage,'error',h.error)::text AS value
-    FROM hermes_doc_runs h, eligible
-   WHERE h.request_id=:'id' AND h.phase=:'phase'
-)
-SELECT value FROM inserted
-UNION ALL
-SELECT value FROM existing WHERE NOT EXISTS (SELECT 1 FROM inserted);
-SQL
-}
-
-hermes_doc_run_reserve_submit() {
-  local id="$1" phase="$2" nonce="$3"
-  _psql -v id="$id" -v phase="$phase" -v nonce="$nonce" <<'SQL'
-WITH eligible AS (
-  SELECT 1 FROM requests
-   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
-     AND lease_expires_at>clock_timestamp()
-   FOR UPDATE
-)
-UPDATE hermes_doc_runs h
-   SET submit_count=submit_count+1, updated_at=clock_timestamp()
-  FROM eligible
- WHERE h.request_id=:'id' AND h.phase=:'phase' AND h.state='submitting'
-   AND h.submit_count<2 AND h.replay_until>clock_timestamp()
-RETURNING h.submit_count;
-SQL
-}
-
-hermes_doc_run_record_id() {
-  local id="$1" phase="$2" run_id="$3" nonce="$4"
-  _psql -v id="$id" -v phase="$phase" -v run_id="$run_id" -v nonce="$nonce" <<'SQL'
-WITH eligible AS (
-  SELECT 1 FROM requests
-   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
-     AND lease_expires_at>clock_timestamp()
-   FOR UPDATE
-)
-UPDATE hermes_doc_runs h
-   SET hermes_run_id=:'run_id', updated_at=clock_timestamp()
-  FROM eligible
- WHERE h.request_id=:'id' AND h.phase=:'phase' AND h.state='submitting'
-   AND (h.hermes_run_id IS NULL OR h.hermes_run_id=:'run_id')
-RETURNING h.hermes_run_id;
-SQL
-}
-
-hermes_doc_run_finish() {
-  local id="$1" phase="$2" state="$3" run_id="$4" raw_status="$5" output_digest="$6" usage="$7" error="$8" nonce="$9"
-  case "$state" in completed|failed|reconcile) ;; *) return 2 ;; esac
-  _psql -v id="$id" -v phase="$phase" -v state="$state" -v run_id="$run_id" \
-    -v raw_status="$raw_status" -v output_digest="$output_digest" -v usage="$usage" \
-    -v error="$error" -v nonce="$nonce" <<'SQL'
-WITH eligible AS (
-  SELECT 1 FROM requests
-   WHERE id=:'id' AND kind='doc-write' AND status='running' AND run_nonce=:'nonce'
-     AND lease_expires_at>clock_timestamp()
-   FOR UPDATE
-)
-UPDATE hermes_doc_runs h
-   SET state=:'state', hermes_run_id=NULLIF(:'run_id',''), raw_status=NULLIF(:'raw_status',''),
-       output_digest=NULLIF(:'output_digest',''), usage=NULLIF(:'usage','')::jsonb,
-       error=NULLIF(:'error',''), updated_at=clock_timestamp()
-  FROM eligible
- WHERE h.request_id=:'id' AND h.phase=:'phase' AND h.state='submitting'
-RETURNING 1;
-SQL
-}
-
 pending_doc_review_finish() {
   local id="$1" proposal="$2" provenance="$3" posted_ref="$4" nonce="$5"
   _psql -v id="$id" -v proposal="$proposal" -v provenance="$provenance" -v ref="$posted_ref" -v nonce="$nonce" <<'SQL'
@@ -541,33 +450,6 @@ SELECT json_build_object('staged_path',p.staged_path,'target_path',p.target_path
   FROM doc_publications p JOIN requests r ON r.id=p.request_id
  WHERE p.request_id=:'id' AND p.state IN ('prepared','reconcile') AND p.approved_at IS NOT NULL
    AND r.status='reconcile';
-SQL
-}
-
-hermes_doc_active_count() {
-  _psql <<'SQL'
-SELECT count(*) FROM hermes_doc_runs WHERE state='submitting';
-SQL
-}
-
-hermes_doc_quarantine() {
-  _psql <<'SQL'
-BEGIN;
-SET LOCAL statement_timeout = '14min';
-LOCK TABLE requests IN SHARE ROW EXCLUSIVE MODE;
-LOCK TABLE hermes_doc_runs IN SHARE ROW EXCLUSIVE MODE;
-WITH attempts AS (
-  UPDATE hermes_doc_runs SET state='reconcile', error='runtime rollback quarantine', updated_at=clock_timestamp()
-   WHERE state='submitting' RETURNING request_id
-)
-UPDATE requests r SET status='reconcile', finished_at=clock_timestamp(), lease_expires_at=NULL,
-       fail_response='Hermes doc runtime quarantined for rollback'
- WHERE r.kind='doc-write' AND r.status IN ('queued','running')
-   AND EXISTS (SELECT 1 FROM hermes_doc_runs h WHERE h.request_id=r.id);
-
--- Prepared publications already put their request in reconcile before filesystem access. Leave the
--- immutable prepared state intact so rollback cannot race an in-flight no-replace publication.
-COMMIT;
 SQL
 }
 

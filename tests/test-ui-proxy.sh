@@ -18,8 +18,11 @@ assert {p['target'] for p in s['hindsight'].get('ports',[])} == {8888}
 assert not s['coderag'].get('ports')
 assert {item['source'] for item in s['hermes-api-conformance']['secrets']} == {'hermes_api_keys'}
 for name, service in s.items():
-    if name != 'hermes-api-conformance':
-        assert 'hermes_api_keys' not in {item['source'] for item in service.get('secrets', [])}
+    secrets = {item['source'] for item in service.get('secrets', [])}
+    if name in {'hermes-api-conformance', 'hermes-controller'}:
+        assert 'hermes_api_keys' in secrets
+    else:
+        assert 'hermes_api_keys' not in secrets
 PY
 for pair in \
   'fleet.localhost https://status:8080' \
