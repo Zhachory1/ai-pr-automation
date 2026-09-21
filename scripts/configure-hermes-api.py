@@ -85,6 +85,7 @@ def main():
     parser.add_argument("--service-user", required=True)
     parser.add_argument("--launcher", required=True, type=Path)
     parser.add_argument("--keys-file", required=True, type=Path)
+    parser.add_argument("--github-token-file", required=True, type=Path)
     parser.add_argument("--repo-root", required=True, type=Path)
     args = parser.parse_args()
     if os.geteuid() != 0:
@@ -105,15 +106,27 @@ def main():
     os.chown(args.keys_file, operator.pw_uid, operator.pw_gid)
     os.chmod(args.keys_file, 0o600)
     root_env = args.hermes_home / ".env"
-    listener_key = ""
+    listener_key = ""; github_token = ""
     if root_env.exists():
         for line in root_env.read_text().splitlines():
             if line.startswith("API_SERVER_KEY="):
                 listener_key = line.split("=", 1)[1].strip()
+            elif line.startswith("GH_TOKEN="):
+                github_token = line.split("=", 1)[1].strip()
     if not KEY_RE.fullmatch(listener_key):
         listener_key = secrets.token_urlsafe(32)
     if listener_key in data["profiles"].values():
         fail("default listener key duplicates a profile key")
+    if len(github_token) < 20:
+        fail("service GH_TOKEN is missing or too short for Compose producers")
+    if args.github_token_file.parent.resolve() != args.keys_file.parent.resolve():
+        fail("GitHub token and API key bundle must share the private Docker-readable secret parent")
+    token_tmp = args.github_token_file.with_name(args.github_token_file.name + f".tmp-{os.getpid()}")
+    fd = os.open(token_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as output:
+        output.write(github_token + "\n"); output.flush(); os.fsync(output.fileno())
+    os.chown(token_tmp, operator.pw_uid, operator.pw_gid); os.chmod(token_tmp, 0o600)
+    os.replace(token_tmp, args.github_token_file)
     rewrite_env(root_env, {
         "API_SERVER_ENABLED": "true",
         "API_SERVER_HOST": "127.0.0.1",
