@@ -8,6 +8,6 @@ user="${3:-fleet}"
 [[ ! -e "$out" ]] || { echo "refusing to overwrite: $out" >&2; exit 2; }
 [[ "$user" =~ ^[A-Za-z0-9._-]+$ ]] || { echo 'invalid username' >&2; exit 2; }
 install -d -m 0700 "$(dirname "$out")"
-hash="$(openssl passwd -6 -stdin < "$password_file")"
-umask 077; printf '%s:%s\n' "$user" "$hash" > "$out"; chmod 0600 "$out"
+command -v htpasswd >/dev/null 2>&1 || { echo 'htpasswd is required (Apache httpd tools)' >&2; exit 2; }
+umask 077; htpasswd -niB "$user" < "$password_file" > "$out"; chmod 0600 "$out"
 echo "generated nginx Basic Auth file: $out (username: $user)"
