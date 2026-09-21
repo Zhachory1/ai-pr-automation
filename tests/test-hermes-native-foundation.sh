@@ -71,6 +71,11 @@ grep -Fq 'chmod 0444 "$installer"' scripts/hermes-native.sh
 # Existing pinned installs can sync profiles/binaries/plists without downloading the mutable
 # installer URL. Full install still keeps the digest gate.
 grep -Fq 'sync-support) HERMES_SUPPORT_ONLY=true install_native' scripts/hermes-native.sh
+grep -Fq 'scripts/configure-hermes-api.py' scripts/hermes-native.sh
+grep -Fq 'HERMES_API_KEYS_FILE=' scripts/hermes-native.sh
+for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1 doc-write-v1 memory-curate-v1 pr-safety-v1; do
+  grep -A2 '^gateway:' "agent-config/hermes/profiles/$profile/config.yaml" | grep -Fq 'enabled: false'
+done
 grep -Fq "if [[ \"\${HERMES_SUPPORT_ONLY:-false}\" != true ]]" scripts/hermes-native.sh
 grep -Fq 'launchctl bootout system/com.example.ai-pr-automation-watchdog' scripts/hermes-native.sh
 grep -Fq "hermes-doc-write-runner\" \"\$SUPPORT_ROOT/hermes-doc-write-runner\"" scripts/hermes-native.sh
@@ -88,7 +93,8 @@ grep -Fq '"$ROOT/scripts/hermes-native.sh" dashboard-start' scripts/hermes-nativ
 grep -Fq '"$ROOT/scripts/hermes-native.sh" dispatcher-start' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes-native.sh" producer-start' scripts/hermes-native.sh
 grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
-grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" up' scripts/fleet.sh
+grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" sync-support' scripts/fleet.sh
+grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" start' scripts/fleet.sh
 grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
 grep -Fq 'HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime' scripts/fleet.sh
 grep -Fq 'MEMORY_CURATOR_STATE_DIR=$MEMORY_STATE' scripts/configure-hermes-role-env.sh

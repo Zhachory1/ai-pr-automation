@@ -31,6 +31,7 @@ MEMORY_PRODUCER_LABEL="com.example.ai-pr-automation-memory-curate-producer"
 MEMORY_PRODUCER_INTERVAL="${HERMES_MEMORY_CURATE_INTERVAL_SECONDS:-21600}"
 PR_SAFETY_PRODUCER_INTERVAL="${HERMES_PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}"
 PR_SAFETY_PRODUCER_TEMPLATE="$ROOT/launchd/com.example.ai-pr-automation-pr-safety-producer.plist.template"
+HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/zhach-ai-pr-automation/hermes-api-keys.json}"
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
@@ -87,6 +88,9 @@ install_native() {
         --non-interactive --no-skills --dir "$INSTALL_DIR" --hermes-home "$HERMES_HOME"
   fi
   sync_profile
+  python3 "$ROOT/scripts/configure-hermes-api.py" --hermes-home "$HERMES_HOME" \
+    --service-user "$SERVICE_USER" --launcher "$LAUNCHER" --keys-file "$HERMES_API_KEYS_FILE" \
+    --repo-root "$ROOT"
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
   [[ ! -x "$ROOT/bin/hermes-queue-runner" ]] || install -m 0555 "$ROOT/bin/hermes-queue-runner" "$SUPPORT_ROOT/hermes-queue-runner"
   [[ ! -x "$ROOT/bin/hermes-pr-producer" ]] || install -m 0555 "$ROOT/bin/hermes-pr-producer" "$SUPPORT_ROOT/hermes-pr-producer"

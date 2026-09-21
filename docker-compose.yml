@@ -250,6 +250,18 @@ services:
       schema-migrate:
         condition: service_completed_successfully
 
+  hermes-api-conformance:
+    profiles: ["hermes-api-conformance"]
+    image: python:3.11-alpine@sha256:0495f5559318affa673172ec7e35cd0a5213e4aaf4c76d0a66554c0af97b157e
+    restart: "no"
+    command: ["python3", "/app/hermes-api-conformance.py", "--base-url", "http://host.docker.internal:8642", "--keys-file", "/run/secrets/hermes_api_keys"]
+    volumes:
+      - ./scripts/hermes-api-conformance.py:/app/hermes-api-conformance.py:ro
+    secrets:
+      - hermes_api_keys
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   ui-proxy:
     image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     container_name: fleet-ui-proxy
@@ -299,3 +311,5 @@ secrets:
     file: ${FLEET_CONTROLLER_TLS_KEY_FILE:?set FLEET_CONTROLLER_TLS_KEY_FILE}
   ui_basic_auth:
     file: ${UI_BASIC_AUTH_FILE:?set UI_BASIC_AUTH_FILE}
+  hermes_api_keys:
+    file: ${HERMES_API_KEYS_FILE:?set HERMES_API_KEYS_FILE}

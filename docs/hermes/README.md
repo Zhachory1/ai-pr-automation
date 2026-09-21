@@ -130,7 +130,14 @@ before local logout. Each immutable profile pins its own `model.provider` / `mod
 
 ## Host-Native Runtime
 
-One pinned Hermes runs every role under `hermes-agent`. Install and manage the gateway with:
+One pinned Hermes runs every role under `hermes-agent`. `sync-support` enables the loopback Runs API,
+turns on profile multiplexing, and provisions stable distinct API keys for all six profiles. The
+root/operator-owned key bundle lives outside CODE_ROOT at
+`/Users/Shared/zhach-ai-pr-automation/hermes-api-keys.json`; keys are copied into private profile
+`.env` files and never printed. Rotation is not automatic—follow the approved pause/drain/rotate
+protocol in [DD-api-driven-control-plane.md](DD-api-driven-control-plane.md).
+
+Install and manage the gateway with:
 
 ```bash
 sudo scripts/hermes-native.sh install         # pinned Hermes for the service account
