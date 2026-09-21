@@ -70,6 +70,22 @@ no grant.
 This replaces the earlier enrollment/proof/10-minute-freshness model, which re-proved a server-side
 wall that already enforces itself. See [DD-authority-and-memory.md](DD-authority-and-memory.md).
 
+### Discovery producer
+
+`bin/hermes-pr-producer <review|maintain>` finds eligible open PRs (assigned to the fleet account for
+review, authored for maintain) across the granted repos, resolves each head SHA, and enqueues one row
+per PR with a per-commit dedupe key (`repo#num@headsha`) so a re-review only fires on a new head. It
+makes zero model calls. Consumption is continuous (the dispatcher); discovery is the one interval
+component, because GitHub cannot push to us. Two launchd timers (review + maintain,
+`HERMES_PRODUCER_INTERVAL_SECONDS`, default 900s) run the producers:
+
+```bash
+sudo scripts/hermes-native.sh producer-start   # load review + maintain discovery timers
+sudo scripts/hermes-native.sh producer-stop
+```
+
+Grant a repo in the authority YAML before starting producers, or they enqueue nothing.
+
 ## M0 Pull Requests
 
 | Work | PR | State |

@@ -21,6 +21,9 @@ LABEL="com.example.ai-pr-automation-hermes"
 DISPATCHER="$SUPPORT_ROOT/hermes-dispatcher"
 DISPATCHER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-dispatcher.plist"
 DISPATCHER_LABEL="com.example.ai-pr-automation-dispatcher"
+AUTHORITY_FILE="${HERMES_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml}"
+PRODUCER_INTERVAL="${HERMES_PRODUCER_INTERVAL_SECONDS:-900}"
+PRODUCER_TEMPLATE="$ROOT/launchd/com.example.ai-pr-automation-producer.plist.template"
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
@@ -61,6 +64,8 @@ install_native() {
   sync_profile
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
   [[ ! -x "$ROOT/bin/hermes-queue-runner" ]] || install -m 0555 "$ROOT/bin/hermes-queue-runner" "$SUPPORT_ROOT/hermes-queue-runner"
+  [[ ! -x "$ROOT/bin/hermes-pr-producer" ]] || install -m 0555 "$ROOT/bin/hermes-pr-producer" "$SUPPORT_ROOT/hermes-pr-producer"
+  [[ ! -f "$ROOT/scripts/hermes-authority.py" ]] || install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
   [[ ! -x "$ROOT/bin/hermes-memory-curate" ]] || install -m 0555 "$ROOT/bin/hermes-memory-curate" "$SUPPORT_ROOT/hermes-memory-curate"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
   [[ ! -x "$ROOT/bin/hermes-dispatcher" ]] || install -m 0555 "$ROOT/bin/hermes-dispatcher" "$DISPATCHER"
@@ -93,6 +98,21 @@ os.chmod(temporary, 0o644)
 os.replace(temporary, target)
 PY
   plutil -lint "$PLIST" >/dev/null
+  for mode in review maintain; do
+    python3 - "$PRODUCER_TEMPLATE" "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-$mode.plist" \
+      "$mode" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" "$AUTHORITY_FILE" "$PRODUCER_INTERVAL" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, mode, user, home, hermes_home, support, authority, interval, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in {"__MODE__":mode,"__HERMES_USER__":user,"__SERVICE_HOME__":home,
+                   "__HERMES_HOME__":hermes_home,"__SUPPORT_ROOT__":support,
+                   "__AUTHORITY_FILE__":authority,"__INTERVAL_SECONDS__":interval,"__LOG_ROOT__":logs}.items():
+    text = text.replace(key, value)
+temporary = pathlib.Path(target + ".tmp")
+temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+    plutil -lint "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-$mode.plist" >/dev/null
+  done
   python3 - "$MANIFEST" "$HERMES_NATIVE_VERSION" "$HERMES_NATIVE_COMMIT" \
     "$HERMES_INSTALLER_SHA256" "$LAUNCHER" "$ROOT/agent-config/hermes/profiles/smoke-v1" <<'PY'
 import hashlib, json, os, pathlib, sys
@@ -141,7 +161,20 @@ case "${1:-}" in
     # SIGTERM lets the dispatcher drain in-flight executors before exiting; bootout sends it.
     launchctl bootout "system/$DISPATCHER_LABEL" 2>/dev/null || true
     ;;
+  producer-start)
+    need_root
+    for mode in review maintain; do
+      launchctl bootstrap system "/Library/LaunchDaemons/com.example.ai-pr-automation-producer-$mode.plist" 2>/dev/null \
+        || launchctl kickstart -k "system/com.example.ai-pr-automation-producer-$mode"
+    done
+    ;;
+  producer-stop)
+    need_root
+    for mode in review maintain; do
+      launchctl bootout "system/com.example.ai-pr-automation-producer-$mode" 2>/dev/null || true
+    done
+    ;;
   status) launchctl print "system/$LABEL" 2>/dev/null; launchctl print "system/$DISPATCHER_LABEL" 2>/dev/null || true ;;
   logs) tail -n 200 "$LOG_ROOT"/gateway.*.log "$LOG_ROOT"/dispatcher.*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-profiles|preflight|start|stop|dispatcher-start|dispatcher-stop|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-profiles|preflight|start|stop|dispatcher-start|dispatcher-stop|producer-start|producer-stop|status|logs" >&2; exit 2 ;;
 esac
