@@ -2,4 +2,4 @@ name: pr-maintain-v1
 version: 1.0.0
 description: Autonomously maintains an enrolled pull request through push and thread resolution.
 hermes_requires: ">=0.21.3"
-distribution_owned: [mcp.json, SOUL.md, config.yaml, distribution.yaml, .no-bundled-skills]
+distribution_owned: [mcp.json, SOUL.md, config.yaml, distribution.yaml, .no-bundled-skills, skills/pr-review-handler/SKILL.md]

@@ -83,6 +83,10 @@ for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1; do
   grep -Fq 'disabled_toolsets: [delegation]' "agent-config/hermes/profiles/$profile/config.yaml"
   grep -Fq 'never delegate or start background work' "agent-config/hermes/profiles/$profile/SOUL.md"
 done
+grep -Fq 'skills/pr-review-handler/SKILL.md' agent-config/hermes/profiles/pr-maintain-v1/distribution.yaml
+grep -Fq 'full-reply-autonomy mode' agent-config/hermes/profiles/pr-maintain-v1/SOUL.md
+grep -Fq 'Unattended scheduler mode' agent-config/hermes/profiles/pr-maintain-v1/skills/pr-review-handler/SKILL.md
+cmp -s agent-config/skills/pr-review-handler/SKILL.md agent-config/hermes/profiles/pr-maintain-v1/skills/pr-review-handler/SKILL.md
 grep -Fq "if [[ \"\${HERMES_SUPPORT_ONLY:-false}\" != true ]]" scripts/hermes-native.sh
 grep -Fq 'com.example.ai-pr-automation-dispatcher' scripts/hermes-native.sh
 ! grep -Fq 'install -m 0555 "$ROOT/bin/hermes-dispatcher"' scripts/hermes-native.sh
