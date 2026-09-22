@@ -1,6 +1,8 @@
 gateway:
   api_server:
     enabled: false
+terminal:
+  env_passthrough: [GH_CONFIG_DIR]
 model:
   provider: anthropic
   default: claude-sonnet-4-6

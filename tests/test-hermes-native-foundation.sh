@@ -73,9 +73,13 @@ grep -Fq '/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json' s
 grep -Fq 'os.chown(args.keys_file, operator.pw_uid, operator.pw_gid)' scripts/configure-hermes-api.py
 grep -Fq 'GITHUB_READ_TOKEN_FILE=' scripts/hermes-native.sh
 grep -Fq 'os.chown(token_tmp, operator.pw_uid, operator.pw_gid)' scripts/configure-hermes-api.py
-grep -Fq '"GH_TOKEN": github_token' scripts/configure-hermes-api.py
+grep -Fq 'configure_github_cli(user, args.service_user, github_token)' scripts/configure-hermes-api.py
+grep -Fq 'values["GH_CONFIG_DIR"] = github_config' scripts/configure-hermes-api.py
 for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1 doc-write-v1 memory-curate-v1 pr-safety-v1; do
   grep -A2 '^gateway:' "agent-config/hermes/profiles/$profile/config.yaml" | grep -Fq 'enabled: false'
+done
+for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1; do
+  grep -Fq 'env_passthrough: [GH_CONFIG_DIR]' "agent-config/hermes/profiles/$profile/config.yaml"
 done
 grep -Fq "if [[ \"\${HERMES_SUPPORT_ONLY:-false}\" != true ]]" scripts/hermes-native.sh
 grep -Fq 'com.example.ai-pr-automation-dispatcher' scripts/hermes-native.sh
