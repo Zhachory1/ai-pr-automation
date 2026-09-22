@@ -8,6 +8,8 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -79,6 +81,23 @@ class FlakyAuthClient:
 
 
 class FoundationTest(unittest.TestCase):
+    def test_github_cli_uses_private_service_store_without_token_in_args(self):
+        with tempfile.TemporaryDirectory() as td:
+            user = SimpleNamespace(pw_dir=td, pw_uid=os.getuid(), pw_gid=os.getgid())
+            calls = []
+            def run(command, **kwargs):
+                calls.append((command, kwargs))
+                if "login" in command:
+                    path = pathlib.Path(td) / ".config/gh/hosts.yml"
+                    path.write_text("github.com: {}\n"); path.chmod(0o600)
+                return SimpleNamespace(returncode=0, stdout="zhach1\n", stderr="")
+            with mock.patch.object(config.subprocess, "run", side_effect=run):
+                path = config.configure_github_cli(user, "hermes-agent", "secret-token")
+            self.assertEqual(path, str(pathlib.Path(td) / ".config/gh"))
+            self.assertIn("--insecure-storage", calls[0][0])
+            self.assertEqual(calls[0][1]["input"], "secret-token\n")
+            self.assertFalse(any("secret-token" in arg for command, _ in calls for arg in command))
+
     def test_readiness_warms_every_profile_and_auth_retries_timeout(self):
         client = FlakyAuthClient(FakeHermes.keys)
         keys = {"profiles": FakeHermes.keys}

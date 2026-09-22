@@ -19,6 +19,7 @@ PROFILES = (
     "pr-review-v1", "pr-maintain-v1", "swe-implement-v1",
     "doc-write-v1", "memory-curate-v1", "pr-safety-v1",
 )
+GITHUB_PROFILES = {"pr-review-v1", "pr-maintain-v1", "swe-implement-v1"}
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{40,}$")
 
 def fail(message):
@@ -79,6 +80,30 @@ def rewrite_env(path: Path, values: dict[str, str], uid: int, gid: int):
     os.chown(temporary, uid, gid); os.chmod(temporary, 0o600); os.replace(temporary, path)
 
 
+def configure_github_cli(user, service_user, token):
+    config = Path(user.pw_dir) / ".config" / "gh"
+    config.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chown(config.parent, user.pw_uid, user.pw_gid); os.chown(config, user.pw_uid, user.pw_gid)
+    os.chmod(config.parent, 0o700); os.chmod(config, 0o700)
+    command = ["sudo", "-u", service_user, "env", f"HOME={user.pw_dir}", f"GH_CONFIG_DIR={config}", "gh"]
+    login = subprocess.run([*command, "auth", "login", "--hostname", "github.com", "--git-protocol", "https",
+        "--skip-ssh-key", "--with-token", "--insecure-storage"], input=token + "\n",
+        capture_output=True, text=True, timeout=30)
+    if login.returncode:
+        fail(f"could not configure service GitHub authentication: {login.stderr.strip() or login.stdout.strip()}")
+    verify = subprocess.run([*command, "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=30)
+    if verify.returncode or not verify.stdout.strip():
+        fail(f"service GitHub authentication failed validation: {verify.stderr.strip() or verify.stdout.strip()}")
+    setup = subprocess.run([*command, "auth", "setup-git", "--hostname", "github.com"],
+        capture_output=True, text=True, timeout=30)
+    if setup.returncode:
+        fail(f"could not configure service Git credential helper: {setup.stderr.strip() or setup.stdout.strip()}")
+    hosts = config / "hosts.yml"
+    if not hosts.is_file() or stat.S_IMODE(hosts.stat().st_mode) & 0o077:
+        fail("service GitHub credential store must be a private regular file")
+    return str(config)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hermes-home", required=True, type=Path)
@@ -134,14 +159,15 @@ def main():
         "API_SERVER_KEY": listener_key,
         "GATEWAY_MULTIPLEX_PROFILES": "true",
     }, user.pw_uid, user.pw_gid)
+    github_config = configure_github_cli(user, args.service_user, github_token)
     for profile in PROFILES:
         home = args.hermes_home / "profiles" / profile
         if not home.is_dir() or home.is_symlink():
             fail(f"installed profile missing: {profile}")
-        rewrite_env(home / ".env", {
-            "API_SERVER_KEY": data["profiles"][profile],
-            "GH_TOKEN": github_token,
-        }, user.pw_uid, user.pw_gid)
+        values = {"API_SERVER_KEY": data["profiles"][profile]}
+        if profile in GITHUB_PROFILES:
+            values["GH_CONFIG_DIR"] = github_config
+        rewrite_env(home / ".env", values, user.pw_uid, user.pw_gid)
     command = ["sudo", "-u", args.service_user, "env", f"HOME={user.pw_dir}",
                f"HERMES_HOME={args.hermes_home}", str(args.launcher), "config", "set", "--force"]
     key, value = "gateway.api_server.max_concurrent_runs", "10"
