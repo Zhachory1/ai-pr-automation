@@ -73,6 +73,7 @@ grep -Fq '/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json' s
 grep -Fq 'os.chown(args.keys_file, operator.pw_uid, operator.pw_gid)' scripts/configure-hermes-api.py
 grep -Fq 'GITHUB_READ_TOKEN_FILE=' scripts/hermes-native.sh
 grep -Fq 'os.chown(token_tmp, operator.pw_uid, operator.pw_gid)' scripts/configure-hermes-api.py
+grep -Fq '"GH_TOKEN": github_token' scripts/configure-hermes-api.py
 for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1 doc-write-v1 memory-curate-v1 pr-safety-v1; do
   grep -A2 '^gateway:' "agent-config/hermes/profiles/$profile/config.yaml" | grep -Fq 'enabled: false'
 done
@@ -94,6 +95,8 @@ grep -Fq '"$ROOT/scripts/hermes-native.sh" dashboard-start' scripts/hermes-nativ
 ! grep -Fq '"$ROOT/scripts/hermes-native.sh" producer-start' scripts/hermes-native.sh
 grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
 grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" sync-support' scripts/fleet.sh
+grep -Fq 'HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml' scripts/fleet.sh
+grep -Fq 'export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"' scripts/fleet.sh
 grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" start' scripts/fleet.sh
 grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
 grep -Fq 'HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime' scripts/fleet.sh

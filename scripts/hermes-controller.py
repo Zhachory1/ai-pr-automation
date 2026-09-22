@@ -101,7 +101,7 @@ def parse_typed_output(output):
     except json.JSONDecodeError: return None
 
 
-def parse_safety_output(output):
+def parse_embedded_output(output, markers):
     value = parse_typed_output(output)
     if isinstance(value, dict): return value
     if not isinstance(output, str): return None
@@ -114,10 +114,17 @@ def parse_safety_output(output):
         except json.JSONDecodeError:
             start += 1
             continue
-        if isinstance(value, dict) and {"nonce", "operation_id", "status", "incident"} <= set(value):
-            candidates.append(value)
+        if isinstance(value, dict) and markers <= set(value): candidates.append(value)
         start = end
     return candidates[0] if len(candidates) == 1 else None
+
+
+def parse_safety_output(output):
+    return parse_embedded_output(output, {"nonce", "operation_id", "status", "incident"})
+
+
+def parse_direct_output(output):
+    return parse_embedded_output(output, {"detail", "nonce", "posted_ref", "status"})
 
 
 def normalize_safety(value):
@@ -645,7 +652,9 @@ class Controller:
                 self.settle(attempt, "reconcile" if direct else "failed", f"Hermes terminal status {status}",
                             attempt_state="reconcile" if direct else "failed"); return
             kind = attempt["kind"]
-            value = parse_safety_output(output) if kind == "pr-safety-review" else parse_typed_output(output)
+            if kind == "pr-safety-review": value = parse_safety_output(output)
+            elif kind in DIRECT_EFFECT: value = parse_direct_output(output)
+            else: value = parse_typed_output(output)
             if kind in DIRECT_EFFECT:
                 result = valid_generic(kind, value, attempt["nonce"], attempt["payload"], attempt["dedupe_key"])
                 if not result:
