@@ -101,6 +101,8 @@ grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
 grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" sync-support' scripts/fleet.sh
 grep -Fq 'HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml' scripts/fleet.sh
 grep -Fq 'export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"' scripts/fleet.sh
+grep -Fq 'cat "$AUTHORITY_SOURCE" > "$DOCKER_AUTHORITY"' scripts/fleet.sh
+! grep -Fq 'mv "$temporary" "$DOCKER_AUTHORITY"' scripts/fleet.sh
 grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" start' scripts/fleet.sh
 grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
 grep -Fq 'HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime' scripts/fleet.sh
