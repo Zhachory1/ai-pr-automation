@@ -88,6 +88,7 @@ install_native() {
     --service-user "$SERVICE_USER" --launcher "$LAUNCHER" --keys-file "$HERMES_API_KEYS_FILE" \
     --github-token-file "$GITHUB_READ_TOKEN_FILE" --repo-root "$ROOT"
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
+  install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
   [[ ! -x "$ROOT/bin/doc-writer-reconcile" ]] || install -m 0555 "$ROOT/bin/doc-writer-reconcile" "$SUPPORT_ROOT/doc-writer-reconcile"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-hermes.plist.template" "$PLIST" \

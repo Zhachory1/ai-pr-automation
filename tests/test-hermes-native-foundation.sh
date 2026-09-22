@@ -67,6 +67,7 @@ grep -Fq 'chmod 0444 "$installer"' scripts/hermes-native.sh
 # installer URL. Full install still keeps the digest gate.
 grep -Fq 'sync-support) HERMES_SUPPORT_ONLY=true install_native' scripts/hermes-native.sh
 grep -Fq 'scripts/configure-hermes-api.py' scripts/hermes-native.sh
+grep -Fq 'install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"' scripts/hermes-native.sh
 grep -Fq 'HERMES_API_KEYS_FILE=' scripts/hermes-native.sh
 grep -Fq '/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json' scripts/hermes-native.sh
 grep -Fq 'os.chown(args.keys_file, operator.pw_uid, operator.pw_gid)' scripts/configure-hermes-api.py
