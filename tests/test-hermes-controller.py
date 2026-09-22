@@ -90,6 +90,9 @@ class ControllerContractTest(unittest.TestCase):
     def test_direct_effect_output_is_exact_and_head_bound(self):
         nonce = "a" * 32; head = "b" * 40
         value = {"detail":"ok","nonce":nonce,"posted_ref":f"<!-- ai-pr-automation head={head} -->","status":"done"}
+        embedded = "analysis {} first\n" + json.dumps(value)
+        self.assertEqual(controller.parse_direct_output(embedded), value)
+        self.assertIsNone(controller.parse_direct_output(embedded + "\n" + json.dumps(dict(value, status="skipped"))))
         self.assertEqual(controller.valid_generic("pr-review", value, nonce, {}, f"o/r#1@{head}"), value)
         self.assertIsNone(controller.valid_generic("pr-review", dict(value, extra=True), nonce, {}, f"o/r#1@{head}"))
         self.assertIsNone(controller.valid_generic("pr-review", dict(value, posted_ref="wrong"), nonce, {}, f"o/r#1@{head}"))

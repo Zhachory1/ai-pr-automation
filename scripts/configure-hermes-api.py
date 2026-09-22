@@ -138,7 +138,10 @@ def main():
         home = args.hermes_home / "profiles" / profile
         if not home.is_dir() or home.is_symlink():
             fail(f"installed profile missing: {profile}")
-        rewrite_env(home / ".env", {"API_SERVER_KEY": data["profiles"][profile]}, user.pw_uid, user.pw_gid)
+        rewrite_env(home / ".env", {
+            "API_SERVER_KEY": data["profiles"][profile],
+            "GH_TOKEN": github_token,
+        }, user.pw_uid, user.pw_gid)
     command = ["sudo", "-u", args.service_user, "env", f"HOME={user.pw_dir}",
                f"HERMES_HOME={args.hermes_home}", str(args.launcher), "config", "set", "--force"]
     key, value = "gateway.api_server.max_concurrent_runs", "10"

@@ -8,6 +8,8 @@ export DOC_WRITER_STAGE_HOST="${DOC_WRITER_STAGE_HOST:-$SHARED_RUNTIME/doc-write
 export HANDOFF_ROOT="${HANDOFF_ROOT:-$SHARED_RUNTIME/safety-handoffs}"
 export HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 export GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token}"
+AUTHORITY_SOURCE="${HERMES_AUTHORITY_SOURCE_FILE:-${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}}"
+DOCKER_AUTHORITY="${HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml}"
 # Override stale pre-native values from .env with the shared runtime paths used by Compose.
 export PR_SAFETY_MERGED_PR_AUTHORS="${PR_SAFETY_MERGED_PR_AUTHORS:-roktfleet,brucerokt}"
 export PR_SAFETY_ALLOWED_ORGS="${PR_SAFETY_ALLOWED_ORGS:-ROKT}"
@@ -19,6 +21,13 @@ export PR_SAFETY_POLICY_DIGEST="${PR_SAFETY_POLICY_DIGEST:-$(shasum -a 256 "$ROO
 
 case "${1:-}" in
   up)
+    "$ROOT/scripts/hermes-authority.py" --file "$AUTHORITY_SOURCE" >/dev/null
+    install -d -m 0700 "$(dirname "$DOCKER_AUTHORITY")"
+    temporary="$DOCKER_AUTHORITY.tmp-$$"
+    cp "$AUTHORITY_SOURCE" "$temporary"
+    chmod 0644 "$temporary"
+    mv "$temporary" "$DOCKER_AUTHORITY"
+    export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"
     sudo "$ROOT/scripts/configure-hermes-role-env.sh"
     # Provision profile API keys/listener before Compose resolves its controller-only secret.
     sudo "$ROOT/scripts/hermes-native.sh" sync-support
