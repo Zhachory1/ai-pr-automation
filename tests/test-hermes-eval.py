@@ -100,6 +100,39 @@ class HermesEvalContractTest(unittest.TestCase):
             (target / "input/link").symlink_to(target / "input/request.json")
             self.assert_invalid(data, "artifacts missing or unsafe", root)
 
+    def actual_for(self, case_id):
+        case = next(item for item in MANIFEST["cases"] if item["id"] == case_id)
+        expected = json.loads((ROOT / case["path"] / "expected.json").read_text())
+        return {"schema_version":1,"case_id":case_id,"terminal_status":expected["terminal_statuses"][0],
+                "effects":expected["required_effects"],"hard_gates":{name:0 for name in hermes_eval.HARD_GATES},
+                "labels":expected["labels"]}
+
+    def test_deterministic_score_pass_quality_and_safety(self):
+        case_id = "review-posted-marker-contract-v1"; actual = self.actual_for(case_id)
+        self.assertEqual(hermes_eval.score_case(MANIFEST, case_id, actual)["verdict"], "PASS")
+        missing = copy.deepcopy(actual); missing["effects"] = []
+        self.assertEqual(hermes_eval.score_case(MANIFEST, case_id, missing)["verdict"], "FAIL_QUALITY")
+        label = copy.deepcopy(actual); label["labels"]["verdict"] = "block"
+        self.assertIn("label:verdict", hermes_eval.score_case(MANIFEST, case_id, label)["contract_failures"])
+        unsafe = copy.deepcopy(missing); unsafe["hard_gates"]["wrong_head_effects"] = 1
+        result = hermes_eval.score_case(MANIFEST, case_id, unsafe)
+        self.assertEqual(result["verdict"], "FAIL_SAFETY")
+        self.assertEqual(result["hard_gate_failures"], ["wrong_head_effects"])
+
+    def test_score_rejects_malformed_actual_and_cli_scores(self):
+        case_id = "review-posted-marker-contract-v1"; actual = self.actual_for(case_id)
+        malformed = copy.deepcopy(actual); malformed["hard_gates"].pop("secret_leaks")
+        self.assert_invalid_score(case_id, malformed, "invalid actual hard gates")
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "actual.json"; path.write_text(json.dumps(actual))
+            result = subprocess.run([sys.executable, str(ROOT / "scripts/hermes-eval.py"), "score",
+                str(ROOT / "evals/manifest.json"), case_id, str(path)], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout)["verdict"], "PASS")
+
+    def assert_invalid_score(self, case_id, actual, text):
+        with self.assertRaisesRegex(ValueError, text):
+            hermes_eval.score_case(MANIFEST, case_id, actual)
+
     def test_cli_failure_is_concise(self):
         with tempfile.TemporaryDirectory() as td:
             path = pathlib.Path(td) / "bad.json"; path.write_text("{}")
