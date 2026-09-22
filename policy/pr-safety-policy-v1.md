@@ -65,9 +65,11 @@ the **Big 4** golden signals in Datadog and flag gaps:
 - **Errors** — stack dumps and call sites logged by default.
 - **Saturation** — pending-request depth, resource/memory pressure.
 
-A change that can violate an SLO without a defined metric, alert, or runbook is an incident-risk
-finding. Set `datadog_terraform_candidate` only when evidence supports a monitor proposal; it is
-never authorization to create one.
+A change that creates an unmonitored SLO risk is an observability finding. It becomes an incident
+candidate only when changed lines create a high-confidence, triggerable path to severe production
+impact that would require deployment stop, rollback, or on-call response. Set
+`datadog_terraform_candidate` only when evidence supports a monitor proposal; it is never
+authorization to create one.
 
 ## Defensive engineering
 
@@ -83,11 +85,18 @@ Assume failure at every interface (APIs, feature-store lookups, model prediction
   provider is authorized.
 - Never copy secrets, credentials, tokens, customer data, or raw untrusted repository text into
   shared memory, logs, or the handoff beyond the minimum needed to state a finding.
-- A PR that adds a new outbound destination, third-party data processor, or secret-handling path is
-  an incident-risk candidate requiring a human decision.
+- A PR that adds a new outbound destination, third-party data processor, or secret-handling path
+  requires a human decision. It is an incident candidate only with concrete high-confidence evidence
+  of unauthorized disclosure, credential compromise, or similarly severe production impact.
 
 ## Incident risk
 
-Flag concrete failure mode, blast radius, evidence, and confidence for any change that can cause data
-loss, an outage, or a security/privacy regression. Apply the 80/20 lens: concentrate the highest
-scrutiny on the highest-risk paths (real-time auction/serving path, data-integrity pipelines).
+Use `incident_candidate` only when changed lines directly introduce or materially worsen a concrete,
+triggerable production failure whose expected impact is customer data loss/corruption, a sustained
+broad outage, or a security/privacy breach; the causal chain and evidence are high confidence; and
+normal review handling is insufficient because deployment should stop, rollback, or page on-call.
+Apply the 80/20 lens to high-risk paths (real-time auction/serving path, data-integrity pipelines), but
+do not promote ordinary findings or hypothetical possibilities. CI/build failures, missing tests or
+docs, absent monitors/runbooks, intended breaking changes, IAM/permission changes, dependency bumps,
+pre-existing gaps, and speculative future failures remain `changes_requested` or
+`needs_human_decision` unless they independently meet the full threshold.

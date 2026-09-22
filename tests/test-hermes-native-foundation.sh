@@ -86,6 +86,8 @@ done
 grep -Fq 'skills/pr-review/SKILL.md' agent-config/hermes/profiles/pr-review-v1/distribution.yaml
 grep -Fq 'Hermes Runs API override is authoritative' agent-config/hermes/profiles/pr-review-v1/SOUL.md
 grep -Fq 'posted_ref` must be that exact marker' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
+grep -Fq '`incident_candidate` is exceptional' agent-config/hermes/profiles/pr-safety-v1/SOUL.md
+grep -Fq 'normal review handling is insufficient' policy/pr-safety-policy-v1.md
 grep -Fq 'skills/pr-review-handler/SKILL.md' agent-config/hermes/profiles/pr-maintain-v1/distribution.yaml
 grep -Fq 'full-reply-autonomy mode' agent-config/hermes/profiles/pr-maintain-v1/SOUL.md
 grep -Fq 'Unattended scheduler mode' agent-config/hermes/profiles/pr-maintain-v1/skills/pr-review-handler/SKILL.md
