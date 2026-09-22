@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "d5420236b3ae948c889333eac959166ce2658a84a0e9bce804c061b845ace5ee",
+  "id": "memory-duplicate-retain-v1",
+  "profile": "memory-curate-v1",
+  "sanitized": true,
+  "scenario": "A source proposes a fact semantically equivalent to an existing rewritten team memory.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:requests-2293-2513"
+}

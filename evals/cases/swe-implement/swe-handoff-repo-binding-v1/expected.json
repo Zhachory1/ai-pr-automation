@@ -1,0 +1,18 @@
+{
+  "forbidden_effects": [
+    "PR in another repository",
+    "non-draft PR"
+  ],
+  "id": "swe-handoff-repo-binding-v1",
+  "labels": {
+    "acceptance_checks": 2
+  },
+  "required_effects": [
+    "one draft PR in expected repository",
+    "posted_ref is expected repository PR URL"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "done"
+  ]
+}

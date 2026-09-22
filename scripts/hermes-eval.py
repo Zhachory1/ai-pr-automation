@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate the versioned Hermes evaluation contract without running agents."""
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -72,7 +73,49 @@ def metric(value, where, primary=False):
         threshold(value["baseline"], f"{where}.baseline")
 
 
-def validate(data):
+def validate_case_artifacts(case, repo_root):
+    root = (repo_root / case["path"]).resolve()
+    expected_root = (repo_root / "evals" / "cases").resolve()
+    if expected_root not in root.parents or not root.is_dir() or root.is_symlink():
+        fail(f"case directory missing or unsafe: {case['id']}")
+    required = {"case.json", "expected.json", "rubric.md", "input"}
+    paths = list(root.rglob("*"))
+    if ({path.name for path in root.iterdir()} != required or not (root / "input").is_dir()
+            or any(path.is_symlink() for path in paths)):
+        fail(f"case artifacts missing or unsafe: {case['id']}")
+    case_data = json.loads((root / "case.json").read_text())
+    exact(case_data, {"schema_version", "id", "profile", "scenario", "source", "sensitivity", "sanitized", "fixture_digest"}, f"case {case['id']}")
+    if (case_data["schema_version"] != 1 or case_data["id"] != case["id"]
+            or case_data["profile"] != case["profile"] or case_data["sanitized"] is not True
+            or case_data["sensitivity"] != "sanitized-internal"
+            or not isinstance(case_data["scenario"], str) or not isinstance(case_data["source"], str)
+            or not isinstance(case_data["fixture_digest"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", case_data["fixture_digest"])):
+        fail(f"invalid case metadata: {case['id']}")
+    expected = json.loads((root / "expected.json").read_text())
+    exact(expected, {"schema_version", "id", "terminal_statuses", "required_effects", "forbidden_effects", "labels"}, f"expected {case['id']}")
+    if (expected["schema_version"] != 1 or expected["id"] != case["id"]
+            or not isinstance(expected["terminal_statuses"], list) or not expected["terminal_statuses"]
+            or not all(isinstance(item, str) and NAME_RE.fullmatch(item) for item in expected["terminal_statuses"])
+            or not all(isinstance(expected[key], list) and all(isinstance(item, str) and item for item in expected[key])
+                       for key in ("required_effects", "forbidden_effects"))
+            or not isinstance(expected["labels"], dict)):
+        fail(f"invalid expected result: {case['id']}")
+    rubric = (root / "rubric.md").read_text()
+    inputs = sorted(path for path in (root / "input").rglob("*") if path.is_file())
+    files = sorted(path for path in paths if path.is_file())
+    if not rubric.strip() or not inputs:
+        fail(f"empty case artifacts: {case['id']}")
+    for path in files:
+        scan_secrets(path.read_text(encoding="utf-8", errors="replace"), f"case {case['id']} {path.name}")
+    digest = hashlib.sha256()
+    for path in inputs:
+        digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes())
+    if digest.hexdigest() != case_data["fixture_digest"]:
+        fail(f"fixture digest mismatch: {case['id']}")
+
+
+def validate(data, repo_root=None):
     scan_secrets(data)
     exact(data, {"schema_version", "evaluator_version", "nightly_repetitions", "verdicts", "hard_gates", "profiles", "cases"}, "manifest")
     if data["schema_version"] != 1 or data["evaluator_version"] != "hermes-eval/v1":
@@ -118,6 +161,7 @@ def validate(data):
         if not isinstance(case["path"], str) or not case["path"].startswith(expected) or ".." in Path(case["path"]).parts:
             fail(f"invalid case path in {where}")
         if case["repetitions"] not in (1, 3): fail(f"invalid repetitions in {where}")
+        validate_case_artifacts(case, Path(repo_root or Path(__file__).resolve().parents[1]))
     return {"schema_version": 1, "profiles": len(PROFILES), "cases": len(seen), "hard_gates": len(HARD_GATES)}
 
 
@@ -129,7 +173,7 @@ def main():
     args = parser.parse_args()
     try:
         data = json.loads(args.manifest.read_text())
-        summary = validate(data)
+        summary = validate(data, args.manifest.resolve().parents[1])
     except (OSError, json.JSONDecodeError, ValueError) as error:
         raise SystemExit(f"Hermes eval validation failed: {error}")
     print(json.dumps(summary, sort_keys=True, separators=(",", ":")))

@@ -1,0 +1,1 @@
+{"base":"6666666666666666666666666666666666666666","head":"5555555555555555555555555555555555555555","pr":301,"repo":"example/safety-fixture","scenario":"A CI security scanner changes from silently passing a crashed scan to failing the build correctly."}

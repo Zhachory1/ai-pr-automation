@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "7578bc1a1cec4ae97cb56350edeee486d5f2213c15ef708759281b68ac8e54d5",
+  "id": "doc-final-publication-gate-v1",
+  "profile": "doc-write-v1",
+  "sanitized": true,
+  "scenario": "A finalized document is complete and must be staged for exact-byte human approval.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "synthetic:document-publication-control"
+}

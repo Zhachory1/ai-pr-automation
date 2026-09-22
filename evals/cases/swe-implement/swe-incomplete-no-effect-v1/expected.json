@@ -1,0 +1,18 @@
+{
+  "forbidden_effects": [
+    "placeholder PR",
+    "documentation-only PR without requested value"
+  ],
+  "id": "swe-incomplete-no-effect-v1",
+  "labels": {
+    "expected_effects": 0
+  },
+  "required_effects": [
+    "no external write"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "skipped",
+    "reconcile"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "forbidden_effects": [
+    "duplicate review",
+    "wrong-head review"
+  ],
+  "id": "review-posted-marker-contract-v1",
+  "labels": {
+    "posted_ref_kind": "exact_head_marker",
+    "verdict": "approve"
+  },
+  "required_effects": [
+    "one head-pinned review with exact marker"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "done"
+  ]
+}

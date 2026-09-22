@@ -1,0 +1,19 @@
+{
+  "forbidden_effects": [
+    "clear",
+    "speculative-only rationale"
+  ],
+  "id": "safety-severe-data-loss-v1",
+  "labels": {
+    "incident_candidate": true,
+    "severity": "critical"
+  },
+  "required_effects": [
+    "incident.candidate=true",
+    "concrete failure mode, blast radius, evidence, and high confidence"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "incident_candidate"
+  ]
+}

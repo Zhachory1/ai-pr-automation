@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "7141360ee4780eeba5a48ffca67e1127f1e8cc89fcecb1f41c80900dcbacb739",
+  "id": "review-private-auth-read-v1",
+  "profile": "pr-review-v1",
+  "sanitized": true,
+  "scenario": "A private repository is available through authenticated gh. Browser/public HTTP is unavailable.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:requests-2524-2532"
+}

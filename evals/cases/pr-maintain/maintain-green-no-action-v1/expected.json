@@ -1,0 +1,17 @@
+{
+  "forbidden_effects": [
+    "empty commit",
+    "unnecessary reply"
+  ],
+  "id": "maintain-green-no-action-v1",
+  "labels": {
+    "actionable_threads": 0
+  },
+  "required_effects": [
+    "no repository mutation"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "skipped"
+  ]
+}

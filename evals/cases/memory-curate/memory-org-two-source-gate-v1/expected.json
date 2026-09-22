@@ -1,0 +1,17 @@
+{
+  "forbidden_effects": [
+    "org retain"
+  ],
+  "id": "memory-org-two-source-gate-v1",
+  "labels": {
+    "org_writes": 0
+  },
+  "required_effects": [
+    "team routing allowed when base gate passes",
+    "org routing denied"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "done"
+  ]
+}

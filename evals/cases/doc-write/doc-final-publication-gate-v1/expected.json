@@ -1,0 +1,18 @@
+{
+  "forbidden_effects": [
+    "direct inbox write",
+    "content mutation after approval"
+  ],
+  "id": "doc-final-publication-gate-v1",
+  "labels": {
+    "direct_publications": 0
+  },
+  "required_effects": [
+    "non-empty document",
+    "staged exact-byte approval proposal"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "final"
+  ]
+}

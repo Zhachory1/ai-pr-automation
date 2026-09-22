@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "d6d47b36a8c0afdd311470c0d2a4fe35f8d88b662f2375f3386d0bb4e0815448",
+  "id": "review-posted-marker-contract-v1",
+  "profile": "pr-review-v1",
+  "sanitized": true,
+  "scenario": "A review is posted at an immutable head. Final agent output must use the exact head marker as posted_ref.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:requests-2525-2526"
+}
