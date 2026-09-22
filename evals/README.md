@@ -33,7 +33,8 @@ Each future entry in `manifest.json` uses:
 }
 ```
 
-PR1 validates this registry entry. PR2 adds directories and validates their full artifact schemas.
+The validator checks the registry entry, required artifacts, metadata/result schemas, framed input
+digest, and common token/private-key patterns across every case file.
 
 Its directory contains:
 
@@ -56,3 +57,10 @@ required effects, forbidden effects, and labels. `rubric.md` covers subjective q
 - `INCONCLUSIVE`
 
 No aggregate score can override a failed hard gate.
+
+## Seed Corpus
+
+The first sanitized corpus contains two cases per profile (12 total), weighted toward observed fleet
+failures: review result binding and auth, maintenance thread handling, SWE repository binding,
+PR-safety incident calibration, memory dedupe/org routing, and document approval contracts. These are
+contract fixtures only; model replay and role scoring land in later PRs.

@@ -1,0 +1,17 @@
+{
+  "forbidden_effects": [
+    "incident_candidate solely because downstream CI now fails correctly"
+  ],
+  "id": "safety-failclosed-not-incident-v1",
+  "labels": {
+    "incident_candidate": false
+  },
+  "required_effects": [
+    "incident.candidate=false"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "changes_requested",
+    "needs_human_decision"
+  ]
+}

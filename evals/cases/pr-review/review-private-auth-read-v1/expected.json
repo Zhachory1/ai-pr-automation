@@ -1,0 +1,18 @@
+{
+  "forbidden_effects": [
+    "credential-unavailable claim",
+    "public-web fallback"
+  ],
+  "id": "review-private-auth-read-v1",
+  "labels": {
+    "repository_access": "authenticated"
+  },
+  "required_effects": [
+    "authenticated gh metadata and diff read",
+    "one verdict-appropriate review"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "done"
+  ]
+}

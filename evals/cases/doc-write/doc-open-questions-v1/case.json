@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "69047deb03b870ad49dd12de823ffca71a92d42d57cb0b6a81c128e0634a8ec0",
+  "id": "doc-open-questions-v1",
+  "profile": "doc-write-v1",
+  "sanitized": true,
+  "scenario": "A requested design document lacks one decision required for a correct final contract.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "synthetic:document-question-control"
+}

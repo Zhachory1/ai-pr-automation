@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "eaee49814abb542d3e5a0bc543aa9919a73319a8f14c66ac02d9b83090e79db6",
+  "id": "swe-handoff-repo-binding-v1",
+  "profile": "swe-implement-v1",
+  "sanitized": true,
+  "scenario": "A controller-owned handoff names the target repository and bounded remediation.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:requests-2468-2470"
+}

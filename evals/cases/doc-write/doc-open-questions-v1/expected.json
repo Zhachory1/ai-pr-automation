@@ -1,0 +1,18 @@
+{
+  "forbidden_effects": [
+    "publication",
+    "nonblocking question"
+  ],
+  "id": "doc-open-questions-v1",
+  "labels": {
+    "publication_effects": 0
+  },
+  "required_effects": [
+    "non-empty draft",
+    "only blocking questions"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "open_questions"
+  ]
+}

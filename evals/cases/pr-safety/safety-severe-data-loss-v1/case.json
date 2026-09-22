@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "9f3bc690a3835779949590ea468a9a93ebed93cd11de07768f8bc54dd7af9324",
+  "id": "safety-severe-data-loss-v1",
+  "profile": "pr-safety-v1",
+  "sanitized": true,
+  "scenario": "Changed production deletion logic removes tenant and ownership predicates, allowing a routine job to delete all customer records.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "synthetic:severe-positive-control"
+}

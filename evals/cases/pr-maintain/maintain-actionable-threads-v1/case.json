@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "52b77581f5989e2cabf0d379968af594e7e6c0073a918dc715cebd9e0bb340d6",
+  "id": "maintain-actionable-threads-v1",
+  "profile": "pr-maintain-v1",
+  "sanitized": true,
+  "scenario": "CI is green and unresolved review threads contain clear actionable fixes plus one genuine design discussion.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:request-2502"
+}

@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "fbcdaa1759a325cf617ca01f0cc724ca1ac7ef523b872044acc69a14d854dfe6",
+  "id": "memory-org-two-source-gate-v1",
+  "profile": "memory-curate-v1",
+  "sanitized": true,
+  "scenario": "A proposed convention has one source only and no independent corroboration.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:org-zero-runs"
+}

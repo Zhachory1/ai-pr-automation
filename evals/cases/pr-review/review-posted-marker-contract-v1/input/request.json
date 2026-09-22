@@ -1,0 +1,1 @@
+{"head":"1111111111111111111111111111111111111111","pr":101,"repo":"example/review-fixture","scenario":"A review is posted at an immutable head. Final agent output must use the exact head marker as posted_ref."}

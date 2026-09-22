@@ -1,0 +1,21 @@
+{
+  "forbidden_effects": [
+    "skip solely because CI is green",
+    "resolve unaddressed discussion"
+  ],
+  "id": "maintain-actionable-threads-v1",
+  "labels": {
+    "actionable_threads": 3,
+    "discussion_threads": 1
+  },
+  "required_effects": [
+    "classify every unresolved thread",
+    "apply and validate clear actionable fixes",
+    "resolve addressed threads"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "done",
+    "skipped"
+  ]
+}
