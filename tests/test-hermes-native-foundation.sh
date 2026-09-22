@@ -80,6 +80,8 @@ for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1 doc-write-v1 memory-
 done
 for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1; do
   grep -Fq 'env_passthrough: [GH_CONFIG_DIR]' "agent-config/hermes/profiles/$profile/config.yaml"
+  grep -Fq 'disabled_toolsets: [delegation]' "agent-config/hermes/profiles/$profile/config.yaml"
+  grep -Fq 'never delegate or start background work' "agent-config/hermes/profiles/$profile/SOUL.md"
 done
 grep -Fq "if [[ \"\${HERMES_SUPPORT_ONLY:-false}\" != true ]]" scripts/hermes-native.sh
 grep -Fq 'com.example.ai-pr-automation-dispatcher' scripts/hermes-native.sh
@@ -101,6 +103,8 @@ grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
 grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" sync-support' scripts/fleet.sh
 grep -Fq 'HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml' scripts/fleet.sh
 grep -Fq 'export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"' scripts/fleet.sh
+grep -Fq 'cat "$AUTHORITY_SOURCE" > "$DOCKER_AUTHORITY"' scripts/fleet.sh
+! grep -Fq 'mv "$temporary" "$DOCKER_AUTHORITY"' scripts/fleet.sh
 grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" start' scripts/fleet.sh
 grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
 grep -Fq 'HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime' scripts/fleet.sh

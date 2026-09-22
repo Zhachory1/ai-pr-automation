@@ -23,10 +23,10 @@ case "${1:-}" in
   up)
     "$ROOT/scripts/hermes-authority.py" --file "$AUTHORITY_SOURCE" >/dev/null
     install -d -m 0700 "$(dirname "$DOCKER_AUTHORITY")"
-    temporary="$DOCKER_AUTHORITY.tmp-$$"
-    cp "$AUTHORITY_SOURCE" "$temporary"
-    chmod 0644 "$temporary"
-    mv "$temporary" "$DOCKER_AUTHORITY"
+    [[ ! -L "$DOCKER_AUTHORITY" && ( ! -e "$DOCKER_AUTHORITY" || -f "$DOCKER_AUTHORITY" ) ]] \
+      || { echo "invalid Docker authority mirror: $DOCKER_AUTHORITY" >&2; exit 2; }
+    cat "$AUTHORITY_SOURCE" > "$DOCKER_AUTHORITY"
+    chmod 0644 "$DOCKER_AUTHORITY"
     export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"
     sudo "$ROOT/scripts/configure-hermes-role-env.sh"
     # Provision profile API keys/listener before Compose resolves its controller-only secret.

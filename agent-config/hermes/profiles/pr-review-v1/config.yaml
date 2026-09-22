@@ -15,6 +15,7 @@ auxiliary:
 skills:
   creation_nudge_interval: 0
 agent:
+  disabled_toolsets: [delegation]
   max_turns: 60
   run_budget_seconds: 1800
   api_max_retries: 0
