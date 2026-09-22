@@ -813,7 +813,7 @@ def render(flash: str = "", fragment: bool = False) -> str:
         recent = query(
             "SELECT id, kind, status, coalesce(run_id,'') AS run_id, dedupe_key, coalesce(fail_response,''), "
             "to_char(finished_at,'MM-DD HH24:MI') "
-            "FROM requests WHERE status IN ('done','failed','reconcile') "
+            "FROM requests WHERE status IN ('done','failed','skipped','superseded','reconcile') "
             "ORDER BY finished_at DESC NULLS LAST LIMIT 20")
         human_review = query(
             "SELECT d.id AS id, d.request_id AS request_id, "

@@ -40,8 +40,9 @@ class StatusServerTest(unittest.TestCase):
             [["6", "doc-write", "done", "run-finished", "doc:6", "", "09-18 10:00"]],
             [], [], [], [], [], [],
         ]
-        with patch.object(status_server, "query", side_effect=rows):
+        with patch.object(status_server, "query", side_effect=rows) as query:
             page = status_server.render()
+        self.assertIn("'skipped','superseded'", query.call_args_list[2].args[0])
         self.assertIn("Runs &amp; Queue", page)
         self.assertIn("run-&lt;active&gt;", page)
         self.assertIn("run-finished", page)
