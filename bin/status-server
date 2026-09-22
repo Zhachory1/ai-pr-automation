@@ -470,9 +470,15 @@ def swe_implement_handoff(handoff_path: str) -> str:
         raise ValueError("HANDOFF_ROOT not configured")
     rp = os.path.realpath(handoff_path)
     root = os.path.realpath(HANDOFF_ROOT)
-    if not (rp == root or rp.startswith(root + os.sep)) or not rp.endswith(".md"):
+    if (not (rp == root or rp.startswith(root + os.sep)) or not rp.endswith(".md")
+            or os.path.islink(handoff_path) or not os.path.isfile(rp)):
         raise ValueError("handoff path not under HANDOFF_ROOT")
-    return _swe_enqueue({"source": "handoff", "handoff_path": rp, "no_pr": False},
+    with open(rp, encoding="utf-8", errors="replace") as handoff:
+        identity = handoff.read(4096)
+    match = re.search(r"(?m)^repo: ([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)$", identity)
+    if not match:
+        raise ValueError("handoff repository identity missing")
+    return _swe_enqueue({"source": "handoff", "handoff_path": rp, "repo": match.group(1), "no_pr": False},
                         f"handoff:{os.path.basename(rp)}")
 
 
