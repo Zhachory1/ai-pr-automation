@@ -19,6 +19,7 @@ def load(name, path):
 
 
 config = load("configure_hermes_api", ROOT / "scripts/configure-hermes-api.py")
+conformance = load("hermes_api_conformance", ROOT / "scripts/hermes-api-conformance.py")
 
 
 class FakeHermes(BaseHTTPRequestHandler):
@@ -62,7 +63,29 @@ class FakeHermes(BaseHTTPRequestHandler):
         self.reply(202, {"run_id": run_id, "status": "started", "replayed": False})
 
 
+class FlakyAuthClient:
+    def __init__(self, keys):
+        self.keys = keys; self.ready_timeouts = set(keys); self.auth_timeout = True; self.correct_seen = set()
+
+    def request(self, method, path, key):
+        profile = path.split("/")[2]
+        if key == self.keys[profile]:
+            if profile in self.ready_timeouts:
+                self.ready_timeouts.remove(profile); raise TimeoutError("profile warming")
+            self.correct_seen.add(profile); return 200, {}, {}
+        if self.auth_timeout:
+            self.auth_timeout = False; raise TimeoutError("auth route warming")
+        return 401, {}, {}
+
+
 class FoundationTest(unittest.TestCase):
+    def test_readiness_warms_every_profile_and_auth_retries_timeout(self):
+        client = FlakyAuthClient(FakeHermes.keys)
+        keys = {"profiles": FakeHermes.keys}
+        conformance.wait_ready(client, keys, 5)
+        self.assertEqual(client.correct_seen, set(FakeHermes.keys))
+        conformance.auth_probe(client, keys, 2)
+
     def test_key_bundle_is_stable_unique_and_private(self):
         with tempfile.TemporaryDirectory() as td:
             parent = pathlib.Path(td) / "private"; parent.mkdir(mode=0o700)

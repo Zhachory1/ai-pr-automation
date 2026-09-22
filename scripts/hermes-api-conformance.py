@@ -46,31 +46,45 @@ def load_keys(path):
 
 
 def wait_ready(client, keys, seconds):
-    profile, key = next(iter(keys["profiles"].items()))
-    deadline = time.time() + seconds
-    last = None
+    pending = dict(keys["profiles"]); deadline = time.time() + seconds; last = {}
+    while pending and time.time() < deadline:
+        for profile, key in list(pending.items()):
+            try:
+                status, _, _ = client.request("GET", f"/p/{profile}/v1/models", key)
+                if status == 200:
+                    del pending[profile]
+                else:
+                    last[profile] = f"HTTP {status}"
+            except (urllib.error.URLError, TimeoutError) as error:
+                last[profile] = str(getattr(error, "reason", error))
+        if pending:
+            time.sleep(0.5)
+    if pending:
+        detail = ", ".join(f"{profile}: {last.get(profile, 'no response')}" for profile in pending)
+        raise SystemExit(f"Hermes API profiles not ready within {seconds}s: {detail}")
+
+
+def retry_get(client, path, key, seconds):
+    deadline = time.time() + seconds; last = None
     while time.time() < deadline:
         try:
-            status, _, _ = client.request("GET", f"/p/{profile}/v1/models", key)
-            if status == 200:
-                return
-            last = f"HTTP {status}"
-        except urllib.error.URLError as error:
-            last = str(error.reason)
-        time.sleep(0.5)
-    raise SystemExit(f"Hermes API not ready within {seconds}s: {last}")
+            return client.request("GET", path, key)
+        except (urllib.error.URLError, TimeoutError) as error:
+            last = str(getattr(error, "reason", error))
+            time.sleep(0.25)
+    raise SystemExit(f"Hermes API probe timed out after {seconds}s: {path}: {last}")
 
 
-def auth_probe(client, keys):
+def auth_probe(client, keys, retry_seconds=15):
     profiles = keys["profiles"]
     for profile, key in profiles.items():
-        status, _, _ = client.request("GET", f"/p/{profile}/v1/models", key)
+        status, _, _ = retry_get(client, f"/p/{profile}/v1/models", key, retry_seconds)
         if status != 200:
             raise SystemExit(f"correct key failed for {profile}: HTTP {status}")
         wrong_keys = [candidate for other, candidate in profiles.items() if other != profile]
         wrong_keys.append("definitely-wrong-profile-key-000000000000000000")
         for wrong in wrong_keys:
-            status, _, _ = client.request("GET", f"/p/{profile}/v1/models", wrong)
+            status, _, _ = retry_get(client, f"/p/{profile}/v1/models", wrong, retry_seconds)
             if status != 401:
                 raise SystemExit(f"cross-profile/wrong key did not fail closed for {profile}: HTTP {status}")
     print(f"auth conformance passed for {len(profiles)} profiles")
@@ -127,11 +141,13 @@ def main():
     parser.add_argument("--run-profile", help="optional paid no-effect run probe")
     parser.add_argument("--run-timeout", type=int, default=180)
     parser.add_argument("--wait-seconds", type=int, default=0)
+    parser.add_argument("--probe-retry-seconds", type=int, default=15)
+    parser.add_argument("--request-timeout", type=int, default=5)
     args = parser.parse_args()
-    keys = load_keys(args.keys_file); client = Client(args.base_url)
+    keys = load_keys(args.keys_file); client = Client(args.base_url, args.request_timeout)
     if args.wait_seconds:
         wait_ready(client, keys, args.wait_seconds)
-    auth_probe(client, keys)
+    auth_probe(client, keys, args.probe_retry_seconds)
     if args.run_profile:
         run_probe(client, keys, args.run_profile, args.run_timeout)
 
