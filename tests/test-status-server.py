@@ -125,6 +125,19 @@ class StatusServerTest(unittest.TestCase):
         self.assertEqual(status_server.findings_html('{"severity": 1}'), '{&quot;severity&quot;: 1}')
         self.assertIn('1 — x.py:12', status_server.findings_html('[{"file":"x.py","line":12,"severity":1}]'))
 
+    def test_swe_handoff_binds_repository_from_controller_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            handoff = pathlib.Path(td) / "handoff.md"
+            handoff.write_text("<!-- pr-safety identity\noperation_id: op\nrepo: ROKT/ml\npr: 7\n-->\n")
+            with patch.object(status_server, "HANDOFF_ROOT", td), \
+                    patch.object(status_server, "_swe_enqueue", return_value="queued") as enqueue:
+                self.assertEqual(status_server.swe_implement_handoff(str(handoff)), "queued")
+            self.assertEqual(enqueue.call_args.args[0], {
+                "source":"handoff", "handoff_path":os.path.realpath(handoff), "repo":"ROKT/ml", "no_pr":False})
+            handoff.write_text("missing identity\n")
+            with patch.object(status_server, "HANDOFF_ROOT", td), self.assertRaises(ValueError):
+                status_server.swe_implement_handoff(str(handoff))
+
     def test_human_review_write_uses_separate_local_table(self):
         with patch.object(status_server, "_psql", return_value=SimpleNamespace(returncode=0, stdout="17\n")) as psql:
             self.assertEqual(status_server.update_human_review_state(17, "reviewed"), "reviewed human-review #17")
