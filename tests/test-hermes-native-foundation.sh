@@ -98,6 +98,8 @@ grep -Fq 'normal review handling is insufficient' policy/pr-safety-policy-v1.md
 grep -Fq 'skills/pr-review-handler/SKILL.md' agent-config/hermes/profiles/pr-maintain-v1/distribution.yaml
 grep -Fq 'full-reply-autonomy mode' agent-config/hermes/profiles/pr-maintain-v1/SOUL.md
 grep -Fq 'Unattended scheduler mode' agent-config/hermes/profiles/pr-maintain-v1/skills/pr-review-handler/SKILL.md
+grep -Fq 'top-level review body' agent-config/hermes/profiles/pr-maintain-v1/skills/pr-review-handler/SKILL.md
+grep -Fq 'zero unresolved threads never means zero feedback' agent-config/hermes/profiles/pr-maintain-v1/SOUL.md
 cmp -s agent-config/skills/pr-review-handler/SKILL.md agent-config/hermes/profiles/pr-maintain-v1/skills/pr-review-handler/SKILL.md
 grep -Fq "if [[ \"\${HERMES_SUPPORT_ONLY:-false}\" != true ]]" scripts/hermes-native.sh
 grep -Fq 'com.example.ai-pr-automation-dispatcher' scripts/hermes-native.sh
