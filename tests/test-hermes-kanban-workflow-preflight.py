@@ -43,7 +43,8 @@ def request_review(conn,key,reviewer,**kw): tasks[key].update(status="review",as
 def claim_review_task(conn,key,**kw): return SimpleNamespace(current_run_id=2)
 ''')
         catalog = install / "hermes_cli/models_catalog_static.py"
-        catalog.write_text("MODELS=['claude-sonnet-5','claude-haiku-4-5-20251001']\n")
+        catalog.write_text("\"\"\"Catalog with mixed 'single' and \\\"double\\\" quotes.\"\"\"\n"
+                           "MODELS=['claude-sonnet-5','claude-haiku-4-5-20251001']\n")
         (install / "hermes_cli/kanban_parser.py").write_text("FLAGS=['--model','--provider']\n")
         (install / "tools/kanban_tools_schemas.py").write_text("TOOLS=" + repr(preflight.REQUIRED_TOOL_NAMES) + "\n")
         defaults = {"dispatch_in_gateway":True,"review_dispatch":True,"dispatch_interval_seconds":60,

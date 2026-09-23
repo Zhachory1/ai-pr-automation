@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only feasibility check for a Kanban-backed PR Risk Council."""
 import argparse
+import ast
 import json
 import os
 import re
@@ -99,9 +100,12 @@ def runtime_report(home, install, profiles):
     schemas = install / "tools/kanban_tools_schemas.py"
     for path in (catalog, defaults, parser, schemas):
         if not path.is_file() or path.is_symlink(): fail(f"runtime contract file missing or unsafe: {path.name}")
-    model_ids = set(re.findall(r'["\']([^"\']+)["\']', catalog.read_text()))
-    if any(value["model"] not in model_ids for value in profiles.values()):
-        fail("workflow model missing from pinned catalog")
+    model_tree = ast.parse(catalog.read_text(), filename=str(catalog))
+    model_ids = {node.value for node in ast.walk(model_tree)
+                 if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+    missing_models = sorted({value["model"] for value in profiles.values()} - model_ids)
+    if missing_models:
+        fail(f"workflow model missing from pinned catalog: {', '.join(missing_models)}")
     parser_source, schema_source = parser.read_text(), schemas.read_text()
     if "--model" not in parser_source or "--provider" not in parser_source: fail("per-task model override support missing")
     if any(name not in schema_source for name in REQUIRED_TOOL_NAMES): fail("required Kanban tool missing")
