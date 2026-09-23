@@ -165,11 +165,17 @@ def task_evidence(kb, conn, task_id, role, profile):
     comments, attachments = kb.list_comments(conn, task_id), kb.list_attachments(conn, task_id)
     completed = [run for run in runs if run.outcome == "completed"]
     metadata = completed[-1].metadata if completed else None
+    worker_comments = [comment for comment in comments if comment.author == profile and comment.body.strip()]
+    structured = valid_metadata(metadata, role)
+    comment_fallback = (role != "verification" and any(len(comment.body.strip()) >= 40 for comment in worker_comments)
+                        and isinstance(metadata, dict) and set(metadata) == {"worker_session_id"})
     verified = (task is not None and task.status == "done" and len(runs) == 1 and len(completed) == 1
-                and completed[0].profile == profile and any(comment.author == profile for comment in comments)
-                and not attachments and valid_metadata(metadata, role))
+                and completed[0].profile == profile and bool(worker_comments) and not attachments
+                and (structured or comment_fallback))
     return {"status":None if task is None else task.status,"attempts":len(runs),"comments":len(comments),
-            "attachments":len(attachments),"verified":verified,"metadata":metadata}
+            "attachments":len(attachments),"verified":verified,"structured_metadata":structured,
+            "handoff_mode":"metadata" if structured else "comment" if comment_fallback else "invalid",
+            "metadata":metadata}
 
 
 def status(home, install):
