@@ -96,20 +96,20 @@ Do not rotate by editing bundle in place while attempts submit.
 
 ## Multi-agent workflow feasibility
 
-Before changing existing Hermes profiles, run the read-only PR Risk Council preflight as the service
-account:
+Run the read-only Kanban PR Risk Council preflight as the service account:
 
 ```bash
 sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
-  python3 scripts/hermes-bot-workflow-preflight.py \
+  python3 scripts/hermes-kanban-workflow-preflight.py \
   --hermes-home /Users/hermes-agent/.hermes \
   --install-dir /Users/hermes-agent/.hermes/hermes-agent \
-  --contract agent-config/hermes/workflows/pr-risk-council.json
+  --contract agent-config/hermes/workflows/pr-risk-council-kanban.json
 ```
 
-It validates six existing profiles, Sonnet/Haiku model identifiers, Bot/group runtime methods and
-limits, absent MCP config, and projected hosted-room tool policy. It makes no profile writes, model
-calls, messages, group changes, database calls, or network calls.
+It validates six source profiles and descriptions, Sonnet 5/Haiku 4.5 identifiers, Kanban board,
+graph, dispatcher, review, comment/handoff, per-task model override, and circuit-breaker contracts.
+It creates one isolated temporary SQLite fixture to prove graph, comment, handoff, dependency promotion,
+and review transitions. It makes no service-profile, service-board, model, GitHub, or network changes.
 
 ## Authority and producers
 
@@ -140,27 +140,12 @@ scripts/fleet.sh down
 runner binaries. Source artifacts remain in repository only for bounded rollback/audit during bake;
 normal lifecycle cannot start them.
 
-## Read-only PR Risk Council trial
+## Superseded Bot Mode prototype
 
-Hermes already carries general `orchestrator`, `reviewer`, `security-engineer`,
-`site-reliability-engineer`, `technical-architect`, and `verifier` profiles. Configure those existing
-profiles as Bot Mode participants without changing fleet effect profiles:
-
-```bash
-sudo scripts/hermes-native.sh down
-sudo scripts/hermes-native.sh sync-workflows
-sudo scripts/hermes-native.sh up
-# rollback: down, restore-workflows, up
-```
-
-The orchestrator uses `claude-sonnet-5`; five specialists use
-`claude-haiku-4-5-20251001`. The command snapshots existing profile YAML, then changes model/provider,
-sets `agent.bot_mode_protocol`, adds Bot Mode identity metadata, and sets the API-server toolset to
-`no_mcp`; hosted group turns therefore receive only Hermes' verified text-only `bot_room` capability.
-It refuses to modify loaded gateways, unsafe profile files, missing profiles, or an existing un-restored
-backup. The root lifecycle wrapper performs profile file changes as `hermes-agent`, not as root.
-Apply failure restores every original file. Group creation and live delivery remain a separate
-explicit feasibility step.
+The earlier `sync-workflows` Bot Mode profile-mutation path was merged but never activated. Do not run
+it for the PR Risk Council. Kanban now owns workflow orchestration; Bot Mode remains a possible future
+free-form debate layer. The prototype configurator stays only until the isolated Kanban canary and
+rollback pass, then is removed in cleanup.
 
 ## Validation
 
