@@ -33,7 +33,7 @@ class BotWorkflowPreflightTest(unittest.TestCase):
             "API='api_server'\nBOT='bot_room'\n")
         (install / "tools/bot_mode_dm.py").write_text("MESSAGE_AGENT_TOOL_NAME='message_agent'\n")
         (install / "hermes_cli/models_catalog_static.py").write_text(
-            "MODELS=['claude-sonnet-4-6','claude-haiku-4-5-20251001']\n")
+            "MODELS=['claude-sonnet-5','claude-haiku-4-5-20251001']\n")
         venv = install / "venv/bin"; venv.mkdir(parents=True); (venv / "python").symlink_to(sys.executable)
         return home, install
 
@@ -50,7 +50,7 @@ class BotWorkflowPreflightTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home, install = self.fixture(pathlib.Path(td))
             result = preflight.preflight(home, install, CONTRACT)
-        self.assertEqual(result["models"]["orchestrator"], "claude-sonnet-4-6")
+        self.assertEqual(result["models"]["orchestrator"], "claude-sonnet-5")
         self.assertEqual({model for name, model in result["models"].items() if name != "orchestrator"},
                          {"claude-haiku-4-5-20251001"})
         self.assertTrue(all(toolsets == ["bot_room"] for toolsets in result["toolsets"].values()))

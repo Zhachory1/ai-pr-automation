@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
-MODEL_RE = re.compile(r"^claude-(?:sonnet-4-6|haiku-4-5-20251001)$")
+MODEL_RE = re.compile(r"^claude-(?:sonnet-5|haiku-4-5-20251001)$")
 REQUIRED_METHODS = {"groups.capabilities", "groups.create", "groups.state", "groups.send",
                     "groups.log", "groups.stop", "groups.retry", "groups.approve"}
 
@@ -32,7 +32,7 @@ def contract(path):
         if not PROFILE_RE.fullmatch(name) or not isinstance(value, dict) or set(value) != {"title", "model"} \
                 or not isinstance(value["title"], str) or not MODEL_RE.fullmatch(value["model"]):
             fail(f"invalid profile contract: {name}")
-    if profiles.get("orchestrator", {}).get("model") != "claude-sonnet-4-6" \
+    if profiles.get("orchestrator", {}).get("model") != "claude-sonnet-5" \
             or any(value["model"] != "claude-haiku-4-5-20251001"
                    for name, value in profiles.items() if name != "orchestrator"):
         fail("model cost policy changed")
