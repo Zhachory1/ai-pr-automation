@@ -78,7 +78,9 @@ def complete_task(conn,key,**kw):
             self.assertTrue(all(mid["tasks"][role]["verified"] for role in council.SPECIALISTS))
             self.assertEqual(mid["tasks"]["verification"]["status"],"ready")
             task=setup["tasks"]["verification"]; kb.add_comment(None,task,council.VERIFIER,"synthesizing")
-            kb.complete_task(None,task,metadata=self.metadata("verification"))
+            verifier_metadata=self.metadata("verification")
+            verifier_metadata["members_completed"]=[setup["tasks"][role] for role in council.SPECIALISTS]
+            kb.complete_task(None,task,metadata=verifier_metadata)
             final=council.status(home,install); self.assertTrue(final["terminal"]); self.assertTrue(final["verified"])
             self.assertTrue(council.cleanup(home,install)["archived"])
 
@@ -102,7 +104,7 @@ def complete_task(conn,key,**kw):
     def test_metadata_contract_rejects_incomplete_handoffs(self):
         self.assertFalse(council.valid_metadata({"workflow_id":council.WORKFLOW_ID,
             "artifact_digest":council.ARTIFACT_DIGEST,"external_effects":0}, "security"))
-        verifier=self.metadata("verification"); verifier["members_completed"]=["review"]
+        verifier=self.metadata("verification"); verifier["consensus"]=True
         self.assertFalse(council.valid_metadata(verifier,"verification"))
 
     def test_profile_policy_mismatch_fails_before_board(self):
