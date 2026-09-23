@@ -101,7 +101,11 @@ def complete_task(conn,key,**kw):
             result=council.setup(home,install)
             self.assertTrue(result["resumed"]); self.assertEqual(len(result["tasks"]),5)
 
-    def test_metadata_contract_rejects_incomplete_handoffs(self):
+    def test_metadata_contract_normalizes_optional_empty_lists_but_rejects_missing_evidence(self):
+        specialist=self.metadata("security"); specialist.pop("dissent"); specialist.pop("residual_risk")
+        self.assertTrue(council.valid_metadata(specialist,"security"))
+        verifier=self.metadata("verification"); verifier.pop("dissent"); verifier.pop("members_failed")
+        self.assertTrue(council.valid_metadata(verifier,"verification"))
         self.assertFalse(council.valid_metadata({"workflow_id":council.WORKFLOW_ID,
             "artifact_digest":council.ARTIFACT_DIGEST,"external_effects":0}, "security"))
         verifier=self.metadata("verification"); verifier["consensus"]=True

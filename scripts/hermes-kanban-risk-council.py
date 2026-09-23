@@ -151,11 +151,13 @@ def valid_metadata(metadata, role):
     if role != "verification":
         return (metadata.get("role") == role and metadata.get("verdict") in {"clear","findings","needs_human_decision","inconclusive"}
                 and metadata.get("confidence") in {"low","medium","high"}
-                and all(isinstance(metadata.get(key), list) for key in ("claims","evidence","dissent","residual_risk")))
+                and all(isinstance(metadata.get(key), list) for key in ("claims","evidence"))
+                and all(isinstance(metadata.get(key, []), list) for key in ("dissent","residual_risk")))
     return (metadata.get("verdict") in {"approve","changes_requested","needs_human_decision","inconclusive"}
             and all(isinstance(metadata.get(key), list) for key in
-                    ("material_findings","consensus","dissent","evidence","members_completed","members_failed"))
-            and metadata["members_failed"] == [])
+                    ("material_findings","consensus","evidence","members_completed"))
+            and all(isinstance(metadata.get(key, []), list) for key in ("dissent","members_failed"))
+            and metadata.get("members_failed", []) == [])
 
 
 def task_evidence(kb, conn, task_id, role, profile):
