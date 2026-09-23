@@ -4,7 +4,7 @@
   "profiles": {
     "orchestrator": {
       "title": "Workflow Orchestrator",
-      "model": "claude-sonnet-4-6"
+      "model": "claude-sonnet-5"
     },
     "reviewer": {
       "title": "General Reviewer",

@@ -32,7 +32,7 @@ class HermesBotWorkflowTest(unittest.TestCase):
 
     def test_contract_locks_sonnet_ceiling_and_haiku_specialists(self):
         self.assertEqual(len(CONTRACT["profiles"]), 6)
-        self.assertEqual(CONTRACT["profiles"]["orchestrator"]["model"], "claude-sonnet-4-6")
+        self.assertEqual(CONTRACT["profiles"]["orchestrator"]["model"], "claude-sonnet-5")
         self.assertEqual({value["model"] for key, value in CONTRACT["profiles"].items() if key != "orchestrator"},
                          {"claude-haiku-4-5-20251001"})
         changed = copy.deepcopy(CONTRACT); changed["profiles"]["reviewer"]["model"] = "claude-opus-5"
@@ -103,7 +103,7 @@ class HermesBotWorkflowTest(unittest.TestCase):
                 "--contract", str(CONTRACT_PATH)], capture_output=True, text=True, check=True)
         output = json.loads(result.stdout)
         self.assertFalse(output["applied"]); self.assertEqual(len(output["profiles"]), 6)
-        self.assertEqual(output["model_ceiling"], "claude-sonnet-4-6")
+        self.assertEqual(output["model_ceiling"], "claude-sonnet-5")
 
 
 if __name__ == "__main__": unittest.main()

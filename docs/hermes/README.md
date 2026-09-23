@@ -136,7 +136,7 @@ sudo scripts/hermes-native.sh up
 # rollback: down, restore-workflows, up
 ```
 
-The orchestrator uses `claude-sonnet-4-6`; five specialists use
+The orchestrator uses `claude-sonnet-5`; five specialists use
 `claude-haiku-4-5-20251001`. The command snapshots existing profile YAML, then changes model/provider,
 sets `agent.bot_mode_protocol`, adds Bot Mode identity metadata, and sets the API-server toolset to
 `no_mcp`; hosted group turns therefore receive only Hermes' verified text-only `bot_room` capability.

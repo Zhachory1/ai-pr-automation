@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
-MODEL_RE = re.compile(r"^claude-(?:sonnet-4-6|haiku-4-5-20251001)$")
+MODEL_RE = re.compile(r"^claude-(?:sonnet-5|haiku-4-5-20251001)$")
 EXPECTED = {"schema_version", "workflow", "profiles"}
 PROFILE_FIELDS = {"title", "model"}
 
@@ -33,8 +33,8 @@ def load_contract(path):
             fail(f"invalid profile contract: {name}")
         if not isinstance(config["title"], str) or not config["title"].strip() or not MODEL_RE.fullmatch(config["model"]):
             fail(f"invalid title or model: {name}")
-    if profiles["orchestrator"]["model"] != "claude-sonnet-4-6":
-        fail("orchestrator must use Sonnet 4.6")
+    if profiles["orchestrator"]["model"] != "claude-sonnet-5":
+        fail("orchestrator must use Sonnet 5")
     if any(config["model"] != "claude-haiku-4-5-20251001"
            for name, config in profiles.items() if name != "orchestrator"):
         fail("specialists must use Haiku 4.5")
@@ -145,7 +145,7 @@ def configure(home, contract, uid, gid, apply=False, backup_path=None, replace_f
     prepared = prepare(home, contract, uid)
     if not apply:
         return {"workflow":contract["workflow"],"profiles":list(contract["profiles"]),
-                "model_ceiling":"claude-sonnet-4-6","applied":False}
+                "model_ceiling":"claude-sonnet-5","applied":False}
     backup_path = backup_path or home / "workflow-backups" / "pr-risk-council.json"
     if backup_path.exists(): fail(f"workflow backup already exists; restore first: {backup_path}")
     if backup_path.parent.exists() and (backup_path.parent.is_symlink() or not backup_path.parent.is_dir()
@@ -167,7 +167,7 @@ def configure(home, contract, uid, gid, apply=False, backup_path=None, replace_f
         raise
     write_state(home, "applied", uid, gid)
     return {"workflow":contract["workflow"],"profiles":list(contract["profiles"]),
-            "model_ceiling":"claude-sonnet-4-6","applied":True,"backup":str(backup_path)}
+            "model_ceiling":"claude-sonnet-5","applied":True,"backup":str(backup_path)}
 
 
 def restore(home, uid, gid, backup_path=None):
