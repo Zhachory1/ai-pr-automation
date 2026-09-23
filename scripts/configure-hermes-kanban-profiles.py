@@ -5,6 +5,7 @@ import json
 import os
 import pwd
 import shutil
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -115,15 +116,14 @@ def prepare(home, contract, uid):
         if destination.exists() or destination.is_symlink(): fail(f"target profile already exists: {target}")
         source = profile_root / policy["source"]
         soul, skills, description = source_material(source, uid)
-        # NOTE: uid/hardlink checks are not repeated in create_profile/apply; source files are
-        # validated here (prepare) but not re-validated at copy time. This gap is intentional and
-        # acceptable while apply/restore are not yet exposed via CLI (board-canary PR pending).
         prepared.append((target, policy, soul, skills, description))
     return prepared
 
 
 def create_profile(profile_root, item, uid, gid):
     target, policy, soul, skills, description = item
+    _, _, current_description = source_material(soul.parent, uid)
+    if current_description != description: fail(f"source profile changed during apply: {policy['source']}")
     temporary = profile_root / f".{target}.tmp-{os.getpid()}"
     temporary.mkdir(mode=0o700)
     try:
@@ -195,18 +195,30 @@ def check(home, contract, uid):
             "targets":[item[0] for item in prepared],"model_ceiling":"claude-sonnet-5","writes":0}
 
 
+def require_stopped():
+    for label in ("com.example.ai-pr-automation-hermes", "com.example.ai-pr-automation-hermes-dashboard"):
+        try: loaded = subprocess.run(["launchctl", "print", f"system/{label}"], capture_output=True).returncode == 0
+        except FileNotFoundError: loaded = False
+        if loaded: fail("stop Hermes gateway and dashboard before apply/restore")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hermes-home", type=Path, required=True)
     parser.add_argument("--service-user", required=True)
     parser.add_argument("--contract", type=Path, required=True)
-    # NOTE: --apply and --restore subcommands are intentionally absent from this CLI.
-    # They will be added in the board-canary PR once effective runtime tool-policy conformance,
-    # task model allowlists, token/workflow caps, and crash recovery are in place.
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--apply", action="store_true")
+    action.add_argument("--restore", action="store_true")
     args = parser.parse_args()
     try:
         user = pwd.getpwnam(args.service_user); contract = load_contract(args.contract)
-        result = check(args.hermes_home, contract, user.pw_uid)
+        if (args.apply or args.restore) and os.geteuid() != user.pw_uid:
+            fail("apply/restore must run as service user")
+        if args.apply or args.restore: require_stopped()
+        result = restore(args.hermes_home, contract, user.pw_uid, user.pw_gid) if args.restore else \
+                 apply(args.hermes_home, contract, user.pw_uid, user.pw_gid) if args.apply else \
+                 check(args.hermes_home, contract, user.pw_uid)
     except (OSError, ValueError, KeyError, json.JSONDecodeError, yaml.YAMLError) as error:
         raise SystemExit(f"Hermes Kanban profile configuration failed: {error}")
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))

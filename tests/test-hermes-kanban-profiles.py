@@ -104,14 +104,18 @@ class KanbanCouncilProfilesTest(unittest.TestCase):
             self.assertTrue(profiles.restore(home, CONTRACT, os.getuid(), os.getgid())["restored"])
             self.assertFalse(target.exists())
 
+    def test_apply_requires_stopped_gateway(self):
+        with mock.patch.object(profiles.subprocess, "run", return_value=type("R", (), {"returncode":0})()):
+            with self.assertRaisesRegex(ValueError, "stop Hermes gateway"):
+                profiles.require_stopped()
+
     def test_cli_check_is_machine_readable_and_inert(self):
         with tempfile.TemporaryDirectory() as td:
-            home = self.home(pathlib.Path(td))
-            result = subprocess.run([sys.executable, str(ROOT / "scripts/configure-hermes-kanban-profiles.py"),
+            home = self.home(pathlib.Path(td)); base = [sys.executable, str(ROOT / "scripts/configure-hermes-kanban-profiles.py"),
                 "--hermes-home", str(home), "--service-user", os.environ.get("USER", "zhach"),
-                "--contract", str(CONTRACT_PATH)], capture_output=True, text=True, check=True)
-        output = json.loads(result.stdout)
-        self.assertTrue(output["ready"]); self.assertEqual(output["writes"], 0)
+                "--contract", str(CONTRACT_PATH)]
+            checked = subprocess.run(base, capture_output=True, text=True, check=True)
+        self.assertTrue(json.loads(checked.stdout)["ready"]); self.assertEqual(json.loads(checked.stdout)["writes"], 0)
 
 
 if __name__ == "__main__": unittest.main()
