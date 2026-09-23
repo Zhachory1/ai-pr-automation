@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -160,11 +161,21 @@ def valid_metadata(metadata, role):
             and metadata.get("members_failed", []) == [])
 
 
+def canonical_metadata(run):
+    if isinstance(run.metadata, dict) and run.metadata.get("workflow_id") == WORKFLOW_ID:
+        return run.metadata
+    summary = str(getattr(run, "summary", None) or "")
+    match = re.search(r'<parameter name="metadata">(\{.*\})\s*$', summary, re.DOTALL)
+    if not match: return run.metadata
+    try: return json.loads(match.group(1))
+    except json.JSONDecodeError: return run.metadata
+
+
 def task_evidence(kb, conn, task_id, role, profile):
     task = kb.get_task(conn, task_id); runs = kb.list_runs(conn, task_id)
     comments, attachments = kb.list_comments(conn, task_id), kb.list_attachments(conn, task_id)
     completed = [run for run in runs if run.outcome == "completed"]
-    metadata = completed[-1].metadata if completed else None
+    metadata = canonical_metadata(completed[-1]) if completed else None
     worker_comments = [comment for comment in comments if comment.author == profile and comment.body.strip()]
     structured = valid_metadata(metadata, role)
     comment_fallback = (role != "verification" and any(len(comment.body.strip()) >= 40 for comment in worker_comments)
