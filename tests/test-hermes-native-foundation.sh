@@ -75,6 +75,7 @@ grep -Fq 'sudo -u "$SERVICE_USER"' scripts/hermes-native.sh
 grep -Fq 'configure-hermes-bot-workflow.py' scripts/hermes-native.sh
 grep -Fq 'scripts/configure-hermes-api.py' scripts/hermes-native.sh
 grep -Fq '/Users/hermes-agent/.hermes/hermes-agent/venv/bin/python scripts/hermes-kanban-workflow-preflight.py' docs/hermes/README.md
+grep -Fq 'scripts/hermes-kanban-council-canary.py setup' docs/hermes/README.md
 grep -Fq 'install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"' scripts/hermes-native.sh
 grep -Fq 'HERMES_API_KEYS_FILE=' scripts/hermes-native.sh
 grep -Fq '/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json' scripts/hermes-native.sh
