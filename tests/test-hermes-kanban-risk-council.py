@@ -86,6 +86,7 @@ def complete_task(conn,key,**kw):
             self.assertEqual(mid["tasks"]["verification"]["status"],"ready")
             task=setup["tasks"]["verification"]; kb.add_comment(None,task,council.VERIFIER,"synthesizing")
             verifier_metadata=self.metadata("verification")
+            verifier_metadata["verdict"]="findings"
             verifier_metadata["members_completed"]=[setup["tasks"][role] for role in council.SPECIALISTS]
             kb.complete_task(None,task,metadata=verifier_metadata)
             final=council.status(home,install); self.assertTrue(final["terminal"]); self.assertTrue(final["verified"])
