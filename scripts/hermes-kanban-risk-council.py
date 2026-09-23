@@ -164,7 +164,7 @@ def valid_metadata(metadata, role):
 def canonical_metadata(run):
     if isinstance(run.metadata, dict) and run.metadata.get("workflow_id") == WORKFLOW_ID:
         return run.metadata
-    summary = str(run.summary or "")
+    summary = str(getattr(run, "summary", None) or "")
     match = re.search(r'<parameter name="metadata">(\{.*\})\s*$', summary, re.DOTALL)
     if not match: return run.metadata
     try: return json.loads(match.group(1))
