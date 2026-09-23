@@ -104,6 +104,7 @@ Rules:
 - one attempt per task;
 - zero retries;
 - no fallback provider/model;
+- `claude-sonnet-5` is exact Anthropic catalog ID in pinned Hermes v0.21.3; no dated Sonnet 5 ID exists in that catalog;
 - four specialist tasks ready in parallel;
 - synthesis blocked on all four;
 - no attachments or child tasks;
@@ -282,7 +283,7 @@ GET /healthz
 Authentication:
 
 - dedicated generation-bound HMAC key;
-- loopback bind;
+- bind `127.0.0.1` only;
 - exact Host and content type;
 - reject Origin and CORS;
 - timestamp and nonce replay window;

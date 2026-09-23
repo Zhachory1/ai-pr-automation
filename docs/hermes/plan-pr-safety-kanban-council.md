@@ -176,7 +176,7 @@ Modify:
 ### Work
 
 - Add signed create/status/stop/archive endpoints.
-- Bind loopback.
+- Bind `127.0.0.1` only.
 - Add Host, content-type, Origin, timestamp, nonce, request/response HMAC checks.
 - Derive workflow/task IDs server-side.
 - Persist `creating|active|stopping|stopped|terminal|archiving|archived` state atomically.
