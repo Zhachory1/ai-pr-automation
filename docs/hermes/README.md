@@ -162,7 +162,9 @@ using `--restore`.
 Create the isolated canary task after restart:
 
 ```bash
-python3 scripts/hermes-kanban-council-canary.py setup \
+sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
+  /Users/hermes-agent/.hermes/hermes-agent/venv/bin/python \
+  scripts/hermes-kanban-council-canary.py setup \
   --hermes-home /Users/hermes-agent/.hermes \
   --install-dir /Users/hermes-agent/.hermes/hermes-agent
 ```
