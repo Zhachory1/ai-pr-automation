@@ -68,7 +68,7 @@ def profile_config(role, model):
         "platform_toolsets":{"cli":[],"api_server":["no_mcp"]},
         "plugins":{"enabled":[]},
         "auxiliary":{"background_review":{"enabled":False}},
-        "memory":{"memory_enabled":False,"user_profile_enabled":False},
+        "memory":{"memory_enabled":False,"retention_enabled":False,"user_profile_enabled":False},
         "skills":{"creation_nudge_interval":0},
         "agent":{"disabled_toolsets":["delegation"],"max_turns":80,"api_max_retries":0},
     }
@@ -101,6 +101,9 @@ def prepare(home, contract, uid):
         if destination.exists() or destination.is_symlink(): fail(f"target profile already exists: {target}")
         source = profile_root / policy["source"]
         soul, skills, description = source_material(source, uid)
+        # NOTE: uid/hardlink checks are not repeated in create_profile/apply; source files are
+        # validated here (prepare) but not re-validated at copy time. This gap is intentional and
+        # acceptable while apply/restore are not yet exposed via CLI (board-canary PR pending).
         prepared.append((target, policy, soul, skills, description))
     return prepared
 
@@ -183,6 +186,9 @@ def main():
     parser.add_argument("--hermes-home", type=Path, required=True)
     parser.add_argument("--service-user", required=True)
     parser.add_argument("--contract", type=Path, required=True)
+    # NOTE: --apply and --restore subcommands are intentionally absent from this CLI.
+    # They will be added in the board-canary PR once effective runtime tool-policy conformance,
+    # task model allowlists, token/workflow caps, and crash recovery are in place.
     args = parser.parse_args()
     try:
         user = pwd.getpwnam(args.service_user); contract = load_contract(args.contract)
