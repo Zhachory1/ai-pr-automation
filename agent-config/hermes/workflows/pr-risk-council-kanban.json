@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "workflow": "pr-risk-council",
+  "engine": "kanban",
+  "board": "pr-risk-council",
+  "deadline_seconds": 900,
+  "token_budget": 150000,
+  "max_active_workflows": 1,
+  "profiles": {
+    "council-orchestrator": {
+      "source": "orchestrator",
+      "role": "orchestrator",
+      "model": "claude-sonnet-5"
+    },
+    "council-reviewer": {
+      "source": "reviewer",
+      "role": "review",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "council-security": {
+      "source": "security-engineer",
+      "role": "security",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "council-reliability": {
+      "source": "site-reliability-engineer",
+      "role": "reliability",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "council-architect": {
+      "source": "technical-architect",
+      "role": "architecture",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "council-verifier": {
+      "source": "verifier",
+      "role": "verification",
+      "model": "claude-haiku-4-5-20251001"
+    }
+  },
+  "task_graph": {
+    "specialists": ["review", "security", "reliability", "architecture"],
+    "verifier": "verification",
+    "edges": [
+      ["review", "verification"],
+      ["security", "verification"],
+      ["reliability", "verification"],
+      ["architecture", "verification"]
+    ]
+  }
+}
