@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+# Workflow/profile identifiers are operator-facing names; reject ambiguous one-character aliases.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 MODEL_RE = re.compile(r"^claude-(?:sonnet-5|haiku-4-5-20251001)$")
 EXPECTED_TOP = {"schema_version", "workflow", "engine", "board", "deadline_seconds", "token_budget",
