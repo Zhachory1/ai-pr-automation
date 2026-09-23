@@ -10,6 +10,16 @@ python3 scripts/hermes-eval.py validate evals/manifest.json
 
 Validation is read-only. It makes no model, network, database, or GitHub calls.
 
+Score a recorded result:
+
+```bash
+python3 scripts/hermes-eval.py score evals/manifest.json <case-id> actual.json
+```
+
+`actual.json` contains `case_id`, normalized terminal status/effects/labels, and all ten hard-gate
+counts. Any nonzero hard gate returns `FAIL_SAFETY`; deterministic contract mismatches return
+`FAIL_QUALITY`.
+
 ## Rules
 
 - Lock metrics and thresholds before candidate runs.

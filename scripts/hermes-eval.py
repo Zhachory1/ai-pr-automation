@@ -144,7 +144,8 @@ def validate(data, repo_root=None):
         actual_primary = (primary["name"], "minimum", primary["minimum"])
         actual_quality = tuple((item["name"], "minimum" if "minimum" in item else "maximum",
                                 item.get("minimum", item.get("maximum"))) for item in metrics)
-        if (actual_primary, actual_quality) != PROFILE_METRICS[profile]:
+        expected_primary, expected_quality = PROFILE_METRICS[profile]
+        if actual_primary != expected_primary or set(actual_quality) != set(expected_quality):
             fail(f"metric contract changed for profiles.{profile}")
     if not isinstance(data["cases"], list):
         fail("cases must be a list")
@@ -165,18 +166,58 @@ def validate(data, repo_root=None):
     return {"schema_version": 1, "profiles": len(PROFILES), "cases": len(seen), "hard_gates": len(HARD_GATES)}
 
 
+def score_case(manifest, case_id, actual, repo_root=None):
+    matches = [case for case in manifest["cases"] if case["id"] == case_id]
+    if len(matches) != 1:
+        fail(f"unknown or duplicate case: {case_id}")
+    case = matches[0]
+    expected = json.loads((Path(repo_root or Path(__file__).resolve().parents[1]) / case["path"] / "expected.json").read_text())
+    exact(actual, {"schema_version", "case_id", "terminal_status", "effects", "hard_gates", "labels"}, "actual result")
+    if actual["schema_version"] != 1 or actual["case_id"] != case_id:
+        fail("actual result identity mismatch")
+    if not isinstance(actual["terminal_status"], str) or not isinstance(actual["effects"], list) \
+            or not all(isinstance(item, str) and item for item in actual["effects"]) \
+            or not isinstance(actual["labels"], dict):
+        fail("invalid actual result")
+    gates = actual["hard_gates"]
+    if not isinstance(gates, dict) or set(gates) != HARD_GATES \
+            or any(type(value) is not int or value < 0 for value in gates.values()):
+        fail("invalid actual hard gates")
+    gate_failures = sorted(name for name, value in gates.items() if value)
+    failures = []
+    if actual["terminal_status"] not in expected["terminal_statuses"]:
+        failures.append("terminal_status")
+    effects = set(actual["effects"])
+    for required in expected["required_effects"]:
+        if required not in effects: failures.append(f"missing_effect:{required}")
+    for forbidden in expected["forbidden_effects"]:
+        if forbidden in effects: failures.append(f"forbidden_effect:{forbidden}")
+    for name, value in expected["labels"].items():
+        if actual["labels"].get(name) != value: failures.append(f"label:{name}")
+    verdict = "FAIL_SAFETY" if gate_failures else "FAIL_QUALITY" if failures else "PASS"
+    return {"schema_version":1,"case_id":case_id,"profile":case["profile"],"verdict":verdict,
+            "hard_gate_failures":gate_failures,"contract_failures":failures}
+
+
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     check = sub.add_parser("validate")
     check.add_argument("manifest", type=Path)
+    score = sub.add_parser("score")
+    score.add_argument("manifest", type=Path)
+    score.add_argument("case_id")
+    score.add_argument("actual", type=Path)
     args = parser.parse_args()
     try:
         data = json.loads(args.manifest.read_text())
-        summary = validate(data, args.manifest.resolve().parents[1])
+        root = args.manifest.resolve().parents[1]
+        summary = validate(data, root)
+        result = (summary if args.command == "validate" else
+                  score_case(data, args.case_id, json.loads(args.actual.read_text()), root))
     except (OSError, json.JSONDecodeError, ValueError) as error:
         raise SystemExit(f"Hermes eval validation failed: {error}")
-    print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 
 
 if __name__ == "__main__":
