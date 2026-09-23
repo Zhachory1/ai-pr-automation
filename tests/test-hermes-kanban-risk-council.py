@@ -74,9 +74,15 @@ def complete_task(conn,key,**kw):
             first=council.status(home,install); self.assertEqual(first["task_count"],5)
             from hermes_cli import kanban_db as kb
             for role,profile in council.SPECIALISTS.items():
-                task=setup["tasks"][role]; kb.add_comment(None,task,profile,"progress"); kb.complete_task(None,task,metadata=self.metadata(role))
+                task=setup["tasks"][role]
+                comment="Reliability evidence with concrete failure mode and blast radius." if role=="reliability" else "progress"
+                kb.add_comment(None,task,profile,comment)
+                metadata={"worker_session_id":"fixture"} if role=="reliability" else self.metadata(role)
+                kb.complete_task(None,task,metadata=metadata)
             mid=council.status(home,install)
             self.assertTrue(all(mid["tasks"][role]["verified"] for role in council.SPECIALISTS))
+            self.assertEqual(mid["tasks"]["reliability"]["handoff_mode"],"comment")
+            self.assertEqual(mid["tasks"]["security"]["handoff_mode"],"metadata")
             self.assertEqual(mid["tasks"]["verification"]["status"],"ready")
             task=setup["tasks"]["verification"]; kb.add_comment(None,task,council.VERIFIER,"synthesizing")
             verifier_metadata=self.metadata("verification")
@@ -119,6 +125,12 @@ def complete_task(conn,key,**kw):
             "artifact_digest":council.ARTIFACT_DIGEST,"external_effects":0}, "security"))
         verifier=self.metadata("verification"); verifier["consensus"]=True
         self.assertFalse(council.valid_metadata(verifier,"verification"))
+
+    def test_comment_fallback_requires_worker_session_id_key(self):
+        # empty dict must NOT qualify for comment fallback (set({}) <= {...} was True; == is strict)
+        self.assertFalse(council.valid_metadata({}, "reliability"))
+        self.assertFalse(set({}) == {"worker_session_id"})
+        self.assertTrue(set({"worker_session_id": "x"}) == {"worker_session_id"})
 
     def test_profile_policy_mismatch_fails_before_board(self):
         with tempfile.TemporaryDirectory() as td:
