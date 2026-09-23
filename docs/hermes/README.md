@@ -172,6 +172,21 @@ sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agen
 Use `status` and `cleanup` with the same `--hermes-home` and `--install-dir` flags to inspect
 durable progress and archive the board after a successful `done`.
 
+After the one-worker canary passes, create the sanitized five-task council graph:
+
+```bash
+sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
+  /Users/hermes-agent/.hermes/hermes-agent/venv/bin/python \
+  scripts/hermes-kanban-risk-council.py setup \
+  --hermes-home /Users/hermes-agent/.hermes \
+  --install-dir /Users/hermes-agent/.hermes/hermes-agent
+```
+
+Four Haiku specialists run in parallel. A Haiku verifier remains dependency-gated until all four
+structured handoffs complete. `status` verifies exact workflow/artifact identity, one run per task,
+worker-authored comments, completion metadata, zero attachments, and exactly five tasks. `cleanup`
+archives the board after terminal completion.
+
 ## Superseded Bot Mode prototype
 
 The earlier `sync-workflows` Bot Mode profile-mutation path was merged but never activated. Do not run
