@@ -100,11 +100,13 @@ def verifier_body():
     return json.dumps({"workflow_id":WORKFLOW_ID,"artifact_digest":ARTIFACT_DIGEST,"role":"verification",
         "fixture":FIXTURE,"goal":"Read every parent handoff, preserve dissent, and synthesize one decision package.",
         "acceptance":["call kanban_show","validate all four parent handoffs and artifact digests",
-                      "add one progress comment","complete with final package metadata"],
+                      "add one progress comment","complete with final package metadata using exact JSON types",
+                      "consensus, dissent, evidence, members_completed, and members_failed must be arrays",
+                      "members_completed must contain the four parent task IDs from kanban_show"],
         "completion_metadata":{"workflow_id":WORKFLOW_ID,"artifact_digest":ARTIFACT_DIGEST,
             "verdict":"approve|changes_requested|needs_human_decision|inconclusive","material_findings":[],
-            "consensus":[],"dissent":[],"evidence":[],"members_completed":[],"members_failed":[],
-            "external_effects":0}}, sort_keys=True)
+            "consensus":["shared conclusion"],"dissent":[],"evidence":[],
+            "members_completed":["parent task id"],"members_failed":[],"external_effects":0}}, sort_keys=True)
 
 
 def setup(home, install):
@@ -149,7 +151,6 @@ def valid_metadata(metadata, role):
     return (metadata.get("verdict") in {"approve","changes_requested","needs_human_decision","inconclusive"}
             and all(isinstance(metadata.get(key), list) for key in
                     ("material_findings","consensus","dissent","evidence","members_completed","members_failed"))
-            and set(metadata["members_completed"]) == set(SPECIALISTS)
             and metadata["members_failed"] == [])
 
 
@@ -172,6 +173,10 @@ def status(home, install):
     with kbc.connect_closing(board=BOARD) as conn:
         task_count = int(conn.execute("SELECT COUNT(*) n FROM tasks").fetchone()["n"])
         for role, profile in expected.items(): evidence[role] = task_evidence(kb, conn, saved["tasks"].get(role), role, profile)
+    verifier_metadata = evidence["verification"].get("metadata")
+    expected_parent_ids = {saved["tasks"][role] for role in SPECIALISTS}
+    if not isinstance(verifier_metadata, dict) or set(verifier_metadata.get("members_completed", [])) != expected_parent_ids:
+        evidence["verification"]["verified"] = False
     verified = task_count == 5 and all(item["verified"] for item in evidence.values())
     terminal = all(item["status"] in TERMINAL for item in evidence.values())
     return {"action":"status","board":BOARD,"workflow_id":WORKFLOW_ID,"artifact_digest":ARTIFACT_DIGEST,
