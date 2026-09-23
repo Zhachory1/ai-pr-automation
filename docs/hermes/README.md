@@ -94,6 +94,23 @@ Keys are copied into each installed profile `.env`; controller receives bundle a
 Rotation requires pause, drain/reconcile, key replacement, conformance, generation increment, resume.
 Do not rotate by editing bundle in place while attempts submit.
 
+## Multi-agent workflow feasibility
+
+Before changing existing Hermes profiles, run the read-only PR Risk Council preflight as the service
+account:
+
+```bash
+sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
+  python3 scripts/hermes-bot-workflow-preflight.py \
+  --hermes-home /Users/hermes-agent/.hermes \
+  --install-dir /Users/hermes-agent/.hermes/hermes-agent \
+  --contract agent-config/hermes/workflows/pr-risk-council.json
+```
+
+It validates six existing profiles, Sonnet/Haiku model identifiers, Bot/group runtime methods and
+limits, absent MCP config, and projected hosted-room tool policy. It makes no profile writes, model
+calls, messages, group changes, database calls, or network calls.
+
 ## Authority and producers
 
 Repository authority YAML is scope-of-attention, not credential security. Compose review/maintain
