@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "56404b7e44a06fcc2d24eca4a0e1ab7555aa069d5f97245527f466a3e3d64151",
+  "id": "swe-incomplete-no-effect-v1",
+  "profile": "swe-implement-v1",
+  "sanitized": true,
+  "scenario": "The bounded handoff has no safe implementable code change after identity verification.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:request-2472"
+}

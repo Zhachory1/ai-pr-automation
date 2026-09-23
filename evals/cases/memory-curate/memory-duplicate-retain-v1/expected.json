@@ -1,0 +1,17 @@
+{
+  "forbidden_effects": [
+    "second semantically equivalent retain"
+  ],
+  "id": "memory-duplicate-retain-v1",
+  "labels": {
+    "org_writes": 0,
+    "team_writes": 0
+  },
+  "required_effects": [
+    "dedupe without retain"
+  ],
+  "schema_version": 1,
+  "terminal_statuses": [
+    "done"
+  ]
+}

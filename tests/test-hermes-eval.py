@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,16 +18,16 @@ MANIFEST = json.loads((ROOT / "evals/manifest.json").read_text())
 class HermesEvalContractTest(unittest.TestCase):
     def changed(self): return copy.deepcopy(MANIFEST)
 
-    def assert_invalid(self, data, text):
-        with self.assertRaisesRegex(ValueError, text): hermes_eval.validate(data)
+    def assert_invalid(self, data, text, root=None):
+        with self.assertRaisesRegex(ValueError, text): hermes_eval.validate(data, root)
 
     def test_repository_manifest_and_cli_validate(self):
         self.assertEqual(hermes_eval.validate(MANIFEST),
-                         {"schema_version":1,"profiles":6,"cases":0,"hard_gates":10})
+                         {"schema_version":1,"profiles":6,"cases":12,"hard_gates":10})
         result = subprocess.run([sys.executable, str(ROOT / "scripts/hermes-eval.py"), "validate",
             str(ROOT / "evals/manifest.json")], capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout),
-                         {"schema_version":1,"profiles":6,"cases":0,"hard_gates":10})
+                         {"schema_version":1,"profiles":6,"cases":12,"hard_gates":10})
 
     def test_unknown_profile_fails(self):
         data = self.changed(); data["profiles"]["unknown-v1"] = data["profiles"].pop("doc-write-v1")
@@ -55,17 +56,49 @@ class HermesEvalContractTest(unittest.TestCase):
         self.assert_invalid(data, "secret-like value")
 
     def test_cases_are_unique_profile_scoped_and_bounded(self):
-        case = {"id":"review-clean-v1","profile":"pr-review-v1",
-                "path":"evals/cases/pr-review/review-clean-v1","repetitions":3}
-        data = self.changed(); data["cases"] = [case]
-        self.assertEqual(hermes_eval.validate(data)["cases"], 1)
-        data["cases"].append(copy.deepcopy(case)); self.assert_invalid(data, "duplicate case id")
-        data = self.changed(); data["cases"] = [dict(case, path="../private")]
+        case = MANIFEST["cases"][0]
+        data = self.changed(); data["cases"].append(copy.deepcopy(case))
+        self.assert_invalid(data, "duplicate case id")
+        data = self.changed(); data["cases"][0] = dict(case, path="../private")
         self.assert_invalid(data, "invalid case path")
-        data = self.changed(); data["cases"] = [dict(case, repetitions=2)]
+        data = self.changed(); data["cases"][0] = dict(case, repetitions=2)
         self.assert_invalid(data, "invalid repetitions")
-        data = self.changed(); data["cases"] = [dict(case, profile=7)]
+        data = self.changed(); data["cases"][0] = dict(case, profile=7)
         self.assert_invalid(data, "unknown profile")
+
+    def test_case_fixture_secret_and_digest_tamper_fail(self):
+        case = MANIFEST["cases"][0]; source = ROOT / case["path"]
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td); target = root / case["path"]
+            target.parent.mkdir(parents=True); shutil.copytree(source, target)
+            data = self.changed(); data["cases"] = [case]
+            self.assertEqual(hermes_eval.validate(data, root)["cases"], 1)
+            request = target / "input/request.json"
+            original = request.read_text(); request.write_text(original + "github_pat_abcdefghijklmnopqrstuvwxyz123456")
+            self.assert_invalid(data, "secret-like value", root)
+            request.write_text(original + " ")
+            self.assert_invalid(data, "fixture digest mismatch", root)
+
+    def test_case_artifact_schema_missing_secret_sidecar_and_symlink_fail(self):
+        case = MANIFEST["cases"][0]; source = ROOT / case["path"]
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td); target = root / case["path"]
+            target.parent.mkdir(parents=True); shutil.copytree(source, target)
+            data = self.changed(); data["cases"] = [case]
+            rubric = target / "rubric.md"; original_rubric = rubric.read_text(); rubric.unlink()
+            self.assert_invalid(data, "artifacts missing", root)
+            rubric.write_text(original_rubric)
+            metadata = target / "case.json"; original_metadata = metadata.read_text()
+            value = json.loads(original_metadata); value["fixture_digest"] = 7
+            metadata.write_text(json.dumps(value))
+            self.assert_invalid(data, "invalid case metadata", root)
+            metadata.write_text(original_metadata)
+            sidecar = target / "input/sidecar.txt"
+            sidecar.write_text("github_pat_abcdefghijklmnopqrstuvwxyz123456")
+            self.assert_invalid(data, "secret-like value", root)
+            sidecar.unlink()
+            (target / "input/link").symlink_to(target / "input/request.json")
+            self.assert_invalid(data, "artifacts missing or unsafe", root)
 
     def test_cli_failure_is_concise(self):
         with tempfile.TemporaryDirectory() as td:

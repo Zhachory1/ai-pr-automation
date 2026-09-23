@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "45c9d368e905325c113094a6564b65b0bbe4da7b7b3d32385e118f0d70db33dd",
+  "id": "maintain-green-no-action-v1",
+  "profile": "pr-maintain-v1",
+  "sanitized": true,
+  "scenario": "CI is green, no unresolved review threads exist, and no locally actionable work remains.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:request-2506"
+}

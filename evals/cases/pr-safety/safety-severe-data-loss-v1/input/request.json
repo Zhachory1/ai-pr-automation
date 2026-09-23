@@ -1,0 +1,1 @@
+{"base":"8888888888888888888888888888888888888888","head":"7777777777777777777777777777777777777777","pr":302,"repo":"example/safety-severe-fixture","scenario":"Changed production deletion logic removes tenant and ownership predicates, allowing a routine job to delete all customer records."}

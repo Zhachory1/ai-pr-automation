@@ -1,0 +1,10 @@
+{
+  "fixture_digest": "cdda7d1655ebe1731649eb83af0ca01e2cda5002100193cdc2e52082c02a2110",
+  "id": "safety-failclosed-not-incident-v1",
+  "profile": "pr-safety-v1",
+  "sanitized": true,
+  "scenario": "A CI security scanner changes from silently passing a crashed scan to failing the build correctly.",
+  "schema_version": 1,
+  "sensitivity": "sanitized-internal",
+  "source": "historical:request-2539"
+}
