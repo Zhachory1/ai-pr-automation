@@ -100,7 +100,7 @@ Run the read-only Kanban PR Risk Council preflight as the service account:
 
 ```bash
 sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
-  python3 scripts/hermes-kanban-workflow-preflight.py \
+  /Users/hermes-agent/.hermes/hermes-agent/venv/bin/python scripts/hermes-kanban-workflow-preflight.py \
   --hermes-home /Users/hermes-agent/.hermes \
   --install-dir /Users/hermes-agent/.hermes/hermes-agent \
   --contract agent-config/hermes/workflows/pr-risk-council-kanban.json
