@@ -140,6 +140,15 @@ scripts/fleet.sh down
 runner binaries. Source artifacts remain in repository only for bounded rollback/audit during bake;
 normal lifecycle cannot start them.
 
+## Restricted Kanban council profiles
+
+The profile-clone configurator currently supports read-only validation only; it has no apply/restore
+CLI until runtime capability, model-override admission, token budget, and crash-recovery conformance
+land in the board-canary PR. It verifies six source profiles can produce workflow-only clones with
+`council-orchestrator` on `claude-sonnet-5` and five specialists on
+`claude-haiku-4-5-20251001`. Proposed clones copy SOUL/skills only—never `.env`, credentials,
+sessions, memory, plugins, or MCP configuration. Original profiles remain unchanged.
+
 ## Superseded Bot Mode prototype
 
 The earlier `sync-workflows` Bot Mode profile-mutation path was merged but never activated. Do not run
