@@ -117,6 +117,8 @@ grep -Fq 'DOC_WRITER_STAGE_HOST=' .env.example
 # LOG_ROOT and launchd otherwise exits EX_CONFIG before running the program.
 grep -Fq 'install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes-native.sh" dashboard-start' scripts/hermes-native.sh
+grep -Fq 'wait_unloaded "$LABEL"' scripts/hermes-native.sh
+grep -Fq 'wait_unloaded "$DASHBOARD_LABEL"' scripts/hermes-native.sh
 ! grep -Fq '"$ROOT/scripts/hermes-native.sh" dispatcher-start' scripts/hermes-native.sh
 ! grep -Fq '"$ROOT/scripts/hermes-native.sh" producer-start' scripts/hermes-native.sh
 grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh

@@ -25,6 +25,14 @@ GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
+wait_unloaded() {
+  local label="$1" i
+  for i in $(seq 1 50); do
+    launchctl print "system/$label" >/dev/null 2>&1 || return 0
+    sleep .2
+  done
+  echo "$label did not unload within 10 seconds" >&2; exit 2
+}
 
 sync_profile() {
   local source name target canonical file relative mode
@@ -177,6 +185,7 @@ case "${1:-}" in
   stop)
     need_root; install -m 0444 /dev/null "$MAINTENANCE_FILE"
     launchctl bootout "system/$LABEL" 2>/dev/null || true
+    wait_unloaded "$LABEL"
     ;;
   dashboard-start)
     need_root
@@ -185,6 +194,7 @@ case "${1:-}" in
   dashboard-stop)
     need_root
     launchctl bootout "system/$DASHBOARD_LABEL" 2>/dev/null || true
+    wait_unloaded "$DASHBOARD_LABEL"
     ;;
   up)
     need_root
