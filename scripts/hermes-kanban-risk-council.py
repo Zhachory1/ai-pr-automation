@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -160,11 +161,21 @@ def valid_metadata(metadata, role):
             and metadata.get("members_failed", []) == [])
 
 
+def canonical_metadata(run):
+    if isinstance(run.metadata, dict) and run.metadata.get("workflow_id") == WORKFLOW_ID:
+        return run.metadata
+    summary = str(run.summary or "")
+    match = re.search(r'<parameter name="metadata">(\{.*\})\s*$', summary, re.DOTALL)
+    if not match: return run.metadata
+    try: return json.loads(match.group(1))
+    except json.JSONDecodeError: return run.metadata
+
+
 def task_evidence(kb, conn, task_id, role, profile):
     task = kb.get_task(conn, task_id); runs = kb.list_runs(conn, task_id)
     comments, attachments = kb.list_comments(conn, task_id), kb.list_attachments(conn, task_id)
     completed = [run for run in runs if run.outcome == "completed"]
-    metadata = completed[-1].metadata if completed else None
+    metadata = canonical_metadata(completed[-1]) if completed else None
     verified = (task is not None and task.status == "done" and len(runs) == 1 and len(completed) == 1
                 and completed[0].profile == profile and any(comment.author == profile for comment in comments)
                 and not attachments and valid_metadata(metadata, role))

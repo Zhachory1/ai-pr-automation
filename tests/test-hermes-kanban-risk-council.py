@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
 import os
 import pathlib
 import sys
@@ -100,6 +101,14 @@ def complete_task(conn,key,**kw):
                 "board":council.BOARD,"artifact_digest":council.ARTIFACT_DIGEST,"tasks":{},"created_at":1})
             result=council.setup(home,install)
             self.assertTrue(result["resumed"]); self.assertEqual(len(result["tasks"]),5)
+
+    def test_canonical_metadata_recovers_known_tool_parameter_shape(self):
+        from types import SimpleNamespace
+        metadata=self.metadata("reliability")
+        run=SimpleNamespace(metadata={"worker_session_id":"s"},summary="done</summary>\n<parameter name=\"metadata\">"+json.dumps(metadata))
+        self.assertEqual(council.canonical_metadata(run),metadata)
+        malformed=SimpleNamespace(metadata={"worker_session_id":"s"},summary="no metadata")
+        self.assertEqual(council.canonical_metadata(malformed),{"worker_session_id":"s"})
 
     def test_metadata_contract_normalizes_optional_empty_lists_but_rejects_missing_evidence(self):
         specialist=self.metadata("security"); specialist.pop("dissent"); specialist.pop("residual_risk")
