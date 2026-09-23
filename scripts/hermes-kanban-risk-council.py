@@ -176,6 +176,8 @@ def task_evidence(kb, conn, task_id, role, profile):
     comments, attachments = kb.list_comments(conn, task_id), kb.list_attachments(conn, task_id)
     completed = [run for run in runs if run.outcome == "completed"]
     metadata = canonical_metadata(completed[-1]) if completed else None
+    if role == "verification" and isinstance(metadata, dict) and metadata.get("verdict") == "findings":
+        metadata = dict(metadata, verdict="changes_requested")
     worker_comments = [comment for comment in comments if comment.author == profile and comment.body.strip()]
     structured = valid_metadata(metadata, role)
     comment_fallback = (role != "verification" and any(len(comment.body.strip()) >= 40 for comment in worker_comments)
