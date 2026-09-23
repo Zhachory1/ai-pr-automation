@@ -66,13 +66,6 @@ grep -Fq 'chmod 0444 "$installer"' scripts/hermes-native.sh
 # Existing pinned installs can sync profiles/binaries/plists without downloading the mutable
 # installer URL. Full install still keeps the digest gate.
 grep -Fq 'sync-support) HERMES_SUPPORT_ONLY=true install_native' scripts/hermes-native.sh
-grep -Fq 'sync-workflows) workflow_change --apply' scripts/hermes-native.sh
-grep -Fq 'restore-workflows) workflow_change --restore' scripts/hermes-native.sh
-grep -Fq 'stop Hermes gateway and dashboard before changing workflow profiles' scripts/hermes-native.sh
-grep -Fq 'workflow profile change is incomplete; run restore-workflows' scripts/hermes-native.sh
-grep -Fq 'workflow profile state is unreadable' scripts/hermes-native.sh
-grep -Fq 'sudo -u "$SERVICE_USER"' scripts/hermes-native.sh
-grep -Fq 'configure-hermes-bot-workflow.py' scripts/hermes-native.sh
 grep -Fq 'scripts/configure-hermes-api.py' scripts/hermes-native.sh
 grep -Fq '/Users/hermes-agent/.hermes/hermes-agent/venv/bin/python scripts/hermes-kanban-workflow-preflight.py' docs/hermes/README.md
 grep -Fq 'scripts/hermes-kanban-council-canary.py setup' docs/hermes/README.md

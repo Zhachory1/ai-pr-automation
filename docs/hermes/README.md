@@ -187,13 +187,6 @@ structured handoffs complete. `status` verifies exact workflow/artifact identity
 worker-authored comments, completion metadata, zero attachments, and exactly five tasks. `cleanup`
 archives the board after terminal completion.
 
-## Superseded Bot Mode prototype
-
-The earlier `sync-workflows` Bot Mode profile-mutation path was merged but never activated. Do not run
-it for the PR Risk Council. Kanban now owns workflow orchestration; Bot Mode remains a possible future
-free-form debate layer. The prototype configurator stays only until the isolated Kanban canary and
-rollback pass, then is removed in cleanup.
-
 ## Validation
 
 ```bash
