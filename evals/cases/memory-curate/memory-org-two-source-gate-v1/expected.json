@@ -7,8 +7,8 @@
     "org_writes": 0
   },
   "required_effects": [
-    "team routing allowed when base gate passes",
-    "org routing denied"
+    "base-gate-eligible candidate may remain team-bank eligible",
+    "org-bank retain denied without two independent sources"
   ],
   "schema_version": 1,
   "terminal_statuses": [
