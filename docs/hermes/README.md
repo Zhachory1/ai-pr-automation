@@ -141,7 +141,8 @@ The orchestrator uses `claude-sonnet-5`; five specialists use
 sets `agent.bot_mode_protocol`, adds Bot Mode identity metadata, and sets the API-server toolset to
 `no_mcp`; hosted group turns therefore receive only Hermes' verified text-only `bot_room` capability.
 It refuses to modify loaded gateways, unsafe profile files, missing profiles, or an existing un-restored
-backup. Apply failure restores every original file. Group creation and live delivery remain a separate
+backup. The root lifecycle wrapper performs profile file changes as `hermes-agent`, not as root.
+Apply failure restores every original file. Group creation and live delivery remain a separate
 explicit feasibility step.
 
 ## Validation

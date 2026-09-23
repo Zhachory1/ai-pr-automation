@@ -95,6 +95,14 @@ class HermesBotWorkflowTest(unittest.TestCase):
             self.assertEqual(self.snapshots(home), before)
             self.assertFalse((home / "workflow-backups/pr-risk-council.json").exists())
 
+    def test_restore_rejects_invalid_profile_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self.home(pathlib.Path(td))
+            backup = {"schema_version":1,"workflow":"pr-risk-council",
+                      "files":{"profiles/bad_name/config.yaml":None}}
+            with self.assertRaisesRegex(ValueError, "escaped profile root"):
+                workflow.restore_files(home, backup, os.getuid(), os.getgid())
+
     def test_cli_dry_run_is_non_root_and_machine_readable(self):
         with tempfile.TemporaryDirectory() as td:
             home = self.home(pathlib.Path(td))

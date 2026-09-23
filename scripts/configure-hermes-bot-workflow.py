@@ -117,7 +117,7 @@ def restore_files(home, backup, uid, gid):
     staged = []
     for relative, encoded in backup["files"].items():
         parts = Path(relative).parts
-        if len(parts) != 3 or parts[0] != "profiles" or parts[1] in {"", ".", ".."} \
+        if len(parts) != 3 or parts[0] != "profiles" or not PROFILE_RE.fullmatch(parts[1]) \
                 or parts[2] not in {"config.yaml", "profile.yaml"}:
             fail("workflow backup path escaped profile root")
         path = home / relative

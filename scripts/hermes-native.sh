@@ -150,8 +150,10 @@ workflow_change() {
 }
 
 workflow_state_ready() {
-  local state="$HERMES_HOME/workflow-backups/pr-risk-council.state"
-  [[ ! -e "$state" || "$(cat "$state" 2>/dev/null)" == applied ]] \
+  local state="$HERMES_HOME/workflow-backups/pr-risk-council.state" value
+  [[ -e "$state" ]] || return 0
+  value="$(cat "$state")" || { echo "workflow profile state is unreadable" >&2; exit 2; }
+  [[ "$value" == applied ]] \
     || { echo "workflow profile change is incomplete; run restore-workflows" >&2; exit 2; }
 }
 
