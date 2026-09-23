@@ -139,6 +139,22 @@ PY
   echo "Hermes native foundation and support files synced but not started"
 }
 
+workflow_change() {
+  need_root; need_user
+  if launchctl print "system/$LABEL" >/dev/null 2>&1 || launchctl print "system/$DASHBOARD_LABEL" >/dev/null 2>&1; then
+    echo "stop Hermes gateway and dashboard before changing workflow profiles" >&2; exit 2
+  fi
+  sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+    python3 "$ROOT/scripts/configure-hermes-bot-workflow.py" --hermes-home "$HERMES_HOME" \
+      --service-user "$SERVICE_USER" --contract "$ROOT/agent-config/hermes/workflows/pr-risk-council.json" "$1"
+}
+
+workflow_state_ready() {
+  local state="$HERMES_HOME/workflow-backups/pr-risk-council.state"
+  [[ ! -e "$state" || "$(cat "$state" 2>/dev/null)" == applied ]] \
+    || { echo "workflow profile change is incomplete; run restore-workflows" >&2; exit 2; }
+}
+
 preflight() {
   python3 "$ROOT/scripts/hermes-native-preflight.py" --contract "$ROOT/agent-config/hermes/native.env" \
     --manifest "$MANIFEST" --install-dir "$INSTALL_DIR" --hermes-home "$HERMES_HOME" \
@@ -149,9 +165,11 @@ case "${1:-}" in
   install) install_native ;;
   sync-support) HERMES_SUPPORT_ONLY=true install_native ;;
   sync-profiles) need_root; need_user; sync_profile; preflight ;;
+  sync-workflows) workflow_change --apply ;;
+  restore-workflows) workflow_change --restore ;;
   preflight) preflight ;;
   start)
-    need_root; preflight; rm -f "$MAINTENANCE_FILE"
+    need_root; workflow_state_ready; preflight; rm -f "$MAINTENANCE_FILE"
     launchctl bootstrap system "$PLIST" 2>/dev/null || launchctl kickstart -k "system/$LABEL"
     ;;
   stop)
@@ -184,5 +202,5 @@ case "${1:-}" in
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-support|sync-profiles|sync-workflows|restore-workflows|preflight|start|stop|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

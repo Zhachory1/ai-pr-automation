@@ -123,6 +123,27 @@ scripts/fleet.sh down
 runner binaries. Source artifacts remain in repository only for bounded rollback/audit during bake;
 normal lifecycle cannot start them.
 
+## Read-only PR Risk Council trial
+
+Hermes already carries general `orchestrator`, `reviewer`, `security-engineer`,
+`site-reliability-engineer`, `technical-architect`, and `verifier` profiles. Configure those existing
+profiles as Bot Mode participants without changing fleet effect profiles:
+
+```bash
+sudo scripts/hermes-native.sh down
+sudo scripts/hermes-native.sh sync-workflows
+sudo scripts/hermes-native.sh up
+# rollback: down, restore-workflows, up
+```
+
+The orchestrator uses `claude-sonnet-4-6`; five specialists use
+`claude-haiku-4-5-20251001`. The command snapshots existing profile YAML, then changes model/provider,
+sets `agent.bot_mode_protocol`, adds Bot Mode identity metadata, and sets the API-server toolset to
+`no_mcp`; hosted group turns therefore receive only Hermes' verified text-only `bot_room` capability.
+It refuses to modify loaded gateways, unsafe profile files, missing profiles, or an existing un-restored
+backup. Apply failure restores every original file. Group creation and live delivery remain a separate
+explicit feasibility step.
+
 ## Validation
 
 ```bash

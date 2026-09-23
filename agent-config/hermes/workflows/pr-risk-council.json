@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "workflow": "pr-risk-council",
+  "profiles": {
+    "orchestrator": {
+      "title": "Workflow Orchestrator",
+      "model": "claude-sonnet-4-6"
+    },
+    "reviewer": {
+      "title": "General Reviewer",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "security-engineer": {
+      "title": "Security Engineer",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "site-reliability-engineer": {
+      "title": "Reliability Engineer",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "technical-architect": {
+      "title": "Technical Architect",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "verifier": {
+      "title": "Verification Gate",
+      "model": "claude-haiku-4-5-20251001"
+    }
+  }
+}
