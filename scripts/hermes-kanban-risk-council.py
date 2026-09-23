@@ -90,10 +90,14 @@ def find_task(conn, key):
 def specialist_body(role):
     return json.dumps({"workflow_id":WORKFLOW_ID,"artifact_digest":ARTIFACT_DIGEST,"role":role,
         "fixture":FIXTURE,"goal":f"Assess only the {role} dimension.",
-        "acceptance":["call kanban_show","add one progress comment","complete with required metadata"],
+        "acceptance":["call kanban_show","add one progress comment",
+                      "complete with metadata containing every key shown below using exact JSON types",
+                      "claims, evidence, dissent, and residual_risk must always be arrays, even when empty",
+                      "never omit dissent or residual_risk"],
         "completion_metadata":{"workflow_id":WORKFLOW_ID,"artifact_digest":ARTIFACT_DIGEST,"role":role,
-            "verdict":"clear|findings|needs_human_decision|inconclusive","claims":[],"evidence":[],
-            "confidence":"low|medium|high","dissent":[],"residual_risk":[],"external_effects":0}}, sort_keys=True)
+            "verdict":"clear|findings|needs_human_decision|inconclusive","claims":["claim or empty array"],
+            "evidence":["evidence or empty array"],"confidence":"low|medium|high",
+            "dissent":[],"residual_risk":[],"external_effects":0}}, sort_keys=True)
 
 
 def verifier_body():
