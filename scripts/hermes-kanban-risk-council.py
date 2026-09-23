@@ -8,6 +8,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 BOARD = "pr-risk-council"
 WORKFLOW_ID = "pr-risk-council-fixture-v1"
 SPECIALISTS = {
@@ -40,7 +42,9 @@ def atomic_json(path, data):
 
 
 def modules(install):
-    sys.path.insert(0, str(install))
+    install_str = str(install)
+    if install_str not in sys.path:
+        sys.path.insert(0, install_str)
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     return kb, kbc
@@ -50,7 +54,6 @@ def state_path(home): return home / "workflow-runs" / "pr-risk-council.json"
 
 
 def profile_check(home):
-    import yaml
     expected = {**SPECIALISTS, "verification":VERIFIER}
     for role, name in expected.items():
         root = home / "profiles" / name
