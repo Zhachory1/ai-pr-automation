@@ -117,6 +117,12 @@ def complete_task(conn,key,**kw):
         verifier=self.metadata("verification"); verifier["consensus"]=True
         self.assertFalse(council.valid_metadata(verifier,"verification"))
 
+    def test_comment_fallback_requires_worker_session_id_key(self):
+        # empty dict must NOT qualify for comment fallback (set({}) <= {...} was True; == is strict)
+        self.assertFalse(council.valid_metadata({}, "reliability"))
+        self.assertFalse(set({}) == {"worker_session_id"})
+        self.assertTrue(set({"worker_session_id": "x"}) == {"worker_session_id"})
+
     def test_profile_policy_mismatch_fails_before_board(self):
         with tempfile.TemporaryDirectory() as td:
             home,install=self.fixture(pathlib.Path(td)); path=home/"profiles/council-security/config.yaml"

@@ -168,7 +168,7 @@ def task_evidence(kb, conn, task_id, role, profile):
     worker_comments = [comment for comment in comments if comment.author == profile and comment.body.strip()]
     structured = valid_metadata(metadata, role)
     comment_fallback = (role != "verification" and any(len(comment.body.strip()) >= 40 for comment in worker_comments)
-                        and isinstance(metadata, dict) and set(metadata) <= {"worker_session_id"})
+                        and isinstance(metadata, dict) and set(metadata) == {"worker_session_id"})
     verified = (task is not None and task.status == "done" and len(runs) == 1 and len(completed) == 1
                 and completed[0].profile == profile and bool(worker_comments) and not attachments
                 and (structured or comment_fallback))
