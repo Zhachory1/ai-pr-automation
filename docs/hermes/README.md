@@ -142,12 +142,25 @@ normal lifecycle cannot start them.
 
 ## Restricted Kanban council profiles
 
-The profile-clone configurator currently supports read-only validation only; it has no apply/restore
-CLI until runtime capability, model-override admission, token budget, and crash-recovery conformance
-land in the board-canary PR. It verifies six source profiles can produce workflow-only clones with
-`council-orchestrator` on `claude-sonnet-5` and five specialists on
-`claude-haiku-4-5-20251001`. Proposed clones copy SOUL/skills only—never `.env`, credentials,
-sessions, memory, plugins, or MCP configuration. Original profiles remain unchanged.
+After validation, stop Hermes and create six restricted workflow clones as the service user:
+
+```bash
+sudo scripts/hermes-native.sh down
+sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
+  /Users/hermes-agent/.hermes/hermes-agent/venv/bin/python \
+  scripts/configure-hermes-kanban-profiles.py \
+  --hermes-home /Users/hermes-agent/.hermes --service-user hermes-agent \
+  --contract agent-config/hermes/workflows/pr-risk-council-kanban.json --apply
+sudo scripts/hermes-native.sh up
+```
+
+Original profiles remain unchanged. Clones use Sonnet 5/Haiku 4.5 with no fallback, credentials,
+MCP, plugins, background review, memory, delegation, or regular-session tools. Dispatcher-owned
+workers receive only task-scoped Kanban lifecycle tools. Roll back while stopped with the same command
+using `--restore`.
+
+Create the isolated canary task after restart with `scripts/hermes-kanban-council-canary.py setup`;
+use `status` to inspect durable progress and `cleanup` to archive the board after a successful `done`.
 
 ## Superseded Bot Mode prototype
 
