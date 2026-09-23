@@ -49,11 +49,13 @@ gh api graphql --paginate -f query='
   }' -f owner=OWNER -f repo=REPO -F pr=PR_NUMBER
 ```
 
-Join each REST comment to its thread by `fullDatabaseId` (the REST comment `id`), then resolve that thread's `id`. Treat the THREAD as the unit of work: classify each unresolved thread exactly once, using its root review comment and replies as context. Do not classify replies (including your own) as separate work items.
+Join each REST comment to its thread by `fullDatabaseId` (the REST comment `id`), then resolve that thread's `id`. Treat each unresolved THREAD as one feedback unit, using its root review comment and replies as context. Do not classify replies (including your own) separately.
+
+Also treat every non-empty top-level review body as a feedback unit keyed by review ID. Ignore marker-only bodies and pure approvals with no requested change. Deduplicate a review-body concern when the same concern is already represented by an inline thread, but never discard distinct summary feedback merely because there are zero unresolved threads. Review-body units have no thread ID and cannot be resolved through `resolveReviewThread`.
 
 ### Step 2: Classify Each Unresolved Thread
 
-Assign each unresolved thread to one category, using its root comment and replies as context:
+Assign each feedback unit—unresolved thread or top-level review body—to one category, using replies as context when available:
 
 | Category       | Description                    | Action                           |
 | -------------- | ------------------------------ | -------------------------------- |
@@ -73,13 +75,13 @@ Assign each unresolved thread to one category, using its root comment and replie
 
 ### Step 3: Present Classification Summary
 
-Show one row per unresolved thread with its classification:
+Show one row per feedback unit with its classification and source (`thread` or `review body`):
 
-| #   | Reviewer | Category   | Summary             | File:Line         |
-| --- | -------- | ---------- | ------------------- | ----------------- |
-| 1   | alice    | ACTIONABLE | Rename variable     | src/api.ts:42     |
-| 2   | bob      | QUESTION   | Why async here?     | src/service.go:88 |
-| 3   | alice    | NITS       | Trailing whitespace | src/util.py:15    |
+| #   | Reviewer | Source      | Category   | Summary             | File:Line         |
+| --- | -------- | ----------- | ---------- | ------------------- | ----------------- |
+| 1   | alice    | thread      | ACTIONABLE | Rename variable     | src/api.ts:42     |
+| 2   | bob      | thread      | QUESTION   | Why async here?     | src/service.go:88 |
+| 3   | alice    | review body | NITS       | Clarify retry rule  | —                 |
 
 Interactive mode: ask the user to confirm classifications before proceeding.
 
@@ -138,7 +140,7 @@ Push the tested commits and confirm the push succeeded **before** replying to or
 git push
 ```
 
-Only after the push lands, reply to each addressed thread, then resolve it. Post at most ONE new reply per unresolved thread per run. Immediately record the thread ID after posting so later steps cannot reply to it again; re-fetch before posting if the run has revisited the thread. Resolve every addressed ACTIONABLE/NITS thread, plus QUESTION/DISCUSSION threads whose reply was approved interactively or posted under explicit unattended full-reply-autonomy, using the thread `id` fetched in Step 1:
+Only after the push lands, reply to each addressed inline thread, then resolve it. Post at most ONE new reply per unresolved thread per run. Immediately record the thread ID after posting so later steps cannot reply to it again; re-fetch before posting if the run has revisited the thread. Resolve every addressed ACTIONABLE/NITS thread, plus QUESTION/DISCUSSION threads whose reply was approved interactively or posted under explicit unattended full-reply-autonomy, using the thread `id` fetched in Step 1. For review-body feedback, record the fixing commit and disposition in the final ledger; when a grounded response is required under full-reply autonomy, post one bounded PR comment citing the review ID, but never pretend the review body itself was resolved:
 
 ```bash
 gh api graphql -f query='
@@ -153,7 +155,7 @@ In interactive mode, do not resolve QUESTION/DISCUSSION threads until the user a
 
 Confirm each addressed thread returned `isResolved: true` from the mutation, then present a summary of actions taken.
 
-**Final reconciliation (do this once, at the end, before reporting).** Per-mutation confirmation is not sufficient on its own — a thread can be silently missed if classification or addressing skipped it, or a mutation can no-op on a stale/mis-mapped thread id. Re-run the Step 1 GraphQL query to re-fetch every review thread's `id`/`isResolved`, then for each thread you addressed this run (fix pushed + replied, or grounded reply posted) assert `isResolved:true`. Retry `resolveReviewThread` once for any addressed thread still showing `false`, then re-verify. Report the final tally: threads addressed, threads resolved, and any addressed-but-still-unresolved thread with its id and the mutation error. An addressed thread must never be left silently unresolved.
+**Final reconciliation (do this once, at the end, before reporting).** Per-mutation confirmation is not sufficient on its own — a thread can be silently missed if classification or addressing skipped it, or a mutation can no-op on a stale/mis-mapped thread id. Re-run the Step 1 GraphQL query to re-fetch every review thread's `id`/`isResolved`, then for each thread you addressed this run (fix pushed + replied, or grounded reply posted) assert `isResolved:true`. Retry `resolveReviewThread` once for any addressed thread still showing `false`, then re-verify. Re-fetch top-level reviews too and assert every non-empty review body appears once in the final feedback ledger with a disposition. Report thread and review-body tallies separately. An addressed thread must never be left silently unresolved, and review-body feedback must never disappear because it lacks a thread.
 
 If files were edited, do not finish with only local uncommitted work. The final
 state must be one of:
@@ -167,7 +169,7 @@ state must be one of:
 
 ## Constraints
 
-- **DO** classify each unresolved thread exactly once before taking any action
+- **DO** classify every unresolved thread and non-empty top-level review body exactly once before taking any action
 - **DO** confirm classifications with the user before proceeding in interactive mode
 - **DO** proceed without confirmation only when the caller explicitly grants unattended/automatic PR-maintenance mode
 - **DO** run tests after applying ACTIONABLE changes
@@ -189,12 +191,9 @@ state must be one of:
 
 ## Output Format
 
-**Classification table:** One row per unresolved thread with reviewer, category,
-summary, and file:line reference.
+**Classification table:** One row per feedback unit with reviewer, source (`thread` or `review body`), category, summary, and file:line reference.
 
 **Action log:** For each addressed thread: what was done, test results, commit
 hash.
 
-**Summary:** Threads received (by category), threads resolved count, threads
-left open (with reason), pending user decisions, approval status, and final
-worktree state (clean / pushed / blocked with reason).
+**Summary:** Threads and review bodies received (separate counts by category), threads resolved, review-body dispositions, items left open (with reason), pending user decisions, approval status, and final worktree state (clean / pushed / blocked with reason).
