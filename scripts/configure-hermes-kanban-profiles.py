@@ -46,14 +46,28 @@ def safe_file(path, uid):
     if info.st_uid != uid or info.st_nlink != 1: fail(f"unsafe file: {path}")
 
 
+def validate_shared_skill(link, trusted_root, uid):
+    try: resolved, trusted_root = link.resolve(strict=True), trusted_root.resolve(strict=True)
+    except OSError: fail(f"broken shared skill link: {link}")
+    if trusted_root not in resolved.parents or not resolved.is_dir() or resolved.is_symlink():
+        fail(f"shared skill link escaped trusted root: {link}")
+    for path in (resolved, *resolved.rglob("*")):
+        info = path.lstat()
+        if path.is_symlink() or info.st_uid not in {0, uid} or (path.is_file() and info.st_nlink != 1):
+            fail(f"unsafe shared skill tree: {link.name}")
+
+
 def source_material(root, uid):
     safe_dir(root, uid); soul, meta, skills = root / "SOUL.md", root / "profile.yaml", root / "skills"
     safe_file(soul, uid); safe_file(meta, uid); safe_dir(skills, uid)
+    trusted_root = root.parents[1].parent / "hermes-profiles" / "skills"
     skill_paths = list(skills.rglob("*"))
-    if any(path.is_symlink() for path in skill_paths): fail(f"unsafe source skill tree: {root.name}")
-    files = [soul, *sorted(path for path in skill_paths if path.is_file())]
-    if any(path.stat().st_uid != uid or path.stat().st_nlink != 1 for path in files):
-        fail(f"unsafe source skill tree: {root.name}")
+    for path in skill_paths:
+        if path.is_symlink(): validate_shared_skill(path, trusted_root, uid)
+        else:
+            info = path.stat()
+            if info.st_uid != uid or (path.is_file() and info.st_nlink != 1):
+                fail(f"unsafe source skill tree: {root.name}")
     metadata = yaml.safe_load(meta.read_text()) or {}
     if not isinstance(metadata, dict) or not str(metadata.get("description") or "").strip():
         fail(f"source profile description missing: {root.name}")

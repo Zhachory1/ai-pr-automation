@@ -64,8 +64,22 @@ class KanbanCouncilProfilesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home = self.home(pathlib.Path(td)); skill = home / "profiles/reviewer/skills/link"
             skill.symlink_to(home / "profiles/reviewer/SOUL.md")
-            with self.assertRaisesRegex(ValueError, "unsafe source skill tree"):
+            with self.assertRaisesRegex(ValueError, "shared skill link"):
                 profiles.check(home, CONTRACT, os.getuid())
+
+    def test_trusted_shared_skill_link_is_dereferenced_into_clone(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self.home(pathlib.Path(td))
+            shared = home.parent / "hermes-profiles/skills/shared-method"
+            shared.mkdir(parents=True); (shared / "SKILL.md").write_text("# Shared method\n")
+            link = home / "profiles/orchestrator/skills/shared-method"
+            link.symlink_to(shared, target_is_directory=True)
+            self.assertTrue(profiles.check(home, CONTRACT, os.getuid())["ready"])
+            profiles.apply(home, CONTRACT, os.getuid(), os.getgid())
+            copied = home / "profiles/council-orchestrator/skills/shared-method/SKILL.md"
+            self.assertTrue(copied.is_file()); self.assertFalse(copied.is_symlink())
+            self.assertEqual(copied.read_text(), "# Shared method\n")
+            profiles.restore(home, CONTRACT, os.getuid(), os.getgid())
 
     def test_partial_failure_removes_created_clones(self):
         with tempfile.TemporaryDirectory() as td:
