@@ -159,8 +159,16 @@ MCP, plugins, background review, memory, delegation, or regular-session tools. D
 workers receive only task-scoped Kanban lifecycle tools. Roll back while stopped with the same command
 using `--restore`.
 
-Create the isolated canary task after restart with `scripts/hermes-kanban-council-canary.py setup`;
-use `status` to inspect durable progress and `cleanup` to archive the board after a successful `done`.
+Create the isolated canary task after restart:
+
+```bash
+python3 scripts/hermes-kanban-council-canary.py setup \
+  --hermes-home /Users/hermes-agent/.hermes \
+  --install-dir /Users/hermes-agent/.hermes/hermes-agent
+```
+
+Use `status` and `cleanup` with the same `--hermes-home` and `--install-dir` flags to inspect
+durable progress and archive the board after a successful `done`.
 
 ## Superseded Bot Mode prototype
 

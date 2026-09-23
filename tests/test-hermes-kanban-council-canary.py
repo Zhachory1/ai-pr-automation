@@ -83,7 +83,7 @@ def complete_task(conn,key,**kw): tasks[key].status='done'; events[key].append(S
             self.assertTrue(canary.cleanup(home, install)["archived"])
             self.assertFalse(canary.state_path(home).exists())
 
-    def test_duplicate_setup_and_early_cleanup_fail(self):
+    def test_duplicate_setup_idempotent_and_cleanup(self):
         with tempfile.TemporaryDirectory() as td:
             home, install = self.fixture(pathlib.Path(td)); canary.setup(home, install)
             self.assertEqual(canary.setup(home, install)["task_id"], canary.load_state(home)["task_id"])
