@@ -67,6 +67,22 @@ class ControllerContractTest(unittest.TestCase):
         self.assertIsNone(controller.parse_safety_output(f'{incident}\n```json\n{clear}\n```'))
         self.assertIsNone(controller.parse_safety_output('prose {"x":1} then {"x":2}'))
 
+    def test_periodic_recovery_reschedules_open_attempts(self):
+        attempt = {"request_id":7,"attempt_no":1}
+        class DB:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def execute(self, query): self.query = query; return self
+            def fetchall(self): return [{"hermes_api_open_attempts":attempt}]
+        instance = controller.Controller.__new__(controller.Controller)
+        db = DB(); calls = []
+        instance.connect = lambda: db
+        instance.schedule = lambda pool, value, recovering=False: calls.append((pool,value,recovering))
+        pool = object()
+        self.assertEqual(instance.recover_open(pool), 1)
+        self.assertEqual(db.query, "SELECT * FROM hermes_api_open_attempts()")
+        self.assertEqual(calls, [(pool,attempt,True)])
+
     def test_poll_method_is_not_shadowed_by_interval(self):
         instance = controller.Controller.__new__(controller.Controller)
         instance.poll_interval = 2.0

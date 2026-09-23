@@ -681,13 +681,22 @@ class Controller:
             self.running.add(key)
         pool.submit(self.process, attempt, recovering)
 
+    def recover_open(self, pool):
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM hermes_api_open_attempts()").fetchall()
+        for row in rows:
+            self.schedule(pool, row["hermes_api_open_attempts"], True)
+        return len(rows)
+
     def run(self):
         self.configure()
         with ThreadPoolExecutor(max_workers=8) as pool:
-            with self.connect() as db:
-                rows = db.execute("SELECT * FROM hermes_api_open_attempts()").fetchall()
-            for row in rows: self.schedule(pool, row["hermes_api_open_attempts"], True)
+            self.recover_open(pool)
+            next_recovery = time.monotonic() + 5
             while True:
+                if time.monotonic() >= next_recovery:
+                    self.recover_open(pool)
+                    next_recovery = time.monotonic() + 5
                 for kind in KINDS:
                     attempt = self.claim(kind)
                     if attempt: self.schedule(pool, attempt)
