@@ -47,6 +47,10 @@ class HermesEvalContractTest(unittest.TestCase):
         profile["quality_metrics"][0]["name"] = profile["primary_metric"]["name"]
         self.assert_invalid(data, "duplicate metric")
 
+    def test_quality_metric_order_is_not_part_of_contract(self):
+        data = self.changed(); data["profiles"]["pr-review-v1"]["quality_metrics"].reverse()
+        self.assertEqual(hermes_eval.validate(data)["profiles"], 6)
+
     def test_metric_cannot_have_minimum_and_maximum(self):
         data = self.changed(); data["profiles"]["pr-review-v1"]["quality_metrics"][0]["maximum"] = 1
         self.assert_invalid(data, "exactly one")

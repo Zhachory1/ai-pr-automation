@@ -144,7 +144,8 @@ def validate(data, repo_root=None):
         actual_primary = (primary["name"], "minimum", primary["minimum"])
         actual_quality = tuple((item["name"], "minimum" if "minimum" in item else "maximum",
                                 item.get("minimum", item.get("maximum"))) for item in metrics)
-        if (actual_primary, actual_quality) != PROFILE_METRICS[profile]:
+        expected_primary, expected_quality = PROFILE_METRICS[profile]
+        if actual_primary != expected_primary or set(actual_quality) != set(expected_quality):
             fail(f"metric contract changed for profiles.{profile}")
     if not isinstance(data["cases"], list):
         fail("cases must be a list")
