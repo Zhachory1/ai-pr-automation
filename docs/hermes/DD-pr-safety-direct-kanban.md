@@ -1,12 +1,12 @@
 # DD: Direct-Kanban PR Safety
 
-- status: draft;
+- status: approved for inert implementation;
 - responsible owner: fleet operator;
 - reviewers: architecture, reliability, security/product scope;
 - PRD: `docs/hermes/PRD-pr-safety-direct-kanban.md`;
 - supersedes for new PR-safety work: `docs/hermes/DD-pr-safety-kanban-council.md`;
 - target implementation: ordered reviewed PRs; no activation by merge;
-- next gate: full architecture council, then task decomposition.
+- next gate: implementation PR 1 (`plan-pr-safety-direct-kanban.md`);
 
 ## Decision
 
@@ -35,7 +35,7 @@ Source of truth is explicit per predicate:
 | task creation, dependency, claim, attempt, completion | Kanban board |
 | exact verified graph/task IDs | immutable graph manifest |
 | operation rejected from automated finalization | immutable quarantine record |
-| intended handoff path/digest, human-card idempotency key/body digest, result digest | immutable finalization intent |
+| intended handoff path/digest, human-card operation ID/title/body digest, result digest | immutable finalization intent |
 | operation fully closed and all five tasks archived | immutable closure receipt written last |
 | human disposition | typed Kanban comment plus immutable disposition receipt |
 
@@ -164,7 +164,7 @@ No attempt nonce exists in direct mode. Failed or ambiguous operations do not au
 Each operation gets one board:
 
 ```text
-pr-safety-<first-32-hex-of-operation-digest>
+pr-safety-op-<first-32-hex-of-operation-digest>
 ```
 
 Persistent incident inbox uses:
@@ -201,7 +201,7 @@ Important properties:
 
 ## CLI Contract
 
-Pinned v0.21.5 contract evidence is recorded in `docs/hermes/evidence-pr-safety-direct-kanban-cli.json`. It captures actual isolated-board command output shapes and limitations; implementation converts it into executable preflight, not a documentation-only assertion.
+A manual v0.21.5 observation summary is recorded in `docs/hermes/evidence-pr-safety-direct-kanban-cli.json`. It is not implementation proof: raw outputs were not retained. PR 3 must persist sanitized argv/exit/output fixtures with digests and execute them against installed pinned runtime before any workflow code may rely on the CLI contract.
 
 Driver executes service launcher directly, never operator CLI:
 
@@ -287,7 +287,7 @@ Each file has one responsibility:
 - `cursors`: per-author last fully admitted discovery window, advanced only after all results receive admission fences; switch preserves cursor and overlap;
 - `admissions`: immutable O_EXCL cross-engine fence and canonical request;
 - `graphs`: immutable exact verified board/task IDs and digests;
-- `finalization`: immutable result digest plus precomputable handoff path/digest and human-card idempotency key/body digest before local effects; generated card ID appears only in verified closure evidence;
+- `finalization`: immutable result digest plus precomputable handoff path/digest and human-card operation ID/title/body digest before local effects; create still supplies deterministic idempotency key, but generated card ID appears only in verified closure evidence;
 - `quarantine`: immutable first rejection reason/evidence pointer; blocks finalization;
 - `quarantine-dispositions`: immutable operator reason after all tasks drain; allows retention GC but never rerun;
 - `receipts`: immutable closure evidence written only after all five execution tasks are archived and worker-free;
@@ -304,7 +304,7 @@ Launchd invokes producer periodically. Each invocation first reconciles nonfinal
 - admission without graph manifest: reconstruct blocked cards from board/list evidence, finish verification, or quarantine;
 - graph manifest plus open cards: inspect five cards and deadline; release only exact still-blocked cards during staging recovery;
 - all done: validate package and create finalization intent;
-- member `blocked|failed|cancelled|archived`, post-release graph drift, missing usage, or deadline: create quarantine record;
+- any released specialist `blocked|failed|cancelled|archived`, synthesis `blocked|failed|cancelled|archived` after its explicit release, post-release graph drift, missing usage, or deadline: create quarantine record; synthesis `blocked` before specialist gate is expected and not failure;
 - finalization intent without receipt: replay exact handoff/human-card targets, archive each exact execution task, verify all five archived and worker-free, then write closure receipt last;
 - closure receipt: exact replay returns receipt; no new board;
 - quarantine record: report only; no automatic graph mutation, finalization, or single-agent fallback.
@@ -328,7 +328,7 @@ Extract current pure logic from controller/risk-council code into one shared mod
 
 Normal order:
 
-1. create immutable finalization intent with verified result digest, exact handoff target, and human-card idempotency key/body digest; never predict generated task ID;
+1. create immutable finalization intent with verified result digest, exact handoff target, and human-card operation ID/title/body digest; idempotency key is supplied on create but is not replay evidence because v0.21.5 omits it from JSON; never predict generated task ID;
 2. publish immutable handoff for non-clear result, idempotently by operation ID/digest;
 3. create incident-only blocked human card, idempotently;
 4. archive each exact execution task;
@@ -336,7 +336,7 @@ Normal order:
 6. write immutable closure receipt last;
 7. retain board for audit; retention GC may archive board after 30 days and writes GC tombstone.
 
-Crash replay checks finalization intent and exact existing bytes. For human card it enumerates active and archived inbox cards and requires exactly one idempotency/body match before creating; generated task ID enters closure receipt only after verification. Task-archive evidence is re-read before continuing. Different existing bytes or identity creates quarantine record and no closure receipt.
+Crash replay checks finalization intent and exact existing bytes. For human card it enumerates active and archived inbox cards: zero exact operation-ID/title/body matches permits create, one exact match is adopted, more than one exact match or any same-operation body conflict quarantines. Generated task ID enters closure receipt only after verification. Task-archive evidence is re-read before continuing. Different existing bytes or identity creates quarantine record and no closure receipt.
 
 ## Human Review Board
 
@@ -485,7 +485,7 @@ After 20 operations, restart drill, accepted evaluation, and rollback window:
 - graph create/replay/cardinality/drift;
 - exact show/list/attachments parsing;
 - metadata/evidence/usage/result/handoff;
-- human-card idempotency/conflict;
+- human-card operation-ID/title/body replay, duplicate, and conflict handling;
 - snapshot GC state rules;
 - mode and preflight fencing.
 
@@ -530,4 +530,4 @@ Return to design if:
 
 ## Next Gate
 
-Run full architecture council against this DD and PRD. Only pass/pass-with-changes proceeds to technical plan and `ship`.
+Architecture/reliability/product/red-team council completed in room `council-pr-safety-direct-kanban`; repo summary is `docs/hermes/council-pr-safety-direct-kanban.md`. Delta checker passed after required changes. Proceed through technical plan one PR at a time; production launch remains separately blocked.

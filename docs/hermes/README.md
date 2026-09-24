@@ -44,6 +44,7 @@ Approved next PR-safety design (implementation only; current bridge/Postgres pat
 - [grounding](grounding-pr-safety-direct-kanban.md)
 - [PRD](PRD-pr-safety-direct-kanban.md)
 - [design](DD-pr-safety-direct-kanban.md)
+- [council](council-pr-safety-direct-kanban.md)
 - [delivery plan](plan-pr-safety-direct-kanban.md)
 - [pinned CLI evidence](evidence-pr-safety-direct-kanban-cli.json)
 

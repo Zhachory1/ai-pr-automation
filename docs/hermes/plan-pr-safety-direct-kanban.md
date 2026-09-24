@@ -5,7 +5,7 @@
 - source DD: `docs/hermes/DD-pr-safety-direct-kanban.md`;
 - grounding: `docs/hermes/grounding-pr-safety-direct-kanban.md`;
 - CLI evidence: `docs/hermes/evidence-pr-safety-direct-kanban-cli.json`;
-- council: room `council-pr-safety-direct-kanban`, PASS-WITH-CHANGES after delta checker PASS;
+- council: `docs/hermes/council-pr-safety-direct-kanban.md`; formal room `council-pr-safety-direct-kanban`; PASS-WITH-CHANGES after delta checker PASS;
 - responsible owner: fleet operator;
 - target repo/branch: `ai-pr-automation`, one feature branch/PR per task;
 - execution mode: `ship` per slice, code-reviewer after each;
@@ -298,7 +298,7 @@ Complete direct operation after trusted synthesis without reintroducing Postgres
 - immutable finalization intent with precomputable paths/keys/digests;
 - exact-byte handoff publication;
 - persistent `pr-safety-human-review` board and incident-only blocked card;
-- enumerate active/archived cards for exact body/key replay before create;
+- enumerate active/archived cards for exact operation-ID/title/body replay before create; deterministic idempotency key is write-only defense, not readback evidence;
 - archive exact five execution tasks and verify worker-free runs;
 - write closure receipt last;
 - add typed human disposition comment/receipt and unresolved-archive handling;

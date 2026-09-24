@@ -1,10 +1,27 @@
 {
   "schema_version": 1,
+  "evidence_kind": "manual_observation_summary",
+  "implementation_verified": false,
+  "raw_output_retained": false,
   "observed_at": "2026-09-24T19:20:00Z",
   "runtime": {
     "version": "0.21.5",
     "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f"
   },
+  "commands_observed": [
+    "hermes --version",
+    "hermes kanban boards list --all --json",
+    "hermes kanban boards create <slug> --name <name>",
+    "hermes kanban --board <slug> create <title> --body <json> --assignee <profile> --workspace dir:<path> --idempotency-key <key> --max-runtime 900 --max-retries 1 --model <model> --provider anthropic --completion-contract local-only --initial-status blocked --json",
+    "hermes kanban --board <slug> list --archived --json",
+    "hermes kanban --board <slug> show <task> --json",
+    "hermes kanban --board <slug> attachments <task> --json",
+    "hermes kanban --board <slug> unblock <task>",
+    "hermes kanban --board <slug> archive <task>",
+    "hermes kanban boards rm <slug>"
+  ],
+  "observed_exit_status": 0,
+  "verification_gate": "PR 3 must persist sanitized argv, exit status, canonical output, and SHA-256 fixtures and run them against installed pinned runtime before implementation may depend on this contract.",
   "probe": {
     "board_create": {
       "json_supported": false,

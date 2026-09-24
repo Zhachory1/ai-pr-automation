@@ -1,12 +1,12 @@
 # PRD: Direct-Kanban PR Safety
 
 - one-line description: use Hermes Kanban as the sole new-work queue for effect-free PR-safety councils;
-- status: solution-review;
+- status: approved for inert implementation;
 - responsible owner: fleet operator;
 - primary user: human safety reviewer;
 - linked resources: `docs/hermes/grounding-pr-safety-direct-kanban.md`;
 - supersedes for new PR-safety work: `docs/hermes/PRD-pr-safety-kanban-council.md`;
-- next gate: architecture/reliability council, then technical plan.
+- next gate: implementation PR 1 (`plan-pr-safety-direct-kanban.md`);
 
 ## Problem
 
@@ -149,7 +149,7 @@ The driver uses the pinned service-account Hermes CLI for board/task/list/show/r
 - Create one engine-neutral admission record with exclusive create before board mutation. Both queue modes consult it for every discovered operation.
 - Create tasks blocked with deterministic idempotency keys.
 - Verify board cardinality, fields, profiles, models, bodies, parents, and attachment absence.
-- Release synthesis to parent-gated `todo`, then specialists one at a time. Mixed release after a crash is valid and replay resumes only still-blocked exact cards.
+- Release specialists one at a time while synthesis remains blocked. Mixed specialist release after a crash is valid and replay resumes only still-blocked exact specialists. Release synthesis only after all four one-run specialist handoffs, graph identity, and remaining deadline revalidate.
 - Replays adopt exact existing cards.
 - Any duplicate or mismatch before release quarantines the board without model dispatch. Drift after release rejects the result and keeps the admission fence; effect-free workers may finish but no second engine can admit the operation.
 
