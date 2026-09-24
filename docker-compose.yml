@@ -86,8 +86,7 @@ services:
       - default
       - status-internal
     healthcheck:
-      # /health returns 200; root (/) is 404. curl is present in the image (verified).
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8888/health >/dev/null || exit 1"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=3).close()"]
       interval: 10s
       timeout: 5s
       retries: 12
