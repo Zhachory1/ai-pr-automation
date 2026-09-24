@@ -374,17 +374,19 @@ case "${1:-}" in
     ;;
   up)
     need_root
-    "$ROOT/scripts/hermes-native.sh" sync-support
+    "$ROOT/scripts/hermes-native.sh" preflight >/dev/null 2>&1 \
+      || "$ROOT/scripts/hermes-native.sh" sync-support
     "$ROOT/scripts/hermes-native.sh" start
     "$ROOT/scripts/hermes-native.sh" dashboard-start
     ;;
   down)
     need_root
+    "$ROOT/scripts/hermes-native.sh" bridge-stop
     "$ROOT/scripts/hermes-native.sh" dashboard-stop
     "$ROOT/scripts/hermes-native.sh" stop
     ;;
   status)
-    for service in "$LABEL" "$DASHBOARD_LABEL"; do
+    for service in "$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL"; do
       launchctl print "system/$service" 2>/dev/null | awk -v name="$service" \
         '/^[[:space:]]*state =/{print name ": " $0; found=1; exit} END{if(!found) print name ": not loaded"}'
     done

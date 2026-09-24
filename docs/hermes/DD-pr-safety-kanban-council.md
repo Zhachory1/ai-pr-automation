@@ -358,7 +358,7 @@ Bridge writes state before board mutation:
 {
   "schema_version": 1,
   "phase": "creating|active|stopping|stopped|terminal|archiving|archived",
-  "workflow_id": "operation-derived",
+  "workflow_id": "operation-and-attempt-nonce-derived",
   "operation_id": "string",
   "artifact_digest": "64 hex",
   "contract_digest": "64 hex",

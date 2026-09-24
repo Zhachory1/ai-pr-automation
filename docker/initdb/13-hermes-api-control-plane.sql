@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS hermes_runs (
   CHECK ((output_bytes IS NULL AND output_digest IS NULL) OR
          output_digest = encode(digest(output_bytes,'sha256'),'hex'))
 );
+ALTER TABLE hermes_runs ADD COLUMN IF NOT EXISTS stop_requested_at TIMESTAMPTZ;
+ALTER TABLE hermes_runs ADD COLUMN IF NOT EXISTS stop_confirmed_at TIMESTAMPTZ;
 
 CREATE UNIQUE INDEX IF NOT EXISTS hermes_runs_one_open_request
   ON hermes_runs(request_id) WHERE state='submitting';
@@ -181,7 +183,8 @@ $$;
 CREATE OR REPLACE FUNCTION hermes_api_candidate(target_kind TEXT)
 RETURNS JSONB LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public,pg_temp AS $$
   SELECT jsonb_build_object('id',r.id,'kind',r.kind,'payload',r.payload,
-    'dedupe_key',r.dedupe_key,'created_at',r.created_at)
+    'dedupe_key',r.dedupe_key,'created_at',r.created_at,'route_generation',k.generation,
+    'auth_generation',k.auth_generation,'profile_generation',k.profile_generation)
   FROM requests r JOIN hermes_kind_routes k ON k.kind=r.kind
   WHERE r.kind=target_kind AND r.status='queued' AND k.route='api'
   ORDER BY r.created_at,r.id LIMIT 1;
@@ -271,15 +274,78 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION hermes_claim_kanban_safety_request(
+  target_request_id BIGINT,target_nonce TEXT,lease_seconds INTEGER,target_route_generation BIGINT,
+  target_auth_generation BIGINT,target_profile_generation TEXT,target_workflow_id TEXT,
+  target_request_bytes BYTEA,target_request_digest TEXT)
+RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+DECLARE route_row hermes_kind_routes%ROWTYPE; claimed requests%ROWTYPE; attempt INTEGER;
+DECLARE operation TEXT; idem TEXT; expected_workflow TEXT; expected_body JSONB; marker TEXT;
+BEGIN
+  IF target_nonce !~ '^[0-9a-f]{32}$' OR lease_seconds<30 OR lease_seconds>3600
+     OR target_request_bytes IS NULL OR octet_length(target_request_bytes)>1048576
+     OR target_request_digest !~ '^[0-9a-f]{64}$'
+     OR target_request_digest<>encode(digest(target_request_bytes,'sha256'),'hex')
+     OR target_workflow_id !~ '^pr-risk-council-[0-9a-f]{32}$' THEN
+    RAISE EXCEPTION 'invalid Kanban safety claim';
+  END IF;
+  SELECT * INTO route_row FROM hermes_kind_routes WHERE kind='pr-safety-review' FOR UPDATE;
+  IF route_row.kind IS NULL OR route_row.route<>'api' OR route_row.generation<>target_route_generation
+     OR route_row.auth_generation<>target_auth_generation
+     OR route_row.profile_generation<>target_profile_generation THEN RETURN NULL; END IF;
+  IF (SELECT count(*) FROM hermes_runs h JOIN requests r ON r.id=h.request_id
+      WHERE r.kind='pr-safety-review' AND h.state='submitting') >= route_row.max_concurrent THEN RETURN NULL; END IF;
+  SELECT * INTO claimed FROM requests WHERE id=target_request_id AND kind='pr-safety-review'
+    AND status='queued' FOR UPDATE SKIP LOCKED;
+  IF claimed.id IS NULL THEN RETURN NULL; END IF;
+  operation := 'safety:'||COALESCE(claimed.payload->>'operation_id',claimed.dedupe_key);
+  expected_workflow := 'pr-risk-council-'||left(encode(digest(
+    convert_to((claimed.payload->>'operation_id')||':'||target_nonce,'UTF8'),'sha256'),'hex'),32);
+  marker := 'kanban:'||target_workflow_id;
+  expected_body := jsonb_build_object(
+    'operation_id',claimed.payload->'operation_id','repo',claimed.payload->'repo','pr',claimed.payload->'pr',
+    'head_sha',claimed.payload->'head_sha','base_sha',claimed.payload->'base_sha','diff_hash',claimed.payload->'diff_hash',
+    'policy_version',claimed.payload->'policy_version','policy_digest',claimed.payload->'policy_digest',
+    'snapshot_path',claimed.payload->'snapshot_path','policy_path',claimed.payload->'policy_path','nonce',target_nonce);
+  IF claimed.payload->>'operation_id' IS NULL OR target_workflow_id<>expected_workflow
+     OR convert_from(target_request_bytes,'UTF8')::jsonb<>expected_body THEN
+    RAISE EXCEPTION 'invalid Kanban safety binding';
+  END IF;
+  IF EXISTS (SELECT 1 FROM hermes_runs WHERE operation_key=operation
+             AND (state='submitting' OR (state='reconcile' AND reconcile_outcome IS NULL))) THEN RETURN NULL; END IF;
+  SELECT COALESCE(max(attempt_no),0)+1 INTO attempt FROM hermes_runs WHERE request_id=claimed.id;
+  idem := 'request:'||claimed.id||':attempt:'||attempt||':generation:'||route_row.generation;
+  UPDATE requests SET status='running',started_at=clock_timestamp(),run_id=marker,run_nonce=target_nonce,
+    lease_expires_at=clock_timestamp()+make_interval(secs=>lease_seconds),side_effect_at=NULL,
+    fail_response=NULL WHERE id=claimed.id;
+  INSERT INTO hermes_runs(request_id,attempt_no,operation_key,route_generation,auth_generation,
+    profile,profile_generation,idempotency_key,request_bytes,request_digest,state,run_id)
+  VALUES(claimed.id,attempt,operation,route_row.generation,route_row.auth_generation,route_row.profile,
+    route_row.profile_generation,idem,target_request_bytes,target_request_digest,'submitting',marker);
+  RETURN jsonb_build_object('request_id',claimed.id,'attempt_no',attempt,'kind','pr-safety-review',
+    'nonce',target_nonce,'profile',route_row.profile,'route_generation',route_row.generation,
+    'idempotency_key',idem,'request_b64',encode(target_request_bytes,'base64'),
+    'request_digest',target_request_digest,'payload',claimed.payload,'dedupe_key',claimed.dedupe_key,
+    'created_at',claimed.created_at,'run_id',marker,'request_status','running');
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION hermes_api_open_attempts()
 RETURNS SETOF JSONB LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public,pg_temp AS $$
   SELECT jsonb_build_object('request_id',h.request_id,'attempt_no',h.attempt_no,'kind',r.kind,
     'nonce',r.run_nonce,'profile',h.profile,'route_generation',h.route_generation,
     'idempotency_key',h.idempotency_key,'request_b64',encode(h.request_bytes,'base64'),
     'request_digest',h.request_digest,'payload',r.payload,'dedupe_key',r.dedupe_key,
-    'created_at',r.created_at,'run_id',h.run_id,'first_submit_at',h.first_submit_at,'submit_count',h.submit_count)
+    'created_at',r.created_at,'run_id',h.run_id,'first_submit_at',h.first_submit_at,
+    'submit_count',h.submit_count,'request_status',r.status,
+    'lease_expired',r.lease_expires_at<=clock_timestamp(),
+    'terminal_status',h.terminal_status,'output_digest',h.output_digest,
+    'output_b64',CASE WHEN h.output_bytes IS NULL THEN NULL ELSE replace(encode(h.output_bytes,'base64'),E'\n','') END,
+    'stop_requested',h.stop_requested_at IS NOT NULL,'stop_confirmed',h.stop_confirmed_at IS NOT NULL)
   FROM hermes_runs h JOIN requests r ON r.id=h.request_id
-  WHERE h.state='submitting' ORDER BY h.created_at;
+  WHERE h.state='submitting' AND (r.status='running' OR
+    (h.run_id LIKE 'kanban:%' AND r.status IN ('done','failed')))
+  ORDER BY h.created_at;
 $$;
 
 CREATE OR REPLACE FUNCTION hermes_api_recover_lease(
@@ -289,7 +355,10 @@ RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER SET search_path=public,pg_temp AS 
     UPDATE requests r SET lease_expires_at=clock_timestamp()+make_interval(secs=>lease_seconds)
     FROM hermes_runs h WHERE r.id=target_id AND h.request_id=r.id AND h.attempt_no=target_attempt
       AND h.state='submitting' AND r.status='running' AND r.run_nonce=target_nonce
-      AND lease_seconds BETWEEN 30 AND 3600 RETURNING 1)
+      AND lease_seconds BETWEEN 30 AND 3600
+      AND (h.run_id IS NULL OR h.run_id NOT LIKE 'kanban:%' OR h.terminal_status IS NOT NULL
+           OR h.stop_confirmed_at IS NOT NULL OR
+           (r.lease_expires_at>clock_timestamp() AND h.stop_requested_at IS NULL)) RETURNING 1)
   SELECT EXISTS(SELECT 1 FROM recovered);
 $$;
 
@@ -350,6 +419,32 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION hermes_api_prepare_kanban_stop(
+  target_id BIGINT,target_attempt INTEGER,target_nonce TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+BEGIN
+  UPDATE hermes_runs h SET stop_requested_at=COALESCE(h.stop_requested_at,clock_timestamp()),
+    updated_at=clock_timestamp()
+  FROM requests r WHERE h.request_id=target_id AND h.attempt_no=target_attempt
+    AND h.state='submitting' AND h.run_id LIKE 'kanban:%' AND r.id=h.request_id
+    AND r.kind='pr-safety-review' AND r.status='running' AND r.run_nonce=target_nonce;
+  RETURN FOUND;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION hermes_api_confirm_kanban_stop(
+  target_id BIGINT,target_attempt INTEGER,target_nonce TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+BEGIN
+  UPDATE hermes_runs h SET stop_confirmed_at=COALESCE(h.stop_confirmed_at,clock_timestamp()),
+    updated_at=clock_timestamp()
+  FROM requests r WHERE h.request_id=target_id AND h.attempt_no=target_attempt
+    AND h.state='submitting' AND h.run_id LIKE 'kanban:%' AND h.stop_requested_at IS NOT NULL
+    AND r.id=h.request_id AND r.kind='pr-safety-review' AND r.status='running' AND r.run_nonce=target_nonce;
+  RETURN FOUND;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION hermes_api_mark_stop(target_id BIGINT,target_attempt INTEGER,target_confirmed BOOLEAN)
 RETURNS VOID LANGUAGE sql SECURITY DEFINER SET search_path=public,pg_temp AS $$
   UPDATE hermes_runs SET stop_requested_at=COALESCE(stop_requested_at,clock_timestamp()),
@@ -402,6 +497,17 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION hermes_pr_safety_operation_active(target_operation_id TEXT)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public,pg_temp AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM requests r
+    WHERE r.kind='pr-safety-review' AND r.payload->>'operation_id'=target_operation_id
+      AND (r.status IN ('queued','running') OR EXISTS (
+        SELECT 1 FROM hermes_runs h WHERE h.request_id=r.id AND h.state='submitting'
+          AND h.run_id LIKE 'kanban:%'))
+  );
+$$;
+
 CREATE OR REPLACE FUNCTION hermes_complete_effect_attempt(
   target_id BIGINT,target_attempt INTEGER,target_nonce TEXT,target_state TEXT,target_error TEXT DEFAULT NULL)
 RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
@@ -423,13 +529,19 @@ REVOKE ALL ON FUNCTION hermes_api_candidate(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_claim_request(TEXT,TEXT,TEXT,INTEGER) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION hermes_claim_request(TEXT,TEXT,TEXT,INTEGER) TO hermes_worker;
 REVOKE ALL ON FUNCTION hermes_claim_request(TEXT,TEXT,BIGINT,TEXT,TEXT,BIGINT,TEXT,TEXT,INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_claim_kanban_safety_request(BIGINT,TEXT,INTEGER,BIGINT,BIGINT,TEXT,TEXT,BYTEA,TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION hermes_claim_kanban_safety_request(BIGINT,TEXT,INTEGER,BIGINT,BIGINT,TEXT,TEXT,BYTEA,TEXT) TO hermes_worker;
 REVOKE ALL ON FUNCTION hermes_api_open_attempts() FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_api_recover_lease(BIGINT,INTEGER,TEXT,INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_api_begin_submit(BIGINT,INTEGER,TEXT,BIGINT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_api_accept_run(BIGINT,INTEGER,TEXT,TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_api_record_terminal(BIGINT,INTEGER,TEXT,TEXT,BYTEA) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_api_prepare_kanban_stop(BIGINT,INTEGER,TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_api_confirm_kanban_stop(BIGINT,INTEGER,TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_api_mark_stop(BIGINT,INTEGER,BOOLEAN) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_finish_api_attempt(BIGINT,INTEGER,TEXT,BIGINT,TEXT,TEXT,TEXT,TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_reconcile_api_attempt(BIGINT,INTEGER,TEXT,TEXT,TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION hermes_complete_effect_attempt(BIGINT,INTEGER,TEXT,TEXT,TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION hermes_pr_safety_operation_active(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION hermes_pr_safety_operation_active(TEXT) TO hermes_worker;
 COMMIT;

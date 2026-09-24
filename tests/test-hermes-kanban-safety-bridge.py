@@ -42,7 +42,7 @@ dispatch_lock_available=True; dispatch_lock_held=False; mutation_lock_states=[];
 def validate_v2_contract(value): return value
 
 def v2_context(home,request,contract):
- workflow="pr-risk-council-"+hashlib.sha256(request["operation_id"].encode()).hexdigest()[:32]
+ workflow="pr-risk-council-"+hashlib.sha256((request["operation_id"]+":"+request["nonce"]).encode()).hexdigest()[:32]
  artifact=hashlib.sha256(json.dumps({"request":request,"contract_digest":hashlib.sha256(json.dumps(contract,sort_keys=True,separators=(",",":")).encode()).hexdigest()},sort_keys=True,separators=(",",":")).encode()).hexdigest()
  root=pathlib.Path(home)/"workflow-runs"/workflow
  return {"workflow_id":workflow,"artifact_digest":artifact,"root":root,"request":request}
@@ -304,14 +304,15 @@ class BridgeTest(unittest.TestCase):
         with mock.patch.object(self.bridge.council,"setup_v2",side_effect=ValueError("private input")):
             status,value,_,_=self.call("POST","/v1/councils",raw=raw)
         self.assertEqual((status,value),(422,{"error":"workflow_preflight_failed"}))
-        workflow="pr-risk-council-"+hashlib.sha256(request["operation_id"].encode()).hexdigest()[:32]
+        workflow="pr-risk-council-"+hashlib.sha256((request["operation_id"]+":"+request["nonce"]).encode()).hexdigest()[:32]
         self.assertEqual(self.bridge.load_state(workflow)["phase"],"creating")
         self.bridge.council.setup_v2=original
         self.assertEqual(self.call("POST","/v1/councils",raw=raw)[0],200)
         self.assertEqual(self.bridge.load_state(workflow)["phase"],"active")
-        changed=dict(request,nonce="b"*32)
+        changed=dict(request,repo="other/repo")
         with mock.patch.object(self.bridge.council,"v2_context",side_effect=AssertionError("must not preflight")):
             self.assertEqual(self.create(changed)[0],409)
+        self.assertEqual(self.create(dict(request,nonce="b"*32))[0],429)
         self.assertEqual(self.create(self.request_body("operation-two"))[0],429)
         state=self.bridge.load_state(workflow)
         self.assertEqual(state["request_body_digest"],hashlib.sha256(raw).hexdigest())
@@ -340,6 +341,25 @@ class BridgeTest(unittest.TestCase):
         self.assertFalse(self.bridge.council.board)
         self.assertEqual(list((self.state/"workflows").glob("*.json")),[])
 
+    def test_missing_workflow_is_unknown_only_when_global_board_is_absent(self):
+        workflow = "pr-risk-council-" + "0" * 32
+        self.bridge.council.setup_v2(self.home,self.install,self.request_body(),self.bridge.contract)
+        self.assertEqual(self.call("GET",f"/v1/councils/{workflow}")[:2],
+                         (409,{"error":"state_board_mismatch"}))
+        self.assertEqual(self.call("POST",f"/v1/councils/{workflow}/stop",
+            {"operation_id":"operation-one","request_body_digest":"0"*64,"nonce":"a"*32})[:2],
+            (409,{"error":"state_board_mismatch"}))
+        self.bridge.council.board=False; (self.home/"fake-kanban.db").unlink()
+        status,value,headers,body=self.call("GET",f"/v1/councils/{workflow}")
+        self.assertEqual((status,value),(404,{"error":"unknown_workflow"}))
+        digest=bridge_module.body_digest(body)
+        preimage=bridge_module.response_preimage(1,int(headers["X-Hermes-Timestamp"]),
+            headers["X-Hermes-Nonce"],digest,"GET",f"/v1/councils/{workflow}",404)
+        self.assertEqual(headers["X-Hermes-Signature"],bridge_module.signature(self.bridge.key,preimage))
+        self.assertEqual(self.call("POST",f"/v1/councils/{workflow}/stop",
+            {"operation_id":"operation-one","request_body_digest":"0"*64,"nonce":"a"*32})[:2],
+            (404,{"error":"unknown_workflow"}))
+
     def test_atomic_enospc_preserves_previous_state(self):
         target=self.root/"atomic.json"; bridge_module.atomic_json(target,{"old":True}); before=target.read_bytes()
         with mock.patch.object(bridge_module.os,"replace",side_effect=OSError(errno.ENOSPC,"full")):
@@ -364,8 +384,11 @@ class BridgeTest(unittest.TestCase):
         replay=self.action(workflow,"archive"); self.assertEqual((replay[0],replay[1]),(200,value))
         status,archived,_,_=self.call("GET",f"/v1/councils/{workflow}")
         self.assertEqual((status,archived["error"],archived["tombstone"]),(410,"archived_workflow",value))
-        status,created,_,_=self.create(self.request_body("operation-two",nonce="b"*32))
-        self.assertEqual(status,201); report=self.read_only_bridge().reconcile_report()
+        status,created,_,_=self.create(self.request_body(nonce="b"*32))
+        self.assertEqual(status,201); self.assertNotEqual(created["workflow_id"],workflow)
+        self.assertTrue(self.bridge.state_path(workflow).exists())
+        self.assertTrue(self.bridge.state_path(created["workflow_id"]).exists())
+        report=self.read_only_bridge().reconcile_report()
         archived_row=next(row for row in report["workflows"] if row["workflow_id"]==workflow)
         active_row=next(row for row in report["workflows"] if row["workflow_id"]==created["workflow_id"])
         self.assertEqual((archived_row["phase"],archived_row["mismatch"],archived_row["status"]),

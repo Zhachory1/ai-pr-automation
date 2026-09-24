@@ -264,6 +264,10 @@ services:
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
       HERMES_API_KEYS_FILE: /run/secrets/hermes_api_keys
       HERMES_API_BASE_URL: http://host.docker.internal:8642
+      HERMES_KANBAN_BRIDGE_KEY_FILE: /run/secrets/hermes_kanban_bridge_key
+      HERMES_KANBAN_BRIDGE_URL: http://host.docker.internal:8766
+      HERMES_KANBAN_BRIDGE_HOST: hermes-council.localhost:8766
+      PR_SAFETY_ANALYSIS_ENGINE: ${PR_SAFETY_ANALYSIS_ENGINE:-single}
       HERMES_CONTROLLER_LEASE_SECONDS: ${HERMES_CONTROLLER_LEASE_SECONDS:-120}
       HERMES_CONTROLLER_POLL_SECONDS: ${HERMES_CONTROLLER_POLL_SECONDS:-2}
       DOC_WRITER_STAGE_DIR: /doc-stage
@@ -281,6 +285,7 @@ services:
       HERMES_MEMORY_ORG_NAME_BLOCKLIST: ${HERMES_MEMORY_ORG_NAME_BLOCKLIST:-}
     secrets:
       - hermes_api_keys
+      - hermes_kanban_bridge_key
     volumes:
       - ${DOC_WRITER_STAGE_HOST:-/Users/Shared/ai-pr-automation-runtime/doc-writer}:/doc-stage
       - ${DOC_WRITER_INBOX_HOST:-/Users/zhach/private-docs/inbox}:/doc-inbox
@@ -432,5 +437,7 @@ secrets:
     file: ${FLEET_CONTROLLER_TLS_KEY_FILE:?set FLEET_CONTROLLER_TLS_KEY_FILE}
   hermes_api_keys:
     file: ${HERMES_API_KEYS_FILE:?set HERMES_API_KEYS_FILE}
+  hermes_kanban_bridge_key:
+    file: ${HERMES_KANBAN_BRIDGE_KEY_FILE:?set HERMES_KANBAN_BRIDGE_KEY_FILE}
   github_read_token:
     file: ${GITHUB_READ_TOKEN_FILE:-/dev/null}

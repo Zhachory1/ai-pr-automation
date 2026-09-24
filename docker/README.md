@@ -2,8 +2,9 @@
 
 One `docker-compose.yml` (repo root) + this dir. Compose runs Postgres, Fleet Controller, support
 services, deterministic producers, and Hermes API controller. Model/tool execution stays in pinned
-host Hermes under `hermes-agent`; controller reaches profile-scoped Runs API through
-`host.docker.internal` (see [`../docs/hermes/README.md`](../docs/hermes/README.md)).
+host Hermes under `hermes-agent`; controller reaches profile-scoped Runs API and the signed
+PR-safety Kanban recovery bridge through `host.docker.internal` (see
+[`../docs/hermes/README.md`](../docs/hermes/README.md)).
 
 ## Bring it up
 
@@ -19,7 +20,7 @@ fresh-install baseline.
 
 ## Queue and reconciliation
 
-Compose controller reserves exact Runs API bytes and stable idempotency key in `hermes_runs`, renews
+Compose controller reserves exact Runs API or Kanban bridge bytes and stable operation identity in `hermes_runs`, renews
 the queue lease, and nonce-fences terminal settlement. DB-enforced caps are maintain=3 and one for
 each other kind. Direct-effect uncertainty enters `reconcile`; matching operation remains blocked and
 never auto-retries. `reconcile` rows appear in Fleet Controller. Verify remote state before recording
@@ -102,4 +103,6 @@ wrong path and silently re-init an empty cluster — data loss, no error. To mov
 `docker/initdb/01-schema.sql` loads once on first Postgres boot. Numbered migrations add queue APIs,
 `hermes_kind_routes`, and generalized `hermes_runs`; schema-migrate reapplies upgrades idempotently.
 Postgres enforces route generations, fixed caps, exact-byte digest, one unresolved operation, replay
-bounds, and nonce-fenced settlement.
+bounds, and nonce-fenced settlement. Dedicated Kanban bridge HMAC secret mounts only into
+`hermes-controller`; `PR_SAFETY_ANALYSIS_ENGINE` defaults to `single`, so bridge availability can
+recover persisted Kanban markers but cannot create new Kanban claims.

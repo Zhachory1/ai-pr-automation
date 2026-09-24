@@ -345,7 +345,8 @@ def v2_context(home, request_value, contract_value):
     contract = validate_v2_contract(contract_value)
     request, snapshot, policy, diff, policy_bytes = validate_request(request_value)
     contract_digest = hashlib.sha256(canonical(contract).encode()).hexdigest()
-    workflow_id = "pr-risk-council-" + hashlib.sha256(request["operation_id"].encode()).hexdigest()[:32]
+    workflow_id = "pr-risk-council-" + hashlib.sha256(
+        f'{request["operation_id"]}:{request["nonce"]}'.encode()).hexdigest()[:32]
     artifact_digest = hashlib.sha256(canonical({"request":request,"contract_digest":contract_digest}).encode()).hexdigest()
     configured_root = os.environ.get("PR_SAFETY_WORKFLOW_ROOT")
     workflow_root = Path(configured_root) if configured_root else home / "workflow-runs"

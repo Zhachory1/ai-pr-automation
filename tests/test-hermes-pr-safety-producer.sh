@@ -18,7 +18,7 @@ cleanup() { docker rm -f "$CID" >/dev/null 2>&1 || true; chmod -R u+w "$TMP" 2>/
 trap cleanup EXIT
 docker run --rm -d --name "$CID" -e POSTGRES_PASSWORD=t -e POSTGRES_DB=fleet -p "$PORT:5432" postgres:16 >/dev/null
 for _ in $(seq 1 30); do docker exec "$CID" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
-for f in docker/initdb/{01-schema,02-agent-server,03-human-review-queue,04-pending-decision-approval,04-pr-safety-review,05-pr-safety-merged-pr-producer,07-hermes-autonomy,09-hermes-yaml-authority,10-hermes-queue-depth,11-hermes-pr-safety}.sql; do
+for f in docker/initdb/{01-schema,02-agent-server,03-human-review-queue,04-pending-decision-approval,04-pr-safety-review,05-pr-safety-merged-pr-producer,07-hermes-autonomy,09-hermes-yaml-authority,10-hermes-queue-depth,11-hermes-pr-safety,12-hermes-lease-reclaim,13-hermes-api-control-plane}.sql; do
   docker cp "$f" "$CID:/tmp/${f##*/}"
   docker exec "$CID" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 -f "/tmp/${f##*/}" >/dev/null
 done
@@ -97,6 +97,24 @@ printf '{"number":11,"state":"closed","merge_commit_sha":"%s","base":{"sha":"%s"
 printf '[{"number":11,"repository":{"nameWithOwner":"other/repo"}}]\n' > "$TMP/search.json"
 bin/hermes-pr-safety-producer
 check "ungranted repo is never enqueued" "q \"SELECT count(*) FROM requests WHERE payload->>'repo'='other/repo';\" | grep -qx 0"
+
+# Settled Kanban requests retain snapshots until bridge archive/effect completion closes hermes_runs.
+gen="$(printf 'a%.0s' {1..64})"; nonce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+q "SELECT hermes_configure_api_route('pr-safety-review','pr-safety-v1',1,'$gen')" >/dev/null
+request_id="$(q "SELECT id FROM requests WHERE payload->>'head_sha'='$MERGE2'")"
+operation="$(q "SELECT payload->>'operation_id' FROM requests WHERE id=$request_id")"
+payload="$(q "SELECT payload::text FROM requests WHERE id=$request_id")"
+body="$(jq -cS --arg nonce "$nonce" '. + {nonce:$nonce}' <<<"$payload")"
+hex="$(printf %s "$body" | xxd -p | tr -d '\n')"; body_digest="$(printf %s "$body" | shasum -a 256 | awk '{print $1}')"
+workflow="pr-risk-council-$(printf %s "$operation:$nonce" | shasum -a 256 | awk '{print substr($1,1,32)}')"
+q "SELECT hermes_claim_kanban_safety_request($request_id,'$nonce',120,1,1,'$gen','$workflow',decode('$hex','hex'),'$body_digest')" >/dev/null
+q "SELECT hermes_settle_pr_safety_request($request_id,'$nonce','failed','test',false,NULL,NULL)" >/dev/null
+mkdir "$PR_SAFETY_SNAPSHOT_ROOT/pr-safety-newer"; touch -t 203001010000 "$PR_SAFETY_SNAPSHOT_ROOT/pr-safety-newer"
+PR_SAFETY_SNAPSHOT_KEEP=1 bin/hermes-pr-safety-producer >/dev/null
+check "settled Kanban crash keeps snapshot while archive completion is pending" "[[ -d '$PR_SAFETY_SNAPSHOT_ROOT/$operation' ]]"
+q "SELECT hermes_complete_effect_attempt($request_id,1,'$nonce','failed','test')" >/dev/null
+PR_SAFETY_SNAPSHOT_KEEP=1 bin/hermes-pr-safety-producer >/dev/null
+check "completed Kanban cleanup releases snapshot to producer GC" "[[ ! -e '$PR_SAFETY_SNAPSHOT_ROOT/$operation' ]]"
 
 # SAML-403 in search output is a loud fatal, not a silent empty result
 cat > "$TMP/bin/gh" <<'SH'
