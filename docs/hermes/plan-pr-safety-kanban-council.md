@@ -136,7 +136,7 @@ Create only if needed:
 - Parameterize current fixed fixture path with trusted request input.
 - Preserve existing default sanitized canary behavior.
 - Create exact four specialist tasks and one Sonnet synthesis task.
-- Use stable operation-derived workflow/task keys.
+- Use stable per-attempt workflow/task keys derived from operation ID plus safety nonce; retries get distinct tombstones.
 - Generate read-only `identity.json`, `diff.patch`, and `policy.md`; create `.council-tools.json` for sanitized local graph acceptance only. PR 3 owns production binding creation.
 - Add exact specialist and synthesis validators.
 - Validate changed-line citations.

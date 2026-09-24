@@ -8,23 +8,26 @@ autonomous agent fleet**.
 A single pinned [Hermes](https://github.com/NousResearch/hermes) runtime executes profiles under the
 non-admin `hermes-agent` macOS account. Docker Compose owns producers, queue claims, leases, strict
 result handling, and deterministic effects. Controller calls host Hermes through profile-scoped Runs
-API keys; host launchd keeps only gateway and dashboard.
+API keys; host launchd keeps gateway, dashboard, and the PR-safety Kanban recovery bridge.
 
 ```
-Compose producers ──▶ Postgres queue/attempts ──▶ Compose controller ──Runs API──▶ host Hermes
+Compose producers ──▶ Postgres queue/attempts ──▶ Compose controller ──Runs API/bridge──▶ host Hermes
 ```
 
 - **Postgres queue** keeps dedupe, fixed per-kind caps, route generations, exact request bytes,
   stable idempotency keys, leased claims, exact-byte document approval, and reconcile state.
 - **Compose controller** claims and renews queue work, replays lost submissions with identical bytes,
-  polls/stops Hermes runs, strictly parses output, and nonce-fences settlement.
+  polls/stops Hermes runs, strictly parses output, and nonce-fences settlement. PR safety defaults to
+  current single run, which never creates a Kanban council. The signed bridge stays available only so
+  persisted Kanban attempts can recover; opting into `kanban` also allows new council claims.
 - **Host-native Hermes** owns profile/model/tool execution and host credentials. One immutable profile
   maps to each queue kind; direct-effect uncertainty enters human reconcile and never blind-retries.
 - **Fleet Controller** (`status`) is the operator UI at `https://fleet.localhost:8080`: runs, queue, human-review
   queue, and exact-byte document approval. GitHub remains the PR merge UI.
 - The `hermes-agent` account is the execution boundary. It holds provider OAuth, repository deploy
   keys, GitHub API access, and approved MCP credentials, but no queue database credential. Compose
-  controller cannot read those host credentials or service home.
+  controller cannot read those host credentials or service home. The bridge has no Postgres, GitHub,
+  or effect credential and is trusted only on this single-host deployment.
 
 Server-side GitHub branch protection keeps merge, protected-branch push, unsafe workflow execution,
 deployment, and administration out of the agent's reach. Merge stays a human operating decision.
@@ -46,7 +49,7 @@ Configure `.env`, install the pinned host Hermes runtime, then start the fleet.
 
 ```bash
 cp .env.example .env    # fill DB/UI secrets, API key bundle, producer token, and runtime paths
-scripts/fleet.sh up                # Compose controller/producers + host gateway/dashboard
+scripts/fleet.sh up                # Compose controller/producers + host gateway/dashboard/bridge
 scripts/fleet.sh status
 scripts/m0-verify.sh               # substrate checks (Postgres, Hindsight, swarmvault, coderag)
 ```
@@ -146,7 +149,7 @@ This rollback restores anonymous HTTP Fleet Controller. Stop the fleet before us
 | `pr-maintain` | Open PRs authored by the operator | Handle review feedback and CI with one bounded fix pass, at most 3 rounds per PR lineage |
 | `swe-implement` | Enrolled repository | Implement a bounded task on a fresh branch and open a draft PR |
 | `doc-write` | Fleet Controller | Draft a PRD/DD; exact bytes require human approval before filing |
-| `pr-safety-review` | Merged PRs | Read-only safety analysis; only incident candidates surface |
+| `pr-safety-review` | Merged PRs | Read-only safety analysis (`single` default, opt-in fixed Kanban council); only incident candidates surface |
 | `memory-curate` | Bounded local source slice | Propose memories; deterministic team/org gates own writes |
 
 Each kind maps to one immutable Hermes profile under `agent-config/hermes/profiles/`.
@@ -219,6 +222,9 @@ The queue tests use a throwaway `postgres:16` container. They do not contact Git
 - A `reconcile` row means an effect boundary was crossed with an unknown outcome. Verify GitHub state
   before marking it `done` or returning it to `queued`; automatic retries stay blocked for that head.
 - If Postgres is unavailable, claims fail and queued work remains durable until Docker is restarted.
+- Before pulling an upgrade, drain every open Kanban attempt recorded in Postgres. Same-version
+  `down`/`up` restart is supported; support/profile replacement remains blocked by nonarchived bridge
+  state files.
 - Logs, prompts, and worktrees can contain private code or review text. Keep them on encrypted local
   storage and choose retention appropriate for your environment.
 

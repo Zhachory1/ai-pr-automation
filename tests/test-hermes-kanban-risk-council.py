@@ -231,6 +231,11 @@ def complete_task(conn,key,**kw):
                 self.assertFalse(setup["resumed"]); self.assertEqual(len(setup["tasks"]),5)
                 resumed=council.setup(home,install,request,CONTRACT_V2); self.assertTrue(resumed["resumed"])
                 ctx=council.v2_context(home,request,CONTRACT_V2)
+                expected="pr-risk-council-"+__import__("hashlib").sha256(
+                    f'{request["operation_id"]}:{request["nonce"]}'.encode()).hexdigest()[:32]
+                self.assertEqual(ctx["workflow_id"],expected)
+                retry=dict(request,nonce="b"*32)
+                self.assertNotEqual(council.v2_context(home,retry,CONTRACT_V2)["workflow_id"],expected)
                 self.assertEqual(ctx["root"].parent,workflow_root)
                 self.assertFalse((home/"workflow-runs").exists())
                 self.assertEqual(ctx["root"].stat().st_mode & 0o777,0o700)

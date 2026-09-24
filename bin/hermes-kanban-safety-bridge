@@ -205,7 +205,9 @@ class Bridge:
 
     def load_state(self, workflow_id):
         path = self.state_path(workflow_id)
-        if not path.exists(): raise BridgeError(404, "unknown_workflow")
+        if not path.exists():
+            if self.raw_board_present(): raise BridgeError(409, "state_board_mismatch")
+            raise BridgeError(404, "unknown_workflow")
         data = json.loads(regular_private(path, self.uid).read_text())
         required = {"schema_version","phase","workflow_id","operation_id","request_identity","request_body_digest",
                     "safety_request_nonce","artifact_digest","contract_digest","profile_generations","runtime_digest",
@@ -220,7 +222,8 @@ class Bridge:
         valid = set(data) == required and data.get("schema_version") == 1 \
             and data.get("phase") in STATE_PHASES and data.get("workflow_id") == workflow_id \
             and isinstance(operation_id, str) and OPERATION_RE.fullmatch(operation_id) \
-            and workflow_id == "pr-risk-council-" + hashlib.sha256(operation_id.encode()).hexdigest()[:32] \
+            and workflow_id == "pr-risk-council-" + hashlib.sha256(
+                f'{operation_id}:{data.get("safety_request_nonce")}'.encode()).hexdigest()[:32] \
             and isinstance(identity, dict) and set(identity) == identity_keys \
             and identity.get("operation_id") == operation_id \
             and isinstance(data.get("safety_request_nonce"), str) \
@@ -413,9 +416,11 @@ class Bridge:
 
     def create(self, body, request):
         if not isinstance(request, dict) or not isinstance(request.get("operation_id"), str) \
-                or not OPERATION_RE.fullmatch(request["operation_id"]):
+                or not OPERATION_RE.fullmatch(request["operation_id"]) \
+                or not isinstance(request.get("nonce"), str) or not NONCE_RE.fullmatch(request["nonce"]):
             raise BridgeError(400, "invalid_request_body")
-        workflow_id = "pr-risk-council-" + hashlib.sha256(request["operation_id"].encode()).hexdigest()[:32]
+        workflow_id = "pr-risk-council-" + hashlib.sha256(
+            f'{request["operation_id"]}:{request["nonce"]}'.encode()).hexdigest()[:32]
         digest, path = body_digest(body), self.state_path(workflow_id)
         if path.exists():
             state = self.load_state(workflow_id)

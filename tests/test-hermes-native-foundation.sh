@@ -242,7 +242,19 @@ for value in ('env -i','HOME="$SERVICE_HOME"','HERMES_HOME="$HERMES_HOME"',
               '"$INSTALL_DIR/venv/bin/python" -B "$BRIDGE_RECONCILE"'):
     assert value in command, value
 PY
-! grep -Fq '"$ROOT/scripts/hermes-native.sh" bridge-start' scripts/hermes-native.sh
+python3 - <<'PY'
+from pathlib import Path
+source=Path('scripts/hermes-native.sh').read_text()
+up=source[source.index('  up)'):source.index('  down)')]
+down=source[source.index('  down)'):source.index('  status)')]
+status=source[source.index('  status)'):source.index('  logs)')]
+assert 'bridge-start' not in up
+assert up.index('preflight') < up.index('sync-support') < up.index('"$ROOT/scripts/hermes-native.sh" start') < up.index('dashboard-start')
+assert 'preflight >/dev/null 2>&1 \\\n      ||' in up
+assert down.index('bridge-stop') < down.index('dashboard-stop') < down.index('"$ROOT/scripts/hermes-native.sh" stop')
+assert '"$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL"' in status
+assert 'bridge-recovery-state' not in source and 'resume)' not in source
+PY
 grep -Fq 'if env != expected_env' scripts/hermes-kanban-safety-bridge-preflight.py
 grep -Fq '<key>HERMES_KANBAN_BUSY_TIMEOUT_MS</key><string>120000</string>' launchd/com.example.ai-pr-automation-hermes-kanban-safety-bridge.plist.template
 grep -Fq '<key>HERMES_KANBAN_BUSY_TIMEOUT_MS</key><string>120000</string>' launchd/com.example.ai-pr-automation-hermes.plist.template
@@ -255,6 +267,14 @@ grep -Fq 'checked(args.key_file.parent, root_uid, 0o750, True, args.staff_gid)' 
 grep -Fq 'service_can_read(args.key_file, service)' scripts/hermes-kanban-safety-bridge-preflight.py
 grep -Fq '/Users/Shared/ai-pr-automation-runtime/hermes-bridge-secrets/key.json' bin/hermes-kanban-safety-bridge
 grep -Fq '<key>HERMES_KANBAN_BRIDGE_KEY_FILE</key><string>__BRIDGE_KEY_FILE__</string>' launchd/com.example.ai-pr-automation-hermes-kanban-safety-bridge.plist.template
+python3 - <<'PY'
+import plistlib
+from pathlib import Path
+value=plistlib.loads(Path('launchd/com.example.ai-pr-automation-hermes-kanban-safety-bridge.plist.template').read_bytes())
+environment=value['EnvironmentVariables']
+for fragment in ('PG','POSTGRES','DATABASE','GITHUB','GH_TOKEN','EFFECT'):
+    assert not any(fragment in key for key in environment), fragment
+PY
 ! grep -Fq 'hermes-snapshot-reader' scripts/hermes-native.sh
 grep -Fq '<key>HERMES_COUNCIL_TOOLS_PYTHON</key><string>__HERMES_INSTALL_DIR__/venv/bin/python</string>' launchd/com.example.ai-pr-automation-hermes.plist.template
 grep -Fq '"__HERMES_INSTALL_DIR__":install_dir' scripts/hermes-native.sh
@@ -303,12 +323,23 @@ grep -Fq 'wait_unloaded "$DASHBOARD_LABEL"' scripts/hermes-native.sh
 ! grep -Fq '"$ROOT/scripts/hermes-native.sh" dispatcher-start' scripts/hermes-native.sh
 ! grep -Fq '"$ROOT/scripts/hermes-native.sh" producer-start' scripts/hermes-native.sh
 grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
-grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" sync-support' scripts/fleet.sh
+grep -Fq 'sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" up' scripts/fleet.sh
 grep -Fq 'HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml' scripts/fleet.sh
 grep -Fq 'export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"' scripts/fleet.sh
 grep -Fq 'cat "$AUTHORITY_SOURCE" > "$DOCKER_AUTHORITY"' scripts/fleet.sh
 ! grep -Fq 'mv "$temporary" "$DOCKER_AUTHORITY"' scripts/fleet.sh
-grep -Fq 'sudo "$ROOT/scripts/hermes-native.sh" start' scripts/fleet.sh
+python3 - <<'PY'
+from pathlib import Path
+source=Path('scripts/fleet.sh').read_text()
+up=source[source.index('  up)'):source.index('  down)')]
+down=source[source.index('  down)'):source.index('  status)')]
+assert 'export HERMES_KANBAN_BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"' in source
+assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" up') == 1
+assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" bridge-start') == 1
+assert up.index('hermes-native.sh" up') < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up')
+assert 'bridge-recovery-state' not in source and 'read_safety_engine' not in source and 'resume' not in source
+assert down.index('compose.sh" down') < down.index('hermes-native.sh" down')
+PY
 grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
 grep -Fq 'HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime' scripts/fleet.sh
 grep -Fq 'MEMORY_CURATOR_STATE_DIR=$MEMORY_STATE' scripts/configure-hermes-role-env.sh

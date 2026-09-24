@@ -8,15 +8,15 @@ Compose owns deterministic scheduling and effects. Host Hermes owns profile exec
 
 ```text
 Compose producers -> Postgres requests/hermes_runs -> Compose hermes-controller
-                                                   -> host.docker.internal:8642
-                                                   -> /p/<profile>/v1/runs
+                                                   -> host.docker.internal:8642 (Runs API)
+                                                   -> host.docker.internal:8766 (Kanban recovery bridge)
 ```
 
 Host launchd keeps:
 
 - pinned Hermes gateway bound to `127.0.0.1:8642`;
 - Hermes dashboard;
-- installed but inactive PR safety Kanban bridge definition bound to `127.0.0.1:8766`.
+- PR safety Kanban bridge bound to `127.0.0.1:8766`, always available for persisted-attempt recovery.
 
 Compose runs:
 
@@ -28,8 +28,10 @@ Compose runs:
 - Postgres, Fleet Controller, and support services.
 
 No controller mount exposes Hermes service home, provider OAuth, SSH keys, browser profile, Docker
-socket, or GitHub write credentials. Controller receives profile API key bundle and deterministic
-artifact paths. GitHub discovery producers receive only read-only token.
+socket, or GitHub write credentials. Controller receives profile API key bundle, dedicated bridge
+HMAC key, and deterministic artifact paths. GitHub discovery producers receive only read-only token.
+The bridge has no Postgres, GitHub, or effect credentials. It is trusted only within this single-host
+Docker Desktop-to-loopback deployment.
 
 Approved design:
 
@@ -52,7 +54,7 @@ Approved design:
 
 Claim and attempt reservation are one transaction. Each `hermes_runs` row stores immutable operation
 identity, route/auth/profile generations, exact serialized request bytes and SHA-256, stable
-idempotency key, submit count/deadline, Hermes run ID, terminal output digest, and reconcile evidence.
+idempotency key, run/workflow marker, terminal output digest, and reconcile evidence.
 Every `submitting` attempt consumes kind capacity, including accepted, running, and stop-unconfirmed
 attempts.
 
@@ -66,6 +68,14 @@ Controller behavior:
 6. stop same Hermes run on lease loss and reconcile if termination is uncertain;
 7. digest terminal output, strict-parse per kind, run deterministic effect, and nonce-fence settlement.
 
+For `PR_SAFETY_ANALYSIS_ENGINE=kanban`, claim atomically stores `kanban:<workflow_id>` with exact
+canonical bridge bytes. Recovery follows that persisted marker, not current environment. Controller
+polls signed status while renewing lease, maps verified synthesis, settles once, confirms archived
+tombstone, then closes attempt. Deadline or lease loss requires signed stop confirmation first.
+Default `single` keeps existing Runs API path and request bytes and never calls the bridge for a new
+safety claim. A persisted `kanban:<workflow_id>` marker still recovers through the always-running bridge
+when current configuration is `single`; recovery does not create another model run or council.
+
 Review, maintain, and SWE are direct-effect kinds. Missing/interrupted/malformed or otherwise uncertain
 results enter `reconcile`; matching operation key remains blocked until human disposition. They never
 start a second run automatically.
@@ -74,8 +84,9 @@ start a second run automatically.
 
 - `doc-write`: controller reuses atomic stage/publication helper. Model returns questions or document
   bytes only. Exact staged bytes and digest bind human approval; publication-only requests skip model.
-- `pr-safety-review`: controller validates snapshot head/base/diff and pinned policy before submit,
-  writes immutable handoff after strict output, and inserts human queue row only for incident candidate.
+- `pr-safety-review`: controller validates snapshot head/base/diff and pinned policy before claim.
+  `single` uses current profile run; opt-in `kanban` uses fixed council bridge. Both write same immutable
+  handoff and insert human queue row only for incident candidate. No automatic cross-engine fallback.
 - `memory-curate`: model proposes candidates from bounded source bytes. Controller applies secret,
   shape, convention, team dedupe, stricter org, and watermark gates before writes.
 - `pr-review`, `pr-maintain`, `swe-implement`: profile performs GitHub effect; controller validates
@@ -125,7 +136,9 @@ Set in `.env`:
 
 - `HERMES_AUTHORITY_FILE`;
 - `GITHUB_READ_TOKEN_FILE`;
-- `PR_SAFETY_MERGED_PR_AUTHORS`, policy digest, and shared snapshot path;
+- `PR_SAFETY_MERGED_PR_AUTHORS`, policy digest, shared snapshot path, and
+  `PR_SAFETY_ANALYSIS_ENGINE=single|kanban`;
+- `HERMES_KANBAN_BRIDGE_KEY_FILE` for always-mounted, controller-only signed bridge access;
 - document stage/inbox paths;
 - memory source/state paths.
 
@@ -133,7 +146,7 @@ Set in `.env`:
 
 ```bash
 sudo scripts/hermes-native.sh install       # pinned runtime, profiles, API keys, gateway/dashboard plists
-scripts/fleet.sh up                         # host gateway/dashboard + Compose controller/producers
+scripts/fleet.sh up                         # host gateway/dashboard/bridge + Compose controller/producers
 scripts/fleet.sh status
 scripts/fleet.sh logs
 scripts/fleet.sh down
@@ -145,10 +158,10 @@ preflight commands, creates its state directories, and renders its launchd plist
 to `/Users/Shared/ai-pr-automation-runtime/hermes-bridge-secrets/key.json`: parent is root-owned,
 `staff`-group-readable/traversable `0750`, and key is service-user-owned `0600`. This keeps bridge key
 outside operator-owned `secrets/`, whose API configuration path is `0700`. It does not bootstrap or
-start bridge. It refuses support-byte replacement while any nonarchived bridge
-workflow exists and unloads a loaded bridge before replacement. If that scan fails, it reloads the old
-bridge plist when the bridge was previously loaded. Source artifacts remain in repository only for
-bounded rollback/audit during bake; normal lifecycle cannot start retired workers.
+start bridge. Its state-file guard refuses support-byte replacement while any nonarchived bridge workflow
+exists and unloads a loaded bridge before replacement. If that scan fails, it reloads the old bridge plist
+when the bridge was previously loaded. Source artifacts remain in repository only for bounded
+rollback/audit during bake; normal lifecycle cannot start retired workers.
 
 Install and `sync-support` create all five v2 council profiles only when all five are absent and gateway,
 dashboard, and bridge are stopped. A partial set fails closed. If profiles are missing while gateway is
@@ -158,10 +171,22 @@ snapshot/workflow roots and the 120-second Kanban busy timeout used by profile M
 Bridge preflight also probes a fresh database through pinned Hermes Python and fails unless linked
 SQLite reports `journal_mode=delete` and `busy_timeout=120000`.
 
-Bridge operations are separate from fleet lifecycle:
+`fleet.sh up` always exports the real dedicated bridge key. Native `up` reuses an installed version that
+passes preflight, or runs guarded `sync-support` when installation is needed, then starts gateway and
+dashboard. Fleet explicitly starts the bridge before Compose. `fleet.sh down` reverses this order: it
+stops Compose first, then native `down` stops bridge, dashboard, and gateway. A same-version `down`/`up`
+restart is supported, including recovery of a persisted Kanban marker under `single`.
+
+The state-file guard protects support/profile replacement, but it does not determine engine behavior or
+query Postgres. Before pulling an upgrade, the operator must drain every open Kanban attempt in Postgres;
+do not pull or run `install`, `sync-support`, or `sync-profiles` while one exists. After drain, all bridge
+workflow markers must be archived before support sync. `PR_SAFETY_ANALYSIS_ENGINE=single` still blocks
+new Kanban claims even though bridge and key remain available for recovery.
+
+Direct bridge commands remain available for diagnostics:
 
 ```bash
-sudo scripts/hermes-native.sh bridge-start   # explicit activation; runs installed v2 preflight first
+sudo scripts/hermes-native.sh bridge-start
 sudo scripts/hermes-native.sh bridge-status
 sudo scripts/hermes-native.sh bridge-reconcile # read-only report under exact installed bridge environment
 sudo scripts/hermes-native.sh bridge-stop
@@ -174,14 +199,17 @@ Request HMAC-SHA256 input is newline-joined generation, timestamp, nonce, body S
 raw path. Signed responses use the same fields plus status as the last line. Timestamp tolerance is 60
 seconds; nonce retention is 120 seconds. Stop and archive bodies repeat exact persisted `operation_id`,
 create-body SHA-256 as `request_body_digest`, and safety request `nonce`. `GET /healthz`, create,
-status, stop, and archive responses are signed. Reconcile opens Kanban SQLite with `mode=ro` and is
-report-only; it never invokes the pinned connector, repairs, migrates, or removes bridge/Kanban state.
+status, stop, and archive responses are signed. Transport is plaintext only across the trusted single-host
+Docker Desktop-to-loopback channel; HMAC provides integrity/authentication, not confidentiality. Controller
+already has the same read-only snapshot paths. Multi-host or untrusted local networking requires TLS before
+activation. Reconcile opens Kanban SQLite with `mode=ro` and is report-only; it never invokes the pinned
+connector, repairs, migrates, or removes bridge/Kanban state.
 
 Bridge design uses repository contents from the immutable snapshot root as whole-repository context
 for this PR-safety use case. Council tools remain root-owned, non-writable, and confined to configured
 snapshot/workflow roots. Model-provider policy authorization is not asserted here; PR6 owns that gate.
-This design does not grant access outside those roots or activate bridge, controller, or fleet routes.
-PR4 owns controller metrics; final cutover owns `ONCALL.md`, SLOs, alerts, and activation. Until then the unloaded bridge emits only bounded structured request records for local conformance.
+This design grants no access outside those roots. Merge does not change `single` default or activate
+Kanban analysis. Final cutover owns policy approval, `ONCALL.md`, SLOs, alerts, and engine activation.
 
 ## Restricted Kanban council profiles
 
@@ -235,8 +263,10 @@ archives the board after terminal completion.
 ```bash
 python3 tests/test-hermes-api-foundation.py
 python3 tests/test-hermes-controller.py
+python3 tests/test-hermes-kanban-safety-bridge.py
 bash tests/test-hermes-control-plane.sh
 bash tests/test-hermes-compose-wiring.sh
+bash tests/test-hermes-native-foundation.sh
 bash tests/test-schema-migrate-idempotent.sh
 bash tests/test-hermes-doc-write-schema.sh
 bash tests/test-hermes-pr-safety-runner.sh

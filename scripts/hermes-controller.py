@@ -2,6 +2,7 @@
 """Compose queue controller for profile-scoped Hermes Runs API."""
 import base64
 import hashlib
+import hmac
 import json
 import os
 import pathlib
@@ -38,6 +39,12 @@ SECRET_RE = re.compile(
 NOISE_RE = re.compile(
     r"reviewed with (a )?verdict|verdict (of|was) (comment|approve|request)|"
     r"head (commit|sha) (is|=)|run (id|identifier) (is|=)|^PR [^ ]+#[0-9]+ (reviewed|approved|merged)", re.I)
+KANBAN_WORKFLOW_RE = re.compile(r"^pr-risk-council-[0-9a-f]{32}$")
+BRIDGE_STATE_KEYS = {"schema_version","phase","workflow_id","operation_id","request_body_digest",
+    "safety_request_nonce","artifact_digest","contract_digest","profile_generations","runtime_digest",
+    "task_ids","created_at","deadline_at","result_digest","result_package","terminal_failure",
+    "archive_cleanup_confirmed"}
+BRIDGE_PHASES = {"creating","active","stopping","stopped","terminal","archiving","archived"}
 
 
 def canonical(value):
@@ -265,6 +272,75 @@ def read_json_response(response):
     return value
 
 
+class BridgeClient:
+    def __init__(self, base_url, key_file, host, timeout=20):
+        parsed = urllib.parse.urlsplit(base_url)
+        if parsed.scheme != "http" or not parsed.netloc or parsed.path not in {"", "/"} \
+                or parsed.query or parsed.fragment:
+            raise SystemExit("invalid Kanban bridge URL")
+        try: bundle = json.loads(pathlib.Path(key_file).read_text())
+        except (OSError, json.JSONDecodeError) as error: raise SystemExit("invalid Kanban bridge key") from error
+        if set(bundle) != {"schema_version","auth_generation","key"} or bundle["schema_version"] != 1 \
+                or type(bundle["auth_generation"]) is not int or bundle["auth_generation"] < 1 \
+                or not isinstance(bundle["key"], str) or not re.fullmatch(r"[0-9a-f]{64}", bundle["key"]):
+            raise SystemExit("invalid Kanban bridge key")
+        if not re.fullmatch(r"[A-Za-z0-9.-]+:[1-9][0-9]{0,4}", host):
+            raise SystemExit("invalid Kanban bridge Host contract")
+        self.base, self.host, self.timeout = base_url.rstrip("/"), host, timeout
+        self.generation, self.key = bundle["auth_generation"], bytes.fromhex(bundle["key"])
+
+    @staticmethod
+    def preimage(generation, timestamp, nonce, digest, method, path, status=None):
+        values = [generation,timestamp,nonce,digest,method,path]
+        if status is not None: values.append(status)
+        return "\n".join(map(str, values)).encode()
+
+    def request(self, method, path, body=None):
+        body = b"" if body is None else body
+        if not isinstance(body, bytes) or len(body) > 1024 * 1024:
+            raise ValueError("invalid Kanban bridge request body")
+        timestamp, nonce = int(time.time()), os.urandom(16).hex()
+        digest = hashlib.sha256(body).hexdigest()
+        signature = hmac.new(self.key, self.preimage(
+            self.generation, timestamp, nonce, digest, method, path), hashlib.sha256).hexdigest()
+        headers = {"Host":self.host,"X-Hermes-Auth-Generation":str(self.generation),
+            "X-Hermes-Timestamp":str(timestamp),"X-Hermes-Nonce":nonce,
+            "X-Hermes-Body-SHA256":digest,"X-Hermes-Signature":signature}
+        if method == "POST": headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(self.base + path, data=body if method == "POST" else None,
+                                         headers=headers, method=method)
+        try:
+            response = urllib.request.urlopen(request, timeout=self.timeout)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            status = response.status
+            raw = response.read(1024 * 1024 + 1)
+            response_headers = response.headers
+        if len(raw) > 1024 * 1024 or response_headers.get_all("Content-Type", []) != ["application/json"]:
+            raise ValueError("invalid Kanban bridge response")
+        lengths = response_headers.get_all("Content-Length", [])
+        if lengths != [str(len(raw))]: raise ValueError("invalid Kanban bridge response length")
+        names = ("X-Hermes-Auth-Generation","X-Hermes-Timestamp","X-Hermes-Nonce",
+                 "X-Hermes-Body-SHA256","X-Hermes-Signature")
+        values = {name:response_headers.get_all(name, []) for name in names}
+        if any(len(value) != 1 for value in values.values()): raise ValueError("unsigned Kanban bridge response")
+        try:
+            generation = int(values[names[0]][0]); response_time = int(values[names[1]][0])
+        except ValueError as error: raise ValueError("invalid Kanban bridge response authentication") from error
+        response_digest = hashlib.sha256(raw).hexdigest()
+        expected = hmac.new(self.key, self.preimage(generation, response_time, nonce, response_digest,
+            method, path, status), hashlib.sha256).hexdigest()
+        if values[names[0]][0] != str(generation) or values[names[1]][0] != str(response_time) \
+                or generation != self.generation or abs(int(time.time()) - response_time) > 60 \
+                or values[names[2]][0] != nonce or values[names[3]][0] != response_digest \
+                or not hmac.compare_digest(values[names[4]][0], expected):
+            raise ValueError("invalid Kanban bridge response authentication")
+        value = json.loads(raw)
+        if not isinstance(value, dict): raise ValueError("invalid Kanban bridge response body")
+        return status, value
+
+
 class HermesClient:
     def __init__(self, base_url, keys, timeout=20):
         self.base = base_url.rstrip("/")
@@ -296,6 +372,9 @@ class Controller:
         self.auth_generation = bundle["auth_generation"]
         self.keys = bundle["profiles"]
         self.client = HermesClient(os.environ.get("HERMES_API_BASE_URL", "http://host.docker.internal:8642"), self.keys)
+        self.safety_engine = os.environ.get("PR_SAFETY_ANALYSIS_ENGINE", "single")
+        if self.safety_engine not in {"single","kanban"}: raise SystemExit("invalid PR safety analysis engine")
+        self._bridge = None
         self.lease = int(os.environ.get("HERMES_CONTROLLER_LEASE_SECONDS", "120"))
         self.poll_interval = float(os.environ.get("HERMES_CONTROLLER_POLL_SECONDS", "2"))
         self.generations = {kind: profile_digest(profile) for kind, (profile, _) in KINDS.items()}
@@ -304,6 +383,14 @@ class Controller:
 
     def connect(self):
         return psycopg.connect(self.dsn, autocommit=True, row_factory=dict_row)
+
+    def bridge(self):
+        if self._bridge is None:
+            self._bridge = BridgeClient(
+                os.environ.get("HERMES_KANBAN_BRIDGE_URL", "http://host.docker.internal:8766"),
+                os.environ.get("HERMES_KANBAN_BRIDGE_KEY_FILE", "/run/secrets/hermes_kanban_bridge_key"),
+                os.environ.get("HERMES_KANBAN_BRIDGE_HOST", "hermes-council.localhost:8766"))
+        return self._bridge
 
     def configure(self):
         with self.connect() as db:
@@ -414,6 +501,21 @@ class Controller:
         if not raw:
             return None
         raw["nonce"] = os.urandom(16).hex()
+        if kind == "pr-safety-review" and self.safety_engine == "kanban":
+            error = self.safety_preflight(raw["payload"])
+            keys = ("operation_id","repo","pr","head_sha","base_sha","diff_hash","policy_version",
+                    "policy_digest","snapshot_path","policy_path")
+            body = canonical({key:raw["payload"][key] for key in keys} | {"nonce":raw["nonce"]}).encode()
+            workflow = "pr-risk-council-" + hashlib.sha256(
+                f'{raw["payload"]["operation_id"]}:{raw["nonce"]}'.encode()).hexdigest()[:32]
+            digest = hashlib.sha256(body).hexdigest()
+            with self.connect() as db:
+                row = db.execute("SELECT hermes_claim_kanban_safety_request(%s,%s,%s,%s,%s,%s,%s,%s,%s) attempt",
+                    (raw["id"],raw["nonce"],self.lease,raw["route_generation"],raw["auth_generation"],
+                     raw["profile_generation"],workflow,body,digest)).fetchone()
+            attempt = row["attempt"] if row else None
+            if attempt: attempt["preflight_error"] = error
+            return attempt
         prompt, error = self.build_prompt(raw)
         profile = KINDS[kind][0]
         with self.connect() as db:
@@ -641,7 +743,7 @@ class Controller:
             with os.fdopen(fd, "wb") as output: output.write(data); output.flush(); os.fsync(output.fileno())
         return str(target), hashlib.sha256(data).hexdigest()
 
-    def postprocess_safety(self, attempt, value):
+    def settle_safety_result(self, attempt, value):
         value = normalize_safety(value)
         if not valid_safety(value, attempt["payload"], attempt["nonce"]): raise ValueError("invalid safety result")
         if value["status"] == "superseded":
@@ -660,8 +762,247 @@ class Controller:
             (attempt["request_id"], attempt["nonce"], status, detail, bool(value["incident"]["candidate"]),
              json.dumps(proposal) if proposal else None, json.dumps(provenance) if provenance else None))
         if not ok: raise ValueError("safety settlement fence failed")
-        self.db_bool("SELECT hermes_complete_effect_attempt(%s,%s,%s,'completed',NULL) ok",
-            (attempt["request_id"], attempt["attempt_no"], attempt["nonce"]))
+
+    def complete_effect(self, attempt, state, error=None):
+        if not self.db_bool("SELECT hermes_complete_effect_attempt(%s,%s,%s,%s,%s) ok",
+            (attempt["request_id"],attempt["attempt_no"],attempt["nonce"],state,error)):
+            raise ValueError("effect attempt completion fence failed")
+
+    def postprocess_safety(self, attempt, value):
+        self.settle_safety_result(attempt, value)
+        self.complete_effect(attempt, "completed")
+
+    def settle_safety_failure(self, attempt, detail):
+        if not self.db_bool("SELECT hermes_settle_pr_safety_request(%s,%s,'failed',%s,false,NULL,NULL) ok",
+            (attempt["request_id"],attempt["nonce"],detail[:500])):
+            raise ValueError("safety failure settlement fence failed")
+
+    @staticmethod
+    def is_kanban(attempt):
+        return isinstance(attempt.get("run_id"), str) and attempt["run_id"].startswith("kanban:")
+
+    def kanban_workflow(self, attempt):
+        workflow = attempt["run_id"].removeprefix("kanban:")
+        if not KANBAN_WORKFLOW_RE.fullmatch(workflow): raise ValueError("invalid persisted Kanban workflow marker")
+        return workflow
+
+    def kanban_request_bytes(self, attempt):
+        encoded = attempt.get("request_b64")
+        if not isinstance(encoded, str): raise ValueError("invalid persisted Kanban request bytes")
+        body = base64.b64decode("".join(encoded.split()), validate=True)
+        if len(body) > 1024 * 1024 or hashlib.sha256(body).hexdigest() != attempt["request_digest"]:
+            raise ValueError("invalid persisted Kanban request bytes")
+        return body
+
+    def validate_bridge_state(self, attempt, value, workflow=None):
+        workflow = workflow or self.kanban_workflow(attempt)
+        try: request = json.loads(self.kanban_request_bytes(attempt))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("invalid persisted Kanban request JSON") from error
+        expected_artifact = hashlib.sha256(canonical(
+            {"request":request,"contract_digest":value.get("contract_digest")}).encode()).hexdigest()
+        if frozenset(value) not in {frozenset(BRIDGE_STATE_KEYS),frozenset(BRIDGE_STATE_KEYS | {"status"})} \
+                or value.get("schema_version") != 1 or value.get("phase") not in BRIDGE_PHASES \
+                or value.get("workflow_id") != workflow or value.get("operation_id") != attempt["payload"].get("operation_id") \
+                or value.get("request_body_digest") != attempt["request_digest"] \
+                or value.get("safety_request_nonce") != attempt["nonce"] \
+                or value.get("artifact_digest") != expected_artifact \
+                or not all(isinstance(value.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", value[key])
+                           for key in ("artifact_digest","contract_digest","runtime_digest")) \
+                or not isinstance(value.get("profile_generations"), dict) or not value["profile_generations"] \
+                or not all(isinstance(name,str) and isinstance(digest,str) and re.fullmatch(r"[0-9a-f]{64}",digest)
+                           for name,digest in value["profile_generations"].items()) \
+                or not isinstance(value.get("task_ids"), dict) \
+                or not (value["phase"] == "creating" and value["task_ids"] == {} or
+                        set(value["task_ids"]) == {"review","security","reliability","architecture","synthesis"}
+                        and len(set(value["task_ids"].values())) == 5
+                        and all(isinstance(task_id,str) and task_id for task_id in value["task_ids"].values())) \
+                or type(value.get("created_at")) is not int or type(value.get("deadline_at")) is not int \
+                or value["deadline_at"] < value["created_at"] \
+                or type(value.get("archive_cleanup_confirmed")) is not bool \
+                or value["phase"] == "archived" and value["archive_cleanup_confirmed"] is not True \
+                or "status" in value and not isinstance(value["status"],dict) \
+                or value.get("terminal_failure") not in {None,"expired","member_failed","verification_failed"}:
+            raise ValueError("malformed Kanban bridge state")
+        package, digest = value.get("result_package"), value.get("result_digest")
+        if package is None:
+            if digest is not None and not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
+                raise ValueError("malformed Kanban result digest")
+        elif not isinstance(package, dict) \
+                or package.get("workflow_id") != value["workflow_id"] \
+                or package.get("artifact_digest") != value["artifact_digest"] \
+                or digest != hashlib.sha256(canonical(package).encode()).hexdigest():
+            raise ValueError("malformed Kanban result package")
+        return value
+
+    def kanban_action_body(self, attempt):
+        return canonical({"operation_id":attempt["payload"]["operation_id"],
+            "request_body_digest":attempt["request_digest"],"nonce":attempt["nonce"]}).encode()
+
+    def kanban_status(self, attempt):
+        workflow = self.kanban_workflow(attempt)
+        status, value = self.bridge().request("GET", f"/v1/councils/{workflow}")
+        if status == 200: return "state", self.validate_bridge_state(attempt, value, workflow)
+        if status == 404 and value == {"error":"unknown_workflow"}: return "missing", None
+        if status == 410 and set(value) == {"error","tombstone"} and value["error"] == "archived_workflow":
+            return "archived", self.validate_bridge_state(attempt, value["tombstone"], workflow)
+        raise ValueError(f"unexpected Kanban status HTTP {status}")
+
+    def kanban_stop(self, attempt):
+        workflow = self.kanban_workflow(attempt)
+        status, value = self.bridge().request("POST", f"/v1/councils/{workflow}/stop",
+                                               self.kanban_action_body(attempt))
+        if status == 200:
+            value = self.validate_bridge_state(attempt, value, workflow)
+            if value["phase"] not in {"stopped","terminal"}: raise ValueError("Kanban stop unconfirmed")
+            return value
+        if status == 404 and value == {"error":"unknown_workflow"}: return None
+        if status == 410 and set(value) == {"error","tombstone"} and value["error"] == "archived_workflow":
+            return self.validate_bridge_state(attempt, value["tombstone"], workflow)
+        raise ValueError(f"Kanban stop HTTP {status}")
+
+    def kanban_archive(self, attempt):
+        workflow = self.kanban_workflow(attempt)
+        status, value = self.bridge().request("POST", f"/v1/councils/{workflow}/archive",
+                                               self.kanban_action_body(attempt))
+        if status != 200: raise ValueError(f"Kanban archive HTTP {status}")
+        value = self.validate_bridge_state(attempt, value, workflow)
+        if value["phase"] != "archived" or value["archive_cleanup_confirmed"] is not True \
+                or value["result_package"] is not None:
+            raise ValueError("Kanban archive tombstone unconfirmed")
+        return value
+
+    def record_kanban_terminal(self, attempt, status, value):
+        raw = canonical(value).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        if attempt.get("terminal_status") is not None and (
+                attempt["terminal_status"] != status or attempt.get("output_digest") != digest):
+            raise ValueError("immutable Kanban terminal mismatch")
+        if attempt.get("output_b64") is not None:
+            try: persisted = base64.b64decode(attempt["output_b64"], validate=True)
+            except (ValueError, TypeError) as error: raise ValueError("invalid persisted Kanban terminal") from error
+            if persisted != raw: raise ValueError("immutable Kanban terminal mismatch")
+        if not self.db_bool("SELECT hermes_api_record_terminal(%s,%s,%s,%s,%s) ok",
+            (attempt["request_id"],attempt["attempt_no"],attempt["nonce"],status,raw)):
+            raise ValueError("Kanban terminal record fence failed")
+
+    def finish_kanban_failure(self, attempt, detail, state=None):
+        if state is not None: self.record_kanban_terminal(attempt, "failed", state)
+        self.settle_safety_failure(attempt, detail)
+        if state is not None: self.kanban_archive(attempt)
+        self.complete_effect(attempt, "failed", detail[:500])
+
+    def stop_and_fail_kanban(self, attempt, detail, recover_lease=False):
+        if not self.db_bool("SELECT hermes_api_prepare_kanban_stop(%s,%s,%s) ok",
+            (attempt["request_id"],attempt["attempt_no"],attempt["nonce"])):
+            return False
+        try: state = self.kanban_stop(attempt)
+        except (OSError, ValueError, json.JSONDecodeError): return False
+        if not self.db_bool("SELECT hermes_api_confirm_kanban_stop(%s,%s,%s) ok",
+            (attempt["request_id"],attempt["attempt_no"],attempt["nonce"])):
+            return False
+        if recover_lease and not self.db_bool("SELECT hermes_api_recover_lease(%s,%s,%s,%s) ok",
+            (attempt["request_id"],attempt["attempt_no"],attempt["nonce"],self.lease)):
+            return False
+        self.finish_kanban_failure(attempt, detail, state)
+        return True
+
+    def fail_kanban_create(self, attempt, detail):
+        try: disposition, state = self.kanban_status(attempt)
+        except (OSError, ValueError, json.JSONDecodeError): return False
+        if disposition == "missing":
+            self.finish_kanban_failure(attempt, detail)
+            return True
+        if disposition == "archived":
+            self.settle_safety_failure(attempt, detail)
+            self.kanban_archive(attempt)
+            self.complete_effect(attempt, "failed", detail[:500])
+            return True
+        return self.stop_and_fail_kanban(attempt, detail)
+
+    def create_kanban(self, attempt):
+        body = self.kanban_request_bytes(attempt)
+        last = "Kanban create transport failure"
+        for _ in range(2):
+            try: status, value = self.bridge().request("POST", "/v1/councils", body)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                last = f"Kanban create {type(error).__name__}"
+                continue
+            if status in {200,201}:
+                return self.validate_bridge_state(attempt, value)
+            last = f"Kanban create HTTP {status}"
+            break
+        self.fail_kanban_create(attempt, last)
+        return None
+
+    def settle_kanban_terminal(self, attempt, state):
+        failure = state["terminal_failure"]
+        package = state["result_package"]
+        if state["phase"] != "terminal" or failure is not None or package is None:
+            self.finish_kanban_failure(attempt, f"Kanban terminal failure: {failure or state['phase']}", state)
+            return
+        try:
+            value = map_council_safety(package, attempt["payload"], attempt["nonce"])
+            if not valid_safety(value, attempt["payload"], attempt["nonce"]): raise ValueError("invalid mapped result")
+        except (KeyError, TypeError, ValueError) as error:
+            self.finish_kanban_failure(attempt, f"malformed Kanban package: {error}", state)
+            return
+        self.record_kanban_terminal(attempt, "completed", package)
+        self.settle_safety_result(attempt, value)
+        self.kanban_archive(attempt)
+        self.complete_effect(attempt, "completed")
+
+    def cleanup_settled_kanban(self, attempt):
+        disposition, state = self.kanban_status(attempt)
+        target = "completed" if attempt["request_status"] == "done" else "failed"
+        if disposition == "missing":
+            if target == "failed": self.complete_effect(attempt, target, "Kanban create not established")
+            return
+        if disposition == "state" and state["phase"] not in {"terminal","stopped","archiving","archived"}:
+            state = self.kanban_stop(attempt)
+        self.kanban_archive(attempt)
+        self.complete_effect(attempt, target, None if target == "completed" else "Kanban analysis failed")
+
+    def poll_kanban(self, attempt, state):
+        next_renew = time.monotonic() + self.lease / 3
+        while True:
+            if time.monotonic() >= next_renew:
+                if not self.db_bool("SELECT hermes_renew_request(%s,%s,%s) ok",
+                    (attempt["request_id"],attempt["nonce"],self.lease)):
+                    self.stop_and_fail_kanban(attempt, "Kanban lease lost; stop confirmed", True)
+                    return
+                next_renew = time.monotonic() + self.lease / 3
+            if time.time() > state["deadline_at"]:
+                self.stop_and_fail_kanban(attempt, "Kanban deadline exceeded; stop confirmed")
+                return
+            try: disposition, current = self.kanban_status(attempt)
+            except (OSError, ValueError, json.JSONDecodeError):
+                time.sleep(self.poll_interval); continue
+            if disposition == "missing": return
+            if disposition == "archived":
+                self.finish_kanban_failure(attempt, "Kanban archived before settlement", current)
+                return
+            state = current
+            if state["phase"] in {"terminal","stopped"}:
+                self.settle_kanban_terminal(attempt, state)
+                return
+            time.sleep(self.poll_interval)
+
+    def recover_kanban_terminal(self, attempt):
+        disposition, state = self.kanban_status(attempt)
+        if disposition != "state" or state["phase"] not in {"terminal","stopped"}:
+            raise ValueError("recorded Kanban terminal unavailable")
+        self.settle_kanban_terminal(attempt, state)
+
+    def process_kanban(self, attempt):
+        if attempt.get("request_status") in {"done","failed"}:
+            self.cleanup_settled_kanban(attempt)
+            return
+        if attempt.get("preflight_error"):
+            self.finish_kanban_failure(attempt, attempt["preflight_error"])
+            return
+        state = self.create_kanban(attempt)
+        if state is not None: self.poll_kanban(attempt, state)
 
     def mcp_call(self, url, tool, arguments):
         request = urllib.request.Request(url, data=canonical({"jsonrpc":"2.0","id":1,"method":"tools/call",
@@ -699,12 +1040,29 @@ class Controller:
 
     def process(self, attempt, recovering=False):
         key = (attempt["request_id"], attempt["attempt_no"])
+        kanban = self.is_kanban(attempt)
         try:
-            if recovering and not self.db_bool("SELECT hermes_api_recover_lease(%s,%s,%s,%s) ok",
-                (*key, attempt["nonce"], self.lease)):
+            settled_kanban = kanban and attempt.get("request_status") in {"done","failed"}
+            if recovering and settled_kanban:
+                self.process_kanban(attempt)
                 return
-            if recovering and not attempt.get("run_id") and attempt["kind"] == "pr-safety-review":
+            if recovering and kanban and attempt.get("terminal_status") is not None:
+                if not self.db_bool("SELECT hermes_api_recover_lease(%s,%s,%s,%s) ok",
+                    (*key,attempt["nonce"],self.lease)):
+                    return
+                self.recover_kanban_terminal(attempt)
+                return
+            if recovering and kanban and (attempt.get("lease_expired") or attempt.get("stop_requested")):
+                self.stop_and_fail_kanban(attempt,"Kanban recovery stop confirmed",True)
+                return
+            if recovering and not self.db_bool(
+                "SELECT hermes_api_recover_lease(%s,%s,%s,%s) ok", (*key,attempt["nonce"],self.lease)):
+                return
+            if recovering and attempt["kind"] == "pr-safety-review" and (kanban or not attempt.get("run_id")):
                 attempt["preflight_error"] = self.safety_preflight(attempt["payload"])
+            if kanban:
+                self.process_kanban(attempt)
+                return
             if attempt.get("preflight_error"):
                 self.settle(attempt, "failed", attempt["preflight_error"], attempt_state="failed"); return
             if attempt["kind"] == "doc-write" and attempt["payload"].get("publication_only") is True:
@@ -736,8 +1094,9 @@ class Controller:
             else: self.postprocess_memory(attempt, value)
         except Exception as error:
             print(f"hermes-controller request={attempt['request_id']} attempt={attempt['attempt_no']} error={type(error).__name__}: {error}", flush=True)
-            settlement = failure_settlement(attempt["kind"])
-            self.settle(attempt, settlement, str(error), attempt_state=settlement)
+            if not kanban:
+                settlement = failure_settlement(attempt["kind"])
+                self.settle(attempt, settlement, str(error), attempt_state=settlement)
         finally:
             with self.lock: self.running.discard(key)
 
