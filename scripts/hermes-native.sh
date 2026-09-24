@@ -48,6 +48,8 @@ need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
 repair_runtime_venv_ownership() {
   local venv="$INSTALL_DIR/venv" path
+  [[ "$SERVICE_HOME" == /* && "$(cd "$SERVICE_HOME" && pwd -P)" == "$SERVICE_HOME" ]] \
+    || { echo "refusing noncanonical Hermes service home" >&2; exit 2; }
   [[ "$HERMES_HOME" == "$SERVICE_HOME/.hermes" && "$INSTALL_DIR" == "$HERMES_HOME/hermes-agent" ]] \
     || { echo "refusing noncanonical Hermes install layout" >&2; exit 2; }
   for path in "$SERVICE_HOME" "$HERMES_HOME" "$INSTALL_DIR" "$venv"; do

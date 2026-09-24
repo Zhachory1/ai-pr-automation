@@ -115,15 +115,16 @@ PY
 grep -Fq 'scripts/configure-hermes-api.py' scripts/hermes-native.sh
 grep -Fq '[[ "$HERMES_HOME" == "$SERVICE_HOME/.hermes" && "$INSTALL_DIR" == "$HERMES_HOME/hermes-agent" ]]' scripts/hermes-native.sh
 grep -Fq 'chown -RhP "$SERVICE_USER:$(id -gn "$SERVICE_USER")" "$venv"' scripts/hermes-native.sh
-mkdir -p "$tmp/venv-service/.hermes/hermes-agent/venv"
-touch "$tmp/venv-service/.hermes/hermes-agent/venv/owned"
+venv_test_root="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$tmp")"
+mkdir -p "$venv_test_root/venv-service/.hermes/hermes-agent/venv"
+touch "$venv_test_root/venv-service/.hermes/hermes-agent/venv/owned"
 eval "$(python3 - <<'PY'
 from pathlib import Path
 source=Path('scripts/hermes-native.sh').read_text()
 print(source[source.index('repair_runtime_venv_ownership() {'):source.index('\nwait_unloaded() {')])
 PY
 )"
-SERVICE_USER="$(id -un)" SERVICE_HOME="$tmp/venv-service"
+SERVICE_USER="$(id -un)" SERVICE_HOME="$venv_test_root/venv-service"
 HERMES_HOME="$SERVICE_HOME/.hermes" INSTALL_DIR="$HERMES_HOME/hermes-agent"
 repair_runtime_venv_ownership
 [[ "$(stat -f %Su "$INSTALL_DIR/venv/owned")" == "$SERVICE_USER" ]]
@@ -131,6 +132,13 @@ mv "$INSTALL_DIR" "$HERMES_HOME/real-agent"
 ln -s "$HERMES_HOME/real-agent" "$INSTALL_DIR"
 if (repair_runtime_venv_ownership >/dev/null 2>&1); then
   echo 'FAIL: symlinked Hermes install accepted for recursive ownership repair' >&2; exit 1
+fi
+mkdir -p "$venv_test_root/real-parent/service/.hermes/hermes-agent/venv"
+ln -s "$venv_test_root/real-parent" "$venv_test_root/parent-link"
+SERVICE_HOME="$venv_test_root/parent-link/service"
+HERMES_HOME="$SERVICE_HOME/.hermes" INSTALL_DIR="$HERMES_HOME/hermes-agent"
+if (repair_runtime_venv_ownership >/dev/null 2>&1); then
+  echo 'FAIL: symlinked Hermes service-home ancestor accepted' >&2; exit 1
 fi
 grep -Fq '/Users/hermes-agent/.hermes/hermes-agent/venv/bin/python scripts/hermes-kanban-workflow-preflight.py' docs/hermes/README.md
 grep -Fq 'scripts/hermes-kanban-council-canary.py setup' docs/hermes/README.md
