@@ -11,10 +11,37 @@ from pathlib import Path
 import yaml
 
 WORKFLOW = "pr-risk-council"
-TITLES = {
-    "orchestrator":"Council Orchestrator", "review":"Council Reviewer", "security":"Council Security",
-    "reliability":"Council Reliability", "architecture":"Council Architect", "verification":"Council Verifier",
+COUNCIL_TOOLS_COMMAND = "/usr/local/libexec/ai-pr-automation/hermes-council-tools"
+COUNCIL_TOOLS = [
+    "snapshot_read", "snapshot_search", "kanban_show", "kanban_comment",
+    "kanban_heartbeat", "kanban_complete", "kanban_block",
+]
+COUNCIL_ENV = {
+    "COUNCIL_TASK_ID":"${HERMES_KANBAN_TASK}",
+    "COUNCIL_RUN_ID":"${HERMES_KANBAN_RUN_ID}",
+    "COUNCIL_CLAIM_LOCK":"${HERMES_KANBAN_CLAIM_LOCK}",
+    "COUNCIL_BOARD":"${HERMES_KANBAN_BOARD}",
+    "COUNCIL_DB":"${HERMES_KANBAN_DB}",
+    "COUNCIL_WORKSPACE":"${HERMES_KANBAN_WORKSPACE}",
+    "COUNCIL_SNAPSHOT_ROOT":"${PR_SAFETY_SNAPSHOT_ROOT}",
+    "COUNCIL_WORKFLOW_ROOT":"${PR_SAFETY_WORKFLOW_ROOT}",
+    "COUNCIL_PROFILE":"${HERMES_PROFILE}",
+    "COUNCIL_TOOLS_PYTHON":"${HERMES_COUNCIL_TOOLS_PYTHON}",
 }
+TITLES = {
+    "orchestrator":"Council Orchestrator", "synthesis":"Council Synthesizer",
+    "review":"Council Reviewer", "security":"Council Security", "reliability":"Council Reliability",
+    "architecture":"Council Architect", "verification":"Council Verifier",
+}
+V1_PROFILES = {
+    "council-orchestrator", "council-reviewer", "council-security",
+    "council-reliability", "council-architect", "council-verifier",
+}
+V2_PROFILES = {
+    "council-orchestrator-v2", "council-reviewer-v2", "council-security-v2",
+    "council-reliability-v2", "council-architect-v2",
+}
+V2_ROLES = ["review", "security", "reliability", "architecture"]
 
 
 def fail(message): raise ValueError(message)
@@ -22,18 +49,38 @@ def fail(message): raise ValueError(message)
 
 def load_contract(path):
     data = json.loads(path.read_text())
-    if data.get("schema_version") != 1 or data.get("workflow") != WORKFLOW or data.get("engine") != "kanban":
+    version = data.get("schema_version")
+    if version not in {1, 2} or data.get("workflow") != WORKFLOW or data.get("engine") != "kanban":
         fail("invalid Kanban workflow contract")
     profiles = data.get("profiles")
-    if not isinstance(profiles, dict) or len(profiles) != 6 or set(profiles) != {
-        "council-orchestrator", "council-reviewer", "council-security",
-        "council-reliability", "council-architect", "council-verifier"}:
+    expected = V1_PROFILES if version == 1 else V2_PROFILES
+    if not isinstance(profiles, dict) or set(profiles) != expected:
         fail("unexpected council profile set")
-    if profiles["council-orchestrator"]["model"] != "claude-sonnet-5" \
-            or any(value["model"] != "claude-haiku-4-5-20251001"
-                   for name, value in profiles.items() if name != "council-orchestrator"):
+    orchestrator = "council-orchestrator" if version == 1 else "council-orchestrator-v2"
+    synthesis_role = "orchestrator" if version == 1 else "synthesis"
+    if profiles[orchestrator] != {"source":"orchestrator","role":synthesis_role,"model":"claude-sonnet-5"} \
+            or any(value.get("model") != "claude-haiku-4-5-20251001"
+                   for name, value in profiles.items() if name != orchestrator):
         fail("model cost policy changed")
-    if {value["role"] for value in profiles.values()} != set(TITLES): fail("role set changed")
+    expected_roles = set(TITLES) - ({"synthesis"} if version == 1 else {"orchestrator", "verification"})
+    if {value.get("role") for value in profiles.values()} != expected_roles:
+        fail("role set changed")
+    if version == 2:
+        if set(data) != {"schema_version", "workflow", "engine", "board", "deadline_seconds",
+                         "token_budget", "max_active_workflows", "profiles", "task_graph", "tools"} \
+                or data.get("tools") != COUNCIL_TOOLS:
+            fail("invalid v2 Kanban workflow contract")
+        expected_sources = {"council-reviewer-v2":"reviewer", "council-security-v2":"security-engineer",
+                            "council-reliability-v2":"site-reliability-engineer",
+                            "council-architect-v2":"technical-architect", "council-orchestrator-v2":"orchestrator"}
+        if any(profiles[name].get("source") != source for name, source in expected_sources.items()):
+            fail("v2 source profile changed")
+        expected_graph = {"specialists":V2_ROLES,"synthesis":"synthesis",
+                          "edges":[[role, "synthesis"] for role in V2_ROLES]}
+        if data.get("board") != WORKFLOW or data.get("deadline_seconds") != 900 \
+                or data.get("token_budget") != 150000 or data.get("max_active_workflows") != 1 \
+                or data.get("task_graph") != expected_graph:
+            fail("v2 workflow contract changed")
     return data
 
 
@@ -75,22 +122,28 @@ def source_material(root, uid):
     return soul, skills, str(metadata["description"]).strip()
 
 
-def profile_config(role, model):
-    return {
+def profile_config(role, model, version=1):
+    config = {
         "model":{"provider":"anthropic","default":model},
         "fallback_providers":[],
         "delegation":{"fallback_providers":[]},
-        "platform_toolsets":{"cli":[],"api_server":["no_mcp"]},
+        "platform_toolsets":{"cli":["council-tools"] if version == 2 else [],"api_server":["no_mcp"]},
         "plugins":{"enabled":[]},
         "auxiliary":{"background_review":{"enabled":False}},
         "memory":{"memory_enabled":False,"retention_enabled":False,"user_profile_enabled":False},
         "skills":{"creation_nudge_interval":0},
-        "agent":{"disabled_toolsets":["delegation"],"max_turns":80,"api_max_retries":0},
+        "agent":{"disabled_toolsets":["delegation", "kanban"] if version == 2 else ["delegation"],
+                 "max_turns":80,"api_max_retries":0},
     }
+    if version == 2:
+        config["mcp_servers"] = {"council-tools":{"command":COUNCIL_TOOLS_COMMAND,"args":[],"env":COUNCIL_ENV,
+                                                   "enabled":True,"tools":{"include":COUNCIL_TOOLS}}}
+    return config
 
 
-def state_path(home):
-    return home / "workflow-backups" / "pr-risk-council-kanban-profiles.state"
+def state_path(home, contract=None):
+    suffix = "-v2" if contract and contract["schema_version"] == 2 else ""
+    return home / "workflow-backups" / f"pr-risk-council-kanban{suffix}-profiles.state"
 
 
 def atomic_text(path, text, uid, gid):
@@ -101,8 +154,8 @@ def atomic_text(path, text, uid, gid):
     os.chown(temporary, uid, gid); os.chmod(temporary, 0o600); os.replace(temporary, path)
 
 
-def set_state(home, value, uid, gid):
-    state = state_path(home)
+def set_state(home, contract, value, uid, gid):
+    state = state_path(home, contract)
     if state.parent.exists(): safe_dir(state.parent, uid)
     else: state.parent.mkdir(mode=0o700, parents=True); os.chown(state.parent, uid, gid)
     os.chmod(state.parent, 0o700)
@@ -116,12 +169,12 @@ def prepare(home, contract, uid):
         if destination.exists() or destination.is_symlink(): fail(f"target profile already exists: {target}")
         source = profile_root / policy["source"]
         soul, skills, description = source_material(source, uid)
-        prepared.append((target, policy, soul, skills, description))
+        prepared.append((target, policy, soul, skills, description, contract["schema_version"]))
     return prepared
 
 
 def create_profile(profile_root, item, uid, gid):
-    target, policy, soul, skills, description = item
+    target, policy, soul, skills, description, version = item
     _, _, current_description = source_material(soul.parent, uid)
     if current_description != description: fail(f"source profile changed during apply: {policy['source']}")
     temporary = profile_root / f".{target}.tmp-{os.getpid()}"
@@ -129,7 +182,8 @@ def create_profile(profile_root, item, uid, gid):
     try:
         (temporary / "SOUL.md").write_bytes(soul.read_bytes())
         shutil.copytree(skills, temporary / "skills", symlinks=False)
-        (temporary / "config.yaml").write_text(yaml.safe_dump(profile_config(policy["role"], policy["model"]), sort_keys=False))
+        expected_config = profile_config(policy["role"], policy["model"], version)
+        (temporary / "config.yaml").write_text(yaml.safe_dump(expected_config, sort_keys=False))
         meta = {"description":description,"display_name":TITLES[policy["role"]],
                 "workflow":{"name":WORKFLOW,"source_profile":policy["source"]}}
         (temporary / "profile.yaml").write_text(yaml.safe_dump(meta, sort_keys=False))
@@ -161,14 +215,14 @@ def remove_targets(home, contract):
 
 
 def apply(home, contract, uid, gid):
-    prepared = prepare(home, contract, uid); state = state_path(home)
+    prepared = prepare(home, contract, uid); state = state_path(home, contract)
     if state.exists() or state.is_symlink(): fail("Kanban council profile state already exists; restore first")
-    set_state(home, "applying", uid, gid)
+    set_state(home, contract, "applying", uid, gid)
     created = []
     try:
         for item in prepared:
             create_profile(home / "profiles", item, uid, gid); created.append(item[0])
-        set_state(home, "applied", uid, gid)
+        set_state(home, contract, "applied", uid, gid)
     except Exception:
         try:
             remove_targets(home, contract)
@@ -180,10 +234,10 @@ def apply(home, contract, uid, gid):
 
 
 def restore(home, contract, uid, gid):
-    state = state_path(home); safe_file(state, uid)
+    state = state_path(home, contract); safe_file(state, uid)
     if state.read_text().strip() not in {"applying", "applied", "restoring"}:
         fail("invalid Kanban council profile state")
-    set_state(home, "restoring", uid, gid)
+    set_state(home, contract, "restoring", uid, gid)
     remove_targets(home, contract)
     state.unlink()
     return {"workflow":WORKFLOW,"restored":True}
@@ -191,8 +245,11 @@ def restore(home, contract, uid, gid):
 
 def check(home, contract, uid):
     prepared = prepare(home, contract, uid)
-    return {"workflow":WORKFLOW,"ready":True,"sources":[item[1]["source"] for item in prepared],
-            "targets":[item[0] for item in prepared],"model_ceiling":"claude-sonnet-5","writes":0}
+    result = {"workflow":WORKFLOW,"ready":True,"sources":[item[1]["source"] for item in prepared],
+              "targets":[item[0] for item in prepared],"model_ceiling":"claude-sonnet-5","writes":0}
+    if contract["schema_version"] == 2:
+        result.update({"profiles":contract["profiles"],"tools":COUNCIL_TOOLS})
+    return result
 
 
 def require_stopped():

@@ -130,30 +130,57 @@ Bridge receives already-preflighted snapshot and policy paths. It verifies:
 - policy path, version, and digest;
 - snapshot is not writable through exposed worker tools.
 
-Bridge writes mode-0440 workflow inputs:
+PR 3 bridge will write mode-0440 workflow inputs:
 
 ```text
 workflow-input/
-  identity.json
-  diff.patch
-  policy.md
+  .council-tools.json
+  input/
+    identity.json
+    diff.patch
+    policy.md
 ```
 
-Task body contains these paths plus snapshot path. Specialists may:
+### Narrow MCP design kickback
 
-- `read_file` workflow input and repository files;
-- `search_files` inside snapshot;
-- use own-task Kanban lifecycle tools.
+Pinned Hermes v0.21.3 auto-adds its full worker Kanban toolset when `HERMES_KANBAN_TASK` is present. That set includes attachment and URL tools and does not meet this workflow's capability boundary. PR 1 therefore adds repo-owned stdio MCP `hermes-council-tools`, installed root-owned mode 0555 at `/usr/local/libexec/ai-pr-automation/hermes-council-tools`.
+
+Gateway launch config pins `HERMES_COUNCIL_TOOLS_PYTHON` to the installed Hermes venv. Profile MCP config interpolates it into `COUNCIL_TOOLS_PYTHON`; the server validates that alias and re-executes through it before importing handlers, so `/usr/bin/env` or launchd PATH cannot select another Python/runtime.
+
+The server exposes exactly seven tools, in contract order:
+
+- `snapshot_read`;
+- `snapshot_search`;
+- `kanban_show`;
+- `kanban_comment`;
+- `kanban_heartbeat`;
+- `kanban_complete`;
+- `kanban_block`.
+
+Profile config selects only `platform_toolsets.cli: [council-tools]` and sets `agent.disabled_toolsets: [delegation, kanban]`. This removes auto-added built-in Kanban tools. No create, link, list, unblock, review-routing, attachment, or URL tool reaches the model.
+
+Kanban MCP schemas contain no task, board, run, or claim-lock field and reject additional properties. Pinned MCP launch filtering removes worker identity and other non-safe process variables, so profile config explicitly interpolates task, run, claim lock, board, DB, workspace, snapshot root, workflow root, profile, and interpreter into `COUNCIL_*` aliases. The server validates every alias. Snapshot binding uses only council root/workspace aliases. Before a Kanban call, the server removes ambient `HERMES_KANBAN_*`, restores only task, run, claim lock, board, DB, and `HERMES_PROFILE` from validated aliases, verifies pinned DB/board resolution, and calls the exact `tools.kanban_tools` handler with trusted task and board arguments. It removes `HERMES_DELEGATED_CHILD_CONTEXT` only in that handler scope because this MCP process is the dispatcher's explicitly supervised own-task transport, not an agent-created descendant. Pinned ownership, expected-run, and claim-lock checks remain authoritative. Missing or invalid aliases, schema violations, oversized input, and pinned handler `{"error":...}` results fail closed; malformed JSON-RPC retains standard `-32700`, `-32600`, `-32601`, and `-32602` errors.
+
+PR 3 will create `COUNCIL_WORKSPACE/.council-tools.json` (interpolated from `HERMES_KANBAN_WORKSPACE`) as an exact schema-versioned binding owned by current service uid, mode 0440, regular, non-symlink, and single-link:
+
+```json
+{"schema_version":1,"snapshot_root":"/absolute/snapshot","input_root":"/absolute/workflow/input"}
+```
+
+Logical `snapshot/<relative>` maps to `snapshot_root`; `input/<relative>` maps to `input_root`. Bound roots must remain under validated `COUNCIL_SNAPSHOT_ROOT` and `COUNCIL_WORKFLOW_ROOT`, interpolated from `PR_SAFETY_SNAPSHOT_ROOT` and `PR_SAFETY_WORKFLOW_ROOT`. Absolute paths, `..`, backslash aliases, paths over 4,096 characters or 32 components, symlink components, non-regular files, and non-UTF-8 text fail closed. `PR_SAFETY_WORKFLOW_ROOT`, binding creation, and live bound reads are PR 3 bridge responsibilities; PR 1 does not claim a live snapshot read.
+
+Limits are fixed: 256 KiB per JSON-RPC request line; 1 MiB per file; literal query at most 256 characters; search at most 2,000 files, 4,096 entries, 32 directory levels, 16 MiB total bytes, 100 results, and 2,000 characters per returned line. Kanban text is at most 16,000 characters, heartbeat notes 2,000 characters, and completion metadata 64 KiB, 64 top-level properties, 1,024 entries, and 16 levels deep. Completion metadata cannot declare `artifacts`, closing the pinned handler's metadata-based attachment path.
 
 They may not receive:
 
 - terminal or process tools;
 - write, patch, or delete tools;
+- built-in file tools;
 - web/browser tools;
-- GitHub, CI, deploy, incident, monitor, memory, document, MCP, plugin, delegation, or connection tools;
-- orchestrator Kanban create/link/unblock tools.
+- GitHub, CI, deploy, incident, monitor, memory, document, other MCP, plugin, delegation, or connection tools;
+- orchestrator Kanban create/link/unblock/list tools.
 
-Pinned-runtime preflight must prove exact effective schemas are only `read_file`, `search_files`, and worker-owned Kanban lifecycle tools. If current Hermes config cannot express that exact set, stop. Add a bounded snapshot-reader tool in a separate reviewed design; do not grant broad file or terminal access.
+Pinned-runtime preflight launches each profile with dummy task, run, claim lock, board, DB, workspace, roots, profile, and interpreter env; performs real MCP discovery through stdio `initialize` and `tools/list`; discovers only `council-tools`; and compares all seven MCP-prefixed model definitions against canonical descriptions and schemas, including bounds and `additionalProperties`. It also proves zero built-in tools, exact profile config including alias interpolation, exact models, empty fallback lists, sources, and graph. Any drift fails closed. Bound-root and live-read enforcement remains deferred to PR 3.
 
 Profiles remain one OS trust tier, not sandboxes. This change does not claim tenant isolation.
 

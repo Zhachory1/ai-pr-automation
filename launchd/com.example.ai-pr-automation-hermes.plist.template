@@ -8,6 +8,7 @@
     <key>HOME</key><string>__SERVICE_HOME__</string>
     <key>HERMES_HOME</key><string>__HERMES_HOME__</string>
     <key>HERMES_BIN</key><string>__HERMES_BIN__</string>
+    <key>HERMES_COUNCIL_TOOLS_PYTHON</key><string>__HERMES_INSTALL_DIR__/venv/bin/python</string>
     <key>HERMES_MAINTENANCE_FILE</key><string>__MAINTENANCE_FILE__</string>
   </dict>
   <key>WorkingDirectory</key><string>__SERVICE_HOME__</string>

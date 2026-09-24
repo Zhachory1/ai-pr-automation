@@ -98,14 +98,19 @@ install_native() {
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
   install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
+  install -m 0555 -o root -g wheel "$ROOT/bin/hermes-council-tools" "$SUPPORT_ROOT/hermes-council-tools"
+  cmp -s "$ROOT/bin/hermes-council-tools" "$SUPPORT_ROOT/hermes-council-tools" \
+    || { echo "Hermes council tools install mismatch" >&2; exit 2; }
   [[ ! -x "$ROOT/bin/doc-writer-reconcile" ]] || install -m 0555 "$ROOT/bin/doc-writer-reconcile" "$SUPPORT_ROOT/doc-writer-reconcile"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-hermes.plist.template" "$PLIST" \
-    "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$LAUNCHER" "$WRAPPER" "$MAINTENANCE_FILE" "$LOG_ROOT" <<'PY'
+    "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$INSTALL_DIR" "$LAUNCHER" "$WRAPPER" \
+    "$MAINTENANCE_FILE" "$LOG_ROOT" <<'PY'
 import os, pathlib, sys
-source, target, user, home, hermes_home, binary, wrapper, maintenance, logs = sys.argv[1:]
+source, target, user, home, hermes_home, install_dir, binary, wrapper, maintenance, logs = sys.argv[1:]
 text = pathlib.Path(source).read_text()
 for key, value in {"__HERMES_USER__":user,"__SERVICE_HOME__":home,"__HERMES_HOME__":hermes_home,
-                   "__HERMES_BIN__":binary,"__GATEWAY_WRAPPER__":wrapper,
+                   "__HERMES_INSTALL_DIR__":install_dir,"__HERMES_BIN__":binary,
+                   "__GATEWAY_WRAPPER__":wrapper,
                    "__MAINTENANCE_FILE__":maintenance,"__LOG_ROOT__":logs}.items():
     text = text.replace(key, value)
 temporary = pathlib.Path(target + ".tmp")

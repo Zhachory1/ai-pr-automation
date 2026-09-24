@@ -3,31 +3,58 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import subprocess
+import runpy
 import sys
 import tempfile
 import unittest
+
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("kanban_preflight", ROOT / "scripts/hermes-kanban-workflow-preflight.py")
 preflight = importlib.util.module_from_spec(spec); spec.loader.exec_module(preflight)
 CONTRACT = ROOT / "agent-config/hermes/workflows/pr-risk-council-kanban.json"
+V2_CONTRACT = ROOT / "agent-config/hermes/workflows/pr-risk-council-kanban-v2.json"
+SERVER = ROOT / "bin/hermes-council-tools"
+SERVER_TOOLS = runpy.run_path(SERVER)["TOOLS"]
+SERVER_DEFINITIONS = [{"type":"function","function":{
+    "name":f"mcp__council_tools__{tool['name']}","description":tool["description"],
+    "parameters":tool["inputSchema"]}} for tool in SERVER_TOOLS]
 
 
 class KanbanWorkflowPreflightTest(unittest.TestCase):
-    def fixture(self, root):
+    def fixture(self, root, contract_path=CONTRACT):
         home, install = root / ".hermes", root / "install"
-        contract = preflight.load_contract(CONTRACT)
-        for value in contract["profiles"].values():
-            profile = home / "profiles" / value["source"]; profile.mkdir(parents=True)
-            (profile / "config.yaml").write_text("model:\n  provider: anthropic\n  default: claude-opus-5\n")
-            (profile / "profile.yaml").write_text(f"description: Existing {value['role']} specialist\n")
+        contract = preflight.load_contract(contract_path)
+        for target, value in contract["profiles"].items():
+            profile = home / "profiles" / (value["source"] if contract["schema_version"] == 1 else target)
+            profile.mkdir(parents=True)
+            if contract["schema_version"] == 1:
+                (profile / "config.yaml").write_text("model:\n  provider: anthropic\n  default: claude-opus-5\n")
+                (profile / "profile.yaml").write_text(f"description: Existing {value['role']} specialist\n")
+            else:
+                (profile / "config.yaml").write_text(yaml.safe_dump(preflight.v2_config(value["model"]), sort_keys=False))
+                (profile / "profile.yaml").write_text(yaml.safe_dump({
+                    "description":f"Existing {value['role']} specialist",
+                    "workflow":{"name":"pr-risk-council","source_profile":value["source"]}}, sort_keys=False))
         for relative in preflight.REQUIRED_MODULES:
             path = install / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("# fixture\n")
             init = path.parent / "__init__.py"; init.touch(exist_ok=True)
+        (install / "tools/kanban_tools.py").write_text(
+            "def _handle_show(args): pass\n"
+            "def _handle_comment(args): pass\n"
+            "def _handle_heartbeat(args): pass\n"
+            "def _handle_complete(args): pass\n"
+            "def _handle_block(args): pass\n")
         (install / "hermes_cli/kanban_db_connect.py").write_text("class Conn:\n def close(self): pass\ndef connect(path): return Conn()\n")
-        (install / "hermes_cli/kanban_db.py").write_text('''from types import SimpleNamespace
+        (install / "hermes_cli/kanban_db.py").write_text('''import os
+from pathlib import Path
+from types import SimpleNamespace
 tasks={}; comments={}; seq=0
+def _normalize_board_slug(value): return value if value and value == value.strip().lower() else None
+def kanban_db_path(board=None): return Path(os.environ["HERMES_KANBAN_DB"])
 def create_task(conn,*,title,assignee=None,parents=None,**kw):
  global seq; seq+=1; key=f"t_{seq}"; tasks[key]={"status":"todo" if parents else "ready","assignee":assignee,"parents":parents or []}; return key
 def get_task(conn,key): return SimpleNamespace(**tasks[key])
@@ -51,8 +78,45 @@ def claim_review_task(conn,key,**kw): return SimpleNamespace(current_run_id=2)
                     "failure_limit":2,"max_in_progress":None,"max_in_progress_per_profile":None,
                     "auto_decompose":True,"dispatch_stale_timeout_seconds":14400,"reconcile_orphans":True}
         (install / "hermes_cli/config_defaults.py").write_text("DEFAULT_CONFIG={'kanban':" + repr(defaults) + "}\n")
+        (install / "hermes_cli/config.py").write_text(
+            "import os,yaml\nfrom pathlib import Path\nDEFAULT_CONFIG={'kanban':" + repr(defaults) + "}\n"
+            "def read_raw_config(): return yaml.safe_load((Path(os.environ['HERMES_HOME'])/'config.yaml').read_text())\n"
+            "def load_config(): return read_raw_config()\n")
+        (install / "hermes_cli/tools_config.py").write_text(
+            "def _get_platform_tools(config,platform,include_default_mcp_servers=True):\n"
+            " return set(config['platform_toolsets'][platform])\n")
+        (install / "tools/mcp_tool_discovery.py").write_text('''import json,os,subprocess
+from hermes_cli.config import load_config
+
+def discover_mcp_tools(allowed_mcp_names=None):
+ assert allowed_mcp_names == ["council-tools"]
+ config=load_config()["mcp_servers"]["council-tools"]
+ aliases={key:os.environ[value[2:-1]] for key,value in config["env"].items()}
+ safe={key:value for key,value in os.environ.items() if key in {"PATH","HOME","USER","LANG","LC_ALL","TERM","SHELL","TMPDIR"} or key.startswith("XDG_")}
+ for key in ("HERMES_KANBAN_DB","HERMES_KANBAN_BOARD"):
+  if key in os.environ: safe[key]=os.environ[key]
+ safe.update(aliases)
+ for key in ("HERMES_KANBAN_TASK","HERMES_KANBAN_RUN_ID","HERMES_KANBAN_CLAIM_LOCK"):
+  safe.pop(key,None)
+ safe["HERMES_DELEGATED_CHILD_CONTEXT"]="1"
+ safe["PYTHONPATH"]=os.environ["PYTHONPATH"]
+ command=os.environ.get("COUNCIL_TOOLS_PROBE_COMMAND",config["command"])
+ requests="\\n".join((json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),json.dumps({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}})))+"\\n"
+ completed=subprocess.run([command],input=requests,capture_output=True,text=True,env=safe,check=True,timeout=5)
+ messages=[json.loads(line) for line in completed.stdout.splitlines()]
+ tools=messages[1]["result"]["tools"]
+ return ["mcp__council_tools__"+tool["name"] for tool in tools]
+''')
+        (install / "model_tools.py").write_text(
+            "DEFINITIONS=" + repr(SERVER_DEFINITIONS) + "\n"
+            "def get_tool_definitions(**kwargs): return DEFINITIONS\n")
         venv = install / "venv/bin"; venv.mkdir(parents=True); (venv / "python").symlink_to(sys.executable)
         return home, install
+
+    def installed_council_tools(self, root):
+        support = root / "support"; support.mkdir(mode=0o700)
+        server = support / "hermes-council-tools"; shutil.copyfile(SERVER, server); server.chmod(0o555)
+        return server, support
 
     def test_ready_report_is_inert_and_cost_bounded(self):
         with tempfile.TemporaryDirectory() as td:
@@ -68,6 +132,87 @@ def claim_review_task(conn,key,**kw): return SimpleNamespace(current_run_id=2)
         self.assertEqual(result["kanban_defaults"]["failure_limit"], 2)
         self.assertEqual(result["deferred_runtime_enforcement"],
                          ["deadline_seconds","max_active_workflows","profile_tool_policy","token_budget"])
+
+    def test_v2_proves_exact_profiles_graph_and_council_tools(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve(); home, install = self.fixture(root, V2_CONTRACT)
+            server, trust = self.installed_council_tools(root)
+            before = {path.relative_to(home):(path.is_dir(), path.read_bytes() if path.is_file() else None)
+                      for path in home.rglob("*")}
+            result = preflight.preflight(home, install, V2_CONTRACT, server, os.getuid(), trust)
+            after = {path.relative_to(home):(path.is_dir(), path.read_bytes() if path.is_file() else None)
+                     for path in home.rglob("*")}
+        self.assertEqual(after, before)
+        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(set(result["profiles"]), set(preflight.V2_PROFILES))
+        self.assertEqual(result["council_tools"]["tools"], list(preflight.COUNCIL_TOOLS))
+        self.assertEqual(result["council_tools"]["command"], str(preflight.COUNCIL_TOOLS_COMMAND))
+        self.assertEqual(result["council_tools"]["definitions"], SERVER_DEFINITIONS)
+        self.assertEqual({tool["name"]:tool["inputSchema"] for tool in SERVER_TOOLS},
+                         preflight.EXPECTED_INPUT_SCHEMAS)
+        self.assertEqual(set(result["effective_worker_tools"]), set(preflight.V2_PROFILES))
+        self.assertEqual(result["required_tools"], list(preflight.COUNCIL_TOOLS))
+        for evidence in result["effective_worker_tools"].values():
+            self.assertEqual(evidence["tools"], list(preflight.COUNCIL_TOOLS))
+            self.assertEqual(evidence["toolsets"], ["council-tools"])
+            self.assertEqual(evidence["fallback_providers"], [])
+        self.assertNotIn("profile_tool_policy", result["deferred_runtime_enforcement"])
+        self.assertEqual((result["service_state_writes"], result["model_calls"]), (0, 0))
+
+    def test_v2_profile_tool_and_contract_drift_fail(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve(); home, install = self.fixture(root, V2_CONTRACT)
+            server, trust = self.installed_council_tools(root)
+            path = home / "profiles/council-reviewer-v2/config.yaml"
+            config = yaml.safe_load(path.read_text()); config["platform_toolsets"]["cli"].append("terminal")
+            path.write_text(yaml.safe_dump(config))
+            with self.assertRaisesRegex(ValueError, "dangerous runtime profile tools"):
+                preflight.preflight(home, install, V2_CONTRACT, server, os.getuid(), trust)
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve(); home, install = self.fixture(root, V2_CONTRACT)
+            server, trust = self.installed_council_tools(root)
+            path = home / "profiles/council-security-v2/config.yaml"
+            data = yaml.safe_load(path.read_text()); data["mcp_servers"]["write"] = {"command":"sh"}
+            path.write_text(yaml.safe_dump(data))
+            with self.assertRaisesRegex(ValueError, "dangerous runtime profile tools"):
+                preflight.preflight(home, install, V2_CONTRACT, server, os.getuid(), trust)
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve(); support = root / "support"; support.mkdir(mode=0o700)
+            fake = support / "server"; fake.write_text(SERVER.read_text().replace('"snapshot_search"', '"snapshot_find"', 1))
+            fake.chmod(0o555)
+            with self.assertRaisesRegex(ValueError, "differs from repository source"):
+                preflight.council_tools_report(fake, os.getuid(), support)
+        data = json.loads(V2_CONTRACT.read_text()); data["task_graph"]["edges"].pop()
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "contract.json"; path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "v2 task graph"): preflight.load_contract(path)
+        data = json.loads(V2_CONTRACT.read_text()); data["tools"].append("kanban_create")
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "contract.json"; path.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, "invalid workflow contract"): preflight.load_contract(path)
+
+    def test_v2_effective_probe_rejects_builtin_worker_tool(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve(); home, install = self.fixture(root, V2_CONTRACT)
+            server, trust = self.installed_council_tools(root)
+            path = install / "model_tools.py"
+            extra = "[{'type':'function','function':{'name':'kanban_create','description':'bad','parameters':{}}}]+"
+            path.write_text(path.read_text().replace("DEFINITIONS=", "DEFINITIONS=" + extra))
+            with self.assertRaisesRegex(ValueError, "built-in worker tools exposed"):
+                preflight.preflight(home, install, V2_CONTRACT, server, os.getuid(), trust)
+
+    def test_council_tools_install_validator_rejects_mode_link_owner_and_parent_drift(self):
+        for mutate, expected_uid, message in (
+            (lambda server, support: server.chmod(0o755), os.getuid(), "missing or unsafe"),
+            (lambda server, support: os.link(server, support / "hardlink"), os.getuid(), "missing or unsafe"),
+            (lambda server, support: None, os.getuid() + 1, "unsafe parent"),
+            (lambda server, support: support.chmod(0o777), os.getuid(), "unsafe parent"),
+        ):
+            with tempfile.TemporaryDirectory() as td:
+                root = pathlib.Path(td).resolve(); server, support = self.installed_council_tools(root)
+                mutate(server, support)
+                with self.assertRaisesRegex(ValueError, message):
+                    preflight.validate_installed_council_tools(server, expected_uid, support)
 
     def test_missing_profile_tool_model_and_default_drift_fail(self):
         with tempfile.TemporaryDirectory() as td:
@@ -105,10 +250,13 @@ def claim_review_task(conn,key,**kw): return SimpleNamespace(current_run_id=2)
     def test_cli_output_is_machine_readable(self):
         with tempfile.TemporaryDirectory() as td:
             home, install = self.fixture(pathlib.Path(td))
-            result = subprocess.run([sys.executable, str(ROOT / "scripts/hermes-kanban-workflow-preflight.py"),
-                "--hermes-home", str(home), "--install-dir", str(install), "--contract", str(CONTRACT)],
-                capture_output=True, text=True, check=True)
+            command = [sys.executable, str(ROOT / "scripts/hermes-kanban-workflow-preflight.py"),
+                       "--hermes-home", str(home), "--install-dir", str(install), "--contract", str(CONTRACT)]
+            result = subprocess.run(command, capture_output=True, text=True, check=True)
+            rejected = subprocess.run([*command, "--council-tools", str(SERVER)], capture_output=True, text=True)
         self.assertTrue(json.loads(result.stdout)["feasible"])
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("unrecognized arguments", rejected.stderr)
 
 
 if __name__ == "__main__": unittest.main()
