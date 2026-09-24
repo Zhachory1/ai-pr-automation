@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-24T19:20:00Z",
+  "runtime": {
+    "version": "0.21.5",
+    "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+  },
+  "probe": {
+    "board_create": {
+      "json_supported": false,
+      "verified_by": "boards list --all --json",
+      "required_fields": ["slug", "name", "archived", "db_path", "counts", "total"]
+    },
+    "task_create_json_fields": [
+      "id", "title", "body", "assignee", "status", "priority", "created_by",
+      "created_at", "started_at", "completed_at", "workspace_kind", "workspace_path",
+      "branch_name", "project_id", "tenant", "result", "max_runtime_seconds",
+      "current_step_key", "skills", "model_override", "provider_override", "max_retries",
+      "session_id", "workflow_template_id", "completion_contract", "last_failure_error"
+    ],
+    "task_show_json_fields": [
+      "task", "latest_summary", "parents", "children", "comments", "events", "runs"
+    ],
+    "run_json_fields_when_present": [
+      "id", "profile", "step_key", "status", "outcome", "summary", "error",
+      "metadata", "worker_pid", "started_at", "ended_at"
+    ],
+    "attachments_json": "array",
+    "blocked_child_unblock_status_with_open_parent": "todo",
+    "task_archive": {
+      "json_supported": false,
+      "verified_by": "show --json",
+      "observed_status": "archived"
+    },
+    "board_archive": {
+      "json_supported": false,
+      "removed_board_visible_in_boards_list_all": false,
+      "closure_dependency": false,
+      "use": "retention GC only"
+    }
+  },
+  "limitations": [
+    "v0.21.5 task JSON omits idempotency_key",
+    "v0.21.5 board create, board archive, task unblock, and task archive return text",
+    "board archive cannot be proven through boards list --all after removal",
+    "provider token usage is not exposed by Kanban CLI"
+  ],
+  "design_response": [
+    "dedicated-board cardinality and exact task fields replace idempotency-key readback",
+    "every text-returning mutation is followed by JSON read verification",
+    "normal closure verifies five archived tasks and retains board through rollback window",
+    "profile state databases remain read-only usage evidence"
+  ]
+}

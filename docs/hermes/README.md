@@ -33,11 +33,19 @@ HMAC key, and deterministic artifact paths. GitHub discovery producers receive o
 The bridge has no Postgres, GitHub, or effect credentials. It is trusted only within this single-host
 Docker Desktop-to-loopback deployment.
 
-Approved design:
+Approved current design:
 
 - [PRD](PRD-api-driven-control-plane.md)
 - [design](DD-api-driven-control-plane.md)
 - [delivery plan](plan-api-driven-control-plane.md)
+
+Approved next PR-safety design (implementation only; current bridge/Postgres path remains active until separate launch approval):
+
+- [grounding](grounding-pr-safety-direct-kanban.md)
+- [PRD](PRD-pr-safety-direct-kanban.md)
+- [design](DD-pr-safety-direct-kanban.md)
+- [delivery plan](plan-pr-safety-direct-kanban.md)
+- [pinned CLI evidence](evidence-pr-safety-direct-kanban-cli.json)
 
 ## Queue and Runs ledger
 

@@ -1,6 +1,6 @@
 # Technical Plan: Kanban-Backed PR Safety Analysis
 
-- Status: ready for human review.
+- Status: superseded by `plan-pr-safety-direct-kanban.md` for new PR-safety work.
 - PRD: `docs/hermes/PRD-pr-safety-kanban-council.md`.
 - DD: `docs/hermes/DD-pr-safety-kanban-council.md`.
 - Owner: fleet operator.

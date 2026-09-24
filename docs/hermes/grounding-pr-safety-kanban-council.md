@@ -1,5 +1,7 @@
 # Grounding Brief: Kanban-Backed PR Safety Analysis
 
+> Superseded by `grounding-pr-safety-direct-kanban.md` for new PR-safety work.
+
 ## Objective
 
 - Replace only `pr-safety-v1` single-agent analysis.
