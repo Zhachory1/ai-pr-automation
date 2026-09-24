@@ -19,7 +19,8 @@ grep -Fq 'gh auth setup-git' scripts/hermes-compose-producer.sh
 ! grep -Eq '^  (dispatcher|producer)-(start|stop)\)' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/compose.sh" up -d --build' scripts/fleet.sh
 grep -Fq 'export HERMES_KANBAN_BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"' scripts/fleet.sh
-grep -Fq 'file: ${HERMES_KANBAN_BRIDGE_KEY_FILE:?set HERMES_KANBAN_BRIDGE_KEY_FILE}' docker-compose.yml
+grep -Fq 'export HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE="${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:-$SHARED_RUNTIME/secrets/hermes-kanban-bridge-key.json}"' scripts/fleet.sh
+grep -Fq 'file: ${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:?set HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE}' docker-compose.yml
 ! grep -Eq 'bridge-recovery-state|read_safety_engine|resume|/dev/null' scripts/fleet.sh
 ! grep -Fq 'bridge-recovery-state)' scripts/hermes-native.sh
 ! grep -Fq 'resume)' scripts/hermes-native.sh
@@ -28,6 +29,7 @@ grep -Fq 'A same-version `down`/`up`' docs/hermes/README.md
 grep -Fq 'restart is supported' docs/hermes/README.md
 grep -Fq 'must drain every open Kanban attempt in Postgres' docs/hermes/README.md
 grep -Fq 'HERMES_KANBAN_BRIDGE_KEY_FILE=' .env.example
+grep -Fq 'HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE=' .env.example
 grep -Fq 'PR_SAFETY_ANALYSIS_ENGINE=single' .env.example
 ! grep -Fq 'hermes-kanban-safety-bridge' Dockerfile.hermes-controller
 python3 - <<'PY'
@@ -39,7 +41,9 @@ fleet=Path('scripts/fleet.sh').read_text()
 up=fleet[fleet.index('  up)'):fleet.index('  down)')]
 down=fleet[fleet.index('  down)'):fleet.index('  status)')]
 assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE"') == 2
-assert up.index('hermes-native.sh" up') < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up')
+copy='sudo install -m 0600 -o "$(id -u)" -g "$(id -g)"'
+assert copy in up
+assert up.index('hermes-native.sh" up') < up.index(copy) < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up')
 assert down.index('compose.sh" down') < down.index('hermes-native.sh" down')
 assert 'eval ' not in fleet and 'source "$ROOT/.env"' not in fleet and '. "$ROOT/.env"' not in fleet
 native=Path('scripts/hermes-native.sh').read_text()

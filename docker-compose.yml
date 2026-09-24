@@ -438,6 +438,6 @@ secrets:
   hermes_api_keys:
     file: ${HERMES_API_KEYS_FILE:?set HERMES_API_KEYS_FILE}
   hermes_kanban_bridge_key:
-    file: ${HERMES_KANBAN_BRIDGE_KEY_FILE:?set HERMES_KANBAN_BRIDGE_KEY_FILE}
+    file: ${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:?set HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE}
   github_read_token:
     file: ${GITHUB_READ_TOKEN_FILE:-/dev/null}

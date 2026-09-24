@@ -8,6 +8,7 @@ export DOC_WRITER_STAGE_HOST="${DOC_WRITER_STAGE_HOST:-$SHARED_RUNTIME/doc-write
 export HANDOFF_ROOT="${HANDOFF_ROOT:-$SHARED_RUNTIME/safety-handoffs}"
 export HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 export HERMES_KANBAN_BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"
+export HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE="${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:-$SHARED_RUNTIME/secrets/hermes-kanban-bridge-key.json}"
 export GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token}"
 AUTHORITY_SOURCE="${HERMES_AUTHORITY_SOURCE_FILE:-${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}}"
 DOCKER_AUTHORITY="${HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml}"
@@ -33,6 +34,10 @@ case "${1:-}" in
     sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" up
     [[ -f "$HERMES_KANBAN_BRIDGE_KEY_FILE" ]] \
       || { echo "Kanban bridge key unavailable: $HERMES_KANBAN_BRIDGE_KEY_FILE" >&2; exit 2; }
+    sudo install -m 0600 -o "$(id -u)" -g "$(id -g)" \
+      "$HERMES_KANBAN_BRIDGE_KEY_FILE" "$HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE"
+    [[ -r "$HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE" ]] \
+      || { echo "Kanban controller key unavailable: $HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE" >&2; exit 2; }
     sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" bridge-start
     "$ROOT/scripts/compose.sh" --profile hermes-api-conformance run --rm hermes-api-conformance
     "$ROOT/scripts/compose.sh" up -d --build
