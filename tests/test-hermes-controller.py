@@ -16,10 +16,12 @@ from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 sys.modules.setdefault("psycopg", types.SimpleNamespace(connect=None))
 sys.modules.setdefault("psycopg.rows", types.SimpleNamespace(dict_row=None))
 spec = importlib.util.spec_from_file_location("hermes_controller", ROOT / "scripts/hermes-controller.py")
 controller = importlib.util.module_from_spec(spec); spec.loader.exec_module(controller)
+import hermes_pr_safety_result as safety_result
 
 
 class LostSubmitHermes(BaseHTTPRequestHandler):
@@ -215,6 +217,11 @@ class ControllerContractTest(unittest.TestCase):
                                ("doc-write", "failed")):
             with self.subTest(kind=kind):
                 self.assertEqual(process(kind, ("failed", "")), [(expected, expected)])
+
+    def test_shared_safety_result_contract_is_controller_contract(self):
+        self.assertIs(controller.map_council_safety, safety_result.map_council_safety)
+        self.assertIs(controller.normalize_safety, safety_result.normalize_safety)
+        self.assertIs(controller.valid_safety, safety_result.valid_safety)
 
     def test_safety_clear_is_incident_free_and_identity_bound(self):
         payload = {"operation_id":"op","repo":"o/r","pr":1,"head_sha":"h","base_sha":"b",

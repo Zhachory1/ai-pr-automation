@@ -13,10 +13,12 @@ from types import SimpleNamespace
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 def load(name,path):
     spec=importlib.util.spec_from_file_location(name,path); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); return module
 profiles=load("profiles_for_council",ROOT/"scripts/configure-hermes-kanban-profiles.py")
 council=load("risk_council",ROOT/"scripts/hermes-kanban-risk-council.py")
+import hermes_pr_safety_result as safety_result
 CONTRACT=profiles.load_contract(ROOT/"agent-config/hermes/workflows/pr-risk-council-kanban.json")
 CONTRACT_V2=profiles.load_contract(ROOT/"agent-config/hermes/workflows/pr-risk-council-kanban-v2.json")
 
@@ -220,6 +222,16 @@ def complete_task(conn,key,**kw):
             path.write_text(path.read_text().replace("claude-haiku-4-5-20251001","claude-opus-5"))
             with self.assertRaisesRegex(ValueError,"policy mismatch"): council.setup(home,install)
 
+    def test_v2_request_accepts_controller_valid_hidden_repository_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td); request,snapshot,policy=self.v2_request(root)
+            request["repo"]="ROKT/.github"
+            workflow_root=root/"configured-workflows"; workflow_root.mkdir(); workflow_root.chmod(0o700)
+            env={**self.v2_env(request,snapshot,policy),"PR_SAFETY_WORKFLOW_ROOT":str(workflow_root)}
+            with mock.patch.dict(os.environ,env,clear=False):
+                ctx=council.v2_context(root/".hermes",request,CONTRACT_V2)
+            self.assertEqual(ctx["request"]["repo"],"ROKT/.github")
+
     def test_v2_dynamic_setup_resume_status_and_cleanup_uses_configured_workflow_root(self):
         with tempfile.TemporaryDirectory() as td:
             root=pathlib.Path(td); request,snapshot,policy=self.v2_request(root)
@@ -294,7 +306,7 @@ def complete_task(conn,key,**kw):
             defaults={"model":council.V2_MODELS["security"],"cwd":None}
             for session_id,values in candidates:
                 self.seed_usage(home,profile,session_id,**{**defaults,**values})
-            with mock.patch.object(council.sqlite3,"connect",wraps=sqlite3.connect) as connect:
+            with mock.patch.object(safety_result.sqlite3,"connect",wraps=sqlite3.connect) as connect:
                 usage=council.run_usage(home,profile,run,council.V2_MODELS["security"])
             self.assertEqual(usage,{"input_tokens":11,"output_tokens":7,"cache_read_tokens":5,
                                     "cache_write_tokens":3,"total_tokens":18})

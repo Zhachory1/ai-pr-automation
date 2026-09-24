@@ -32,6 +32,7 @@ grep -Fq 'HERMES_KANBAN_BRIDGE_KEY_FILE=' .env.example
 grep -Fq 'HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE=' .env.example
 grep -Fq 'PR_SAFETY_ANALYSIS_ENGINE=single' .env.example
 ! grep -Fq 'hermes-kanban-safety-bridge' Dockerfile.hermes-controller
+grep -Fq 'COPY scripts/hermes_pr_safety_result.py /app/hermes_pr_safety_result.py' Dockerfile.hermes-controller
 python3 - <<'PY'
 from pathlib import Path
 source=Path('docker-compose.yml').read_text()

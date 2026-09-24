@@ -148,6 +148,8 @@ grep -Fq '"$ROOT/bin/hermes-kanban-safety-bridge:$BRIDGE_BIN"' scripts/hermes-na
 grep -Fq '"$ROOT/scripts/hermes-kanban-safety-bridge-preflight.py:$BRIDGE_PREFLIGHT"' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes-kanban-workflow-preflight.py:$KANBAN_PREFLIGHT"' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes-kanban-risk-council.py:$RISK_COUNCIL"' scripts/hermes-native.sh
+grep -Fq 'install -m 0444 -o root -g wheel "$ROOT/scripts/hermes_pr_safety_result.py" "$SAFETY_RESULT"' scripts/hermes-native.sh
+grep -Fq '"$ROOT/scripts/hermes_pr_safety_result.py:$SAFETY_RESULT"' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/configure-hermes-kanban-profiles.py:$PROFILE_CONFIGURATOR"' scripts/hermes-native.sh
 grep -Fq 'secrets.token_hex(32)' scripts/hermes-native.sh
 grep -Fq 'BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"' scripts/hermes-native.sh
