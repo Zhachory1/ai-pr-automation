@@ -46,6 +46,17 @@ GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
+repair_runtime_venv_ownership() {
+  local venv="$INSTALL_DIR/venv" path
+  [[ "$HERMES_HOME" == "$SERVICE_HOME/.hermes" && "$INSTALL_DIR" == "$HERMES_HOME/hermes-agent" ]] \
+    || { echo "refusing noncanonical Hermes install layout" >&2; exit 2; }
+  for path in "$SERVICE_HOME" "$HERMES_HOME" "$INSTALL_DIR" "$venv"; do
+    [[ ! -L "$path" ]] || { echo "refusing symlinked Hermes path: $path" >&2; exit 2; }
+  done
+  [[ -e "$venv" ]] || return 0
+  [[ -d "$venv" ]] || { echo "Hermes venv is not a directory: $venv" >&2; exit 2; }
+  chown -RhP "$SERVICE_USER:$(id -gn "$SERVICE_USER")" "$venv"
+}
 wait_unloaded() {
   local label="$1" i
   for i in $(seq 1 50); do
@@ -165,6 +176,7 @@ install_native() {
     chmod 0444 "$installer"
     [[ "$(shasum -a 256 "$installer" | awk '{print $1}')" == "$HERMES_INSTALLER_SHA256" ]] \
       || { echo "Hermes installer digest mismatch" >&2; exit 2; }
+    repair_runtime_venv_ownership
     sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
       bash "$installer" --commit "$HERMES_NATIVE_COMMIT" --force-commit --skip-setup \
         --non-interactive --no-skills --dir "$INSTALL_DIR" --hermes-home "$HERMES_HOME"
