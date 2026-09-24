@@ -58,6 +58,10 @@ def strict_object(value, keys):
     return isinstance(value, dict) and set(value) == set(keys)
 
 
+def failure_settlement(kind):
+    return "reconcile" if kind in {"pr-maintain", "swe-implement"} else "failed"
+
+
 def valid_generic(kind, value, nonce, payload, dedupe_key):
     if not strict_object(value, {"detail", "nonce", "posted_ref", "status"}):
         return None
@@ -83,13 +87,18 @@ def valid_generic(kind, value, nonce, payload, dedupe_key):
 
 def valid_run_status(value, run_id, terminal=False):
     # queued/running statuses may omit model/session/last_event/output/usage until those facts exist.
-    # Terminal records are strict and must carry the complete poll contract.
     required = {"object", "run_id", "status", "created_at", "updated_at"}
     if (not isinstance(value, dict) or not required <= set(value) or value.get("object") != "hermes.run"
             or value.get("run_id") != run_id):
         return False
-    terminal_required = {"last_event", "session_id", "model", "output", "usage"}
-    return not terminal or (terminal_required <= set(value) and isinstance(value.get("usage"), dict))
+    if not terminal:
+        return True
+    terminal_required = {"last_event", "session_id", "model"}
+    if not terminal_required <= set(value):
+        return False
+    if value["status"] == "failed":
+        return "error" in value
+    return {"output", "usage"} <= set(value) and isinstance(value.get("usage"), dict)
 
 
 def parse_typed_output(output):
@@ -386,9 +395,9 @@ class Controller:
                     (attempt["request_id"], attempt["nonce"], self.lease)):
                     self.db_bool("SELECT hermes_api_recover_lease(%s,%s,%s,%s) ok",
                         (attempt["request_id"], attempt["attempt_no"], attempt["nonce"], self.lease))
-                    direct = attempt["kind"] in DIRECT_EFFECT
-                    self.settle(attempt, "reconcile" if direct else "failed", "lease lost before Hermes run id was recovered",
-                                attempt_state="reconcile" if direct else "failed")
+                    settlement = failure_settlement(attempt["kind"])
+                    self.settle(attempt, settlement, "lease lost before Hermes run id was recovered",
+                                attempt_state=settlement)
                     return None
                 next_renew = time.monotonic() + self.lease / 3
             with self.connect() as db:
@@ -396,9 +405,8 @@ class Controller:
                     (attempt["request_id"], attempt["attempt_no"], attempt["nonce"], attempt["route_generation"])).fetchone()
             submission = row["submission"] if row else None
             if not submission:
-                direct = attempt["kind"] in DIRECT_EFFECT
-                self.settle(attempt, "reconcile" if direct else "failed", "Hermes submit replay window exhausted",
-                            attempt_state="reconcile" if direct else "failed")
+                settlement = failure_settlement(attempt["kind"])
+                self.settle(attempt, settlement, "Hermes submit replay window exhausted", attempt_state=settlement)
                 return None
             body = base64.b64decode(submission["request_b64"])
             try:
@@ -414,11 +422,12 @@ class Controller:
                     return response["run_id"]
                 return None
             if status == 409:
-                self.settle(attempt, "reconcile", "Hermes idempotency conflict", attempt_state="reconcile")
+                settlement = "failed" if attempt["kind"] == "pr-review" else "reconcile"
+                self.settle(attempt, settlement, "Hermes idempotency conflict", attempt_state=settlement)
                 return None
             if status not in {0, 429, 502, 503, 504}:
-                self.settle(attempt, "reconcile" if attempt["kind"] in DIRECT_EFFECT else "failed",
-                    f"Hermes submit HTTP {status}", attempt_state="reconcile" if attempt["kind"] in DIRECT_EFFECT else "failed")
+                settlement = failure_settlement(attempt["kind"])
+                self.settle(attempt, settlement, f"Hermes submit HTTP {status}", attempt_state=settlement)
                 return None
             time.sleep(delay + random.random() * min(delay, 1)); delay = min(delay * 2, 30)
 
@@ -440,8 +449,8 @@ class Controller:
         if self.db_bool("SELECT hermes_api_recover_lease(%s,%s,%s,%s) ok",
             (attempt["request_id"], attempt["attempt_no"], attempt["nonce"], self.lease)):
             detail = "lease lost; stop confirmed" if confirmed else "lease lost; stop unconfirmed"
-            self.settle(attempt, "reconcile" if attempt["kind"] in DIRECT_EFFECT else "failed", detail,
-                        attempt_state="reconcile" if attempt["kind"] in DIRECT_EFFECT else "failed")
+            settlement = failure_settlement(attempt["kind"])
+            self.settle(attempt, settlement, detail, attempt_state=settlement)
 
     def poll(self, attempt, run_id):
         next_renew = time.monotonic() + self.lease / 3
@@ -457,23 +466,21 @@ class Controller:
             except (OSError, ValueError, json.JSONDecodeError):
                 time.sleep(self.poll_interval); continue
             if status == 404:
-                self.settle(attempt, "reconcile" if attempt["kind"] in DIRECT_EFFECT else "failed",
-                    "Hermes run missing", attempt_state="reconcile" if attempt["kind"] in DIRECT_EFFECT else "failed")
+                settlement = failure_settlement(attempt["kind"])
+                self.settle(attempt, settlement, "Hermes run missing", attempt_state=settlement)
                 return None
             if status != 200:
                 time.sleep(self.poll_interval); continue
             if not valid_run_status(current, run_id):
-                direct = attempt["kind"] in DIRECT_EFFECT
-                self.settle(attempt, "reconcile" if direct else "failed", "malformed Hermes run status",
-                            attempt_state="reconcile" if direct else "failed")
+                settlement = failure_settlement(attempt["kind"])
+                self.settle(attempt, settlement, "malformed Hermes run status", attempt_state=settlement)
                 return None
             terminal = current["status"]
             if terminal not in TERMINAL:
                 time.sleep(self.poll_interval); continue
             if not valid_run_status(current, run_id, terminal=True):
-                direct = attempt["kind"] in DIRECT_EFFECT
-                self.settle(attempt, "reconcile" if direct else "failed", "malformed Hermes terminal status",
-                            attempt_state="reconcile" if direct else "failed")
+                settlement = failure_settlement(attempt["kind"])
+                self.settle(attempt, settlement, "malformed Hermes terminal status", attempt_state=settlement)
                 return None
             output = current.get("output", "")
             if not isinstance(output, str): output = ""
@@ -648,9 +655,8 @@ class Controller:
             if not terminal: return
             status, output = terminal
             if status != "completed":
-                direct = attempt["kind"] in DIRECT_EFFECT
-                self.settle(attempt, "reconcile" if direct else "failed", f"Hermes terminal status {status}",
-                            attempt_state="reconcile" if direct else "failed"); return
+                settlement = failure_settlement(attempt["kind"])
+                self.settle(attempt, settlement, f"Hermes terminal status {status}", attempt_state=settlement); return
             kind = attempt["kind"]
             if kind == "pr-safety-review": value = parse_safety_output(output)
             elif kind in DIRECT_EFFECT: value = parse_direct_output(output)
@@ -658,19 +664,19 @@ class Controller:
             if kind in DIRECT_EFFECT:
                 result = valid_generic(kind, value, attempt["nonce"], attempt["payload"], attempt["dedupe_key"])
                 if not result:
-                    self.settle(attempt, "reconcile", "malformed direct-effect output", attempt_state="reconcile")
+                    settlement = failure_settlement(kind)
+                    self.settle(attempt, settlement, "malformed direct-effect output", attempt_state=settlement)
                 else:
-                    status = result["status"]
+                    status = failure_settlement(kind) if result["status"] == "reconcile" else result["status"]
                     self.settle(attempt, status, result["detail"], result["posted_ref"],
-                                "reconcile" if status == "reconcile" else "completed")
+                                status if status in {"failed", "reconcile"} else "completed")
             elif kind == "doc-write": self.postprocess_doc(attempt, value)
             elif kind == "pr-safety-review": self.postprocess_safety(attempt, value)
             else: self.postprocess_memory(attempt, value)
         except Exception as error:
             print(f"hermes-controller request={attempt['request_id']} attempt={attempt['attempt_no']} error={type(error).__name__}: {error}", flush=True)
-            direct = attempt["kind"] in DIRECT_EFFECT
-            self.settle(attempt, "reconcile" if direct else "failed", str(error),
-                        attempt_state="reconcile" if direct else "failed")
+            settlement = failure_settlement(attempt["kind"])
+            self.settle(attempt, settlement, str(error), attempt_state=settlement)
         finally:
             with self.lock: self.running.discard(key)
 

@@ -46,14 +46,17 @@ class LostSubmitHermes(BaseHTTPRequestHandler):
 
 
 class ControllerContractTest(unittest.TestCase):
-    def test_run_status_allows_nonterminal_without_output(self):
+    def test_run_status_validation_is_status_specific(self):
         running = {"object":"hermes.run","run_id":"r","status":"running","created_at":1.0,
                    "updated_at":2.0,"last_event":"run.started","session_id":"s","model":"m"}
         self.assertTrue(controller.valid_run_status(running, "r"))
         sparse = {"object":"hermes.run","run_id":"r","status":"queued","created_at":1.0,"updated_at":1.0}
         self.assertTrue(controller.valid_run_status(sparse, "r"))
-        self.assertFalse(controller.valid_run_status(running, "r", terminal=True))
+        self.assertFalse(controller.valid_run_status(dict(running, status="completed"), "r", terminal=True))
+        self.assertFalse(controller.valid_run_status(dict(running, status="completed", output="{}"), "r", terminal=True))
         self.assertTrue(controller.valid_run_status(dict(running, status="completed", output="{}", usage={}), "r", terminal=True))
+        self.assertTrue(controller.valid_run_status(dict(running, status="failed", error="agent failed"), "r", terminal=True))
+        self.assertFalse(controller.valid_run_status(dict(running, status="failed"), "r", terminal=True))
 
     def test_typed_output_is_strict_and_safety_allows_one_embedded_object(self):
         self.assertEqual(controller.parse_typed_output('{"x":1}'), {"x":1})
@@ -112,6 +115,31 @@ class ControllerContractTest(unittest.TestCase):
         self.assertEqual(controller.valid_generic("pr-review", value, nonce, {}, f"o/r#1@{head}"), value)
         self.assertIsNone(controller.valid_generic("pr-review", dict(value, extra=True), nonce, {}, f"o/r#1@{head}"))
         self.assertIsNone(controller.valid_generic("pr-review", dict(value, posted_ref="wrong"), nonce, {}, f"o/r#1@{head}"))
+
+    def test_failed_outcome_settlement_depends_on_kind(self):
+        nonce = "a" * 32; head = "b" * 40
+
+        def process(kind, terminal):
+            instance = controller.Controller.__new__(controller.Controller)
+            instance.lock = threading.Lock(); instance.running = set()
+            instance.submit = lambda attempt: "run"
+            instance.poll = lambda attempt, run_id: terminal
+            settlements = []
+            instance.settle = lambda attempt, status, detail, posted="", attempt_state=None: settlements.append(
+                (status, attempt_state)) or True
+            attempt = {"request_id":1,"attempt_no":1,"kind":kind,"nonce":nonce,"payload":{},
+                       "dedupe_key":f"o/r#1@{head}"}
+            instance.process(attempt)
+            return settlements
+
+        reconcile = json.dumps({"detail":"uncertain","nonce":nonce,"posted_ref":"","status":"reconcile"})
+        for terminal in (("failed", ""), ("completed", "not json"), ("completed", reconcile)):
+            with self.subTest(kind="pr-review", terminal=terminal[0], output=terminal[1]):
+                self.assertEqual(process("pr-review", terminal), [("failed", "failed")])
+        for kind, expected in (("pr-maintain", "reconcile"), ("swe-implement", "reconcile"),
+                               ("doc-write", "failed")):
+            with self.subTest(kind=kind):
+                self.assertEqual(process(kind, ("failed", "")), [(expected, expected)])
 
     def test_safety_clear_is_incident_free_and_identity_bound(self):
         payload = {"operation_id":"op","repo":"o/r","pr":1,"head_sha":"h","base_sha":"b",
