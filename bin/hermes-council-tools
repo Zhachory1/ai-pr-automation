@@ -370,7 +370,7 @@ def own_task_handler_env(aliases):
     previous = dict(os.environ)
     try:
         for key in tuple(os.environ):
-            if key.startswith("HERMES_KANBAN_"):
+            if key.startswith("HERMES_KANBAN_") or key == "HERMES_SESSION_ID":
                 os.environ.pop(key, None)
         os.environ.update({env_name:aliases[name] for name, env_name in HANDLER_ENV.items()})
         # MCP safe-env marks descendants as delegated. This server is the dispatcher's

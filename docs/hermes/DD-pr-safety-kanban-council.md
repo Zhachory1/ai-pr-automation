@@ -130,6 +130,8 @@ Bridge receives already-preflighted snapshot and policy paths. It verifies:
 - policy path, version, and digest;
 - snapshot is not writable through exposed worker tools.
 
+V2 fails before workflow-input or task creation unless `PR_SAFETY_SNAPSHOT_ROOT`, `PR_SAFETY_POLICY_PATH`, `PR_SAFETY_POLICY_VERSION`, and `PR_SAFETY_POLICY_DIGEST` are present and exactly match trusted request identity and resolved paths.
+
 PR 3 bridge will write mode-0440 workflow inputs:
 
 ```text
@@ -159,15 +161,15 @@ The server exposes exactly seven tools, in contract order:
 
 Profile config selects only `platform_toolsets.cli: [council-tools]` and sets `agent.disabled_toolsets: [delegation, kanban]`. This removes auto-added built-in Kanban tools. No create, link, list, unblock, review-routing, attachment, or URL tool reaches the model.
 
-Kanban MCP schemas contain no task, board, run, or claim-lock field and reject additional properties. Pinned MCP launch filtering removes worker identity and other non-safe process variables, so profile config explicitly interpolates task, run, claim lock, board, DB, workspace, snapshot root, workflow root, profile, and interpreter into `COUNCIL_*` aliases. The server validates every alias. Snapshot binding uses only council root/workspace aliases. Before a Kanban call, the server removes ambient `HERMES_KANBAN_*`, restores only task, run, claim lock, board, DB, and `HERMES_PROFILE` from validated aliases, verifies pinned DB/board resolution, and calls the exact `tools.kanban_tools` handler with trusted task and board arguments. It removes `HERMES_DELEGATED_CHILD_CONTEXT` only in that handler scope because this MCP process is the dispatcher's explicitly supervised own-task transport, not an agent-created descendant. Pinned ownership, expected-run, and claim-lock checks remain authoritative. Missing or invalid aliases, schema violations, oversized input, and pinned handler `{"error":...}` results fail closed; malformed JSON-RPC retains standard `-32700`, `-32600`, `-32601`, and `-32602` errors.
+Kanban MCP schemas contain no task, board, run, claim-lock, or session field and reject additional properties. MCP discovery starts before `AIAgent` creates `HERMES_SESSION_ID`, so profile config does not transport worker session identity. It explicitly interpolates task, run, claim lock, board, DB, workspace, snapshot root, workflow root, profile, and interpreter into `COUNCIL_*` aliases. The server validates every alias. Snapshot binding uses only council root/workspace aliases. Before a Kanban call, the server removes ambient `HERMES_KANBAN_*` and `HERMES_SESSION_ID`, restores only task, run, claim lock, board, DB, and `HERMES_PROFILE` from validated aliases, verifies pinned DB/board resolution, and calls the exact `tools.kanban_tools` handler with trusted task and board arguments. It removes `HERMES_DELEGATED_CHILD_CONTEXT` only in that handler scope because this MCP process is the dispatcher's explicitly supervised own-task transport, not an agent-created descendant. Pinned ownership, expected-run, and claim-lock checks remain authoritative. Missing or invalid aliases, schema violations, oversized input, and pinned handler `{"error":...}` results fail closed; malformed JSON-RPC retains standard `-32700`, `-32600`, `-32601`, and `-32602` errors.
 
-PR 3 will create `COUNCIL_WORKSPACE/.council-tools.json` (interpolated from `HERMES_KANBAN_WORKSPACE`) as an exact schema-versioned binding owned by current service uid, mode 0440, regular, non-symlink, and single-link:
+PR 2's sanitized local graph creates `COUNCIL_WORKSPACE/.council-tools.json` so its executable workspace can satisfy local graph acceptance. PR 3 owns creation of this binding in production. The binding is exact, schema-versioned, owned by current service uid, mode 0440, regular, non-symlink, and single-link:
 
 ```json
 {"schema_version":1,"snapshot_root":"/absolute/snapshot","input_root":"/absolute/workflow/input"}
 ```
 
-Logical `snapshot/<relative>` maps to `snapshot_root`; `input/<relative>` maps to `input_root`. Bound roots must remain under validated `COUNCIL_SNAPSHOT_ROOT` and `COUNCIL_WORKFLOW_ROOT`, interpolated from `PR_SAFETY_SNAPSHOT_ROOT` and `PR_SAFETY_WORKFLOW_ROOT`. Absolute paths, `..`, backslash aliases, paths over 4,096 characters or 32 components, symlink components, non-regular files, and non-UTF-8 text fail closed. `PR_SAFETY_WORKFLOW_ROOT`, binding creation, and live bound reads are PR 3 bridge responsibilities; PR 1 does not claim a live snapshot read.
+Logical `snapshot/<relative>` maps to `snapshot_root`; `input/<relative>` maps to `input_root`. Bound roots must remain under validated `COUNCIL_SNAPSHOT_ROOT` and `COUNCIL_WORKFLOW_ROOT`, interpolated from `PR_SAFETY_SNAPSHOT_ROOT` and `PR_SAFETY_WORKFLOW_ROOT`. Absolute paths, `..`, backslash aliases, paths over 4,096 characters or 32 components, symlink components, non-regular files, and non-UTF-8 text fail closed. `PR_SAFETY_WORKFLOW_ROOT`, production binding creation, and live bound reads are PR 3 bridge responsibilities; PR 1 does not claim a live snapshot read. PR 2 creates only the sanitized local graph binding described above.
 
 Limits are fixed: 256 KiB per JSON-RPC request line; 1 MiB per file; literal query at most 256 characters; search at most 2,000 files, 4,096 entries, 32 directory levels, 16 MiB total bytes, 100 results, and 2,000 characters per returned line. Kanban text is at most 16,000 characters, heartbeat notes 2,000 characters, and completion metadata 64 KiB, 64 top-level properties, 1,024 entries, and 16 levels deep. Completion metadata cannot declare `artifacts`, closing the pinned handler's metadata-based attachment path.
 
@@ -255,6 +257,8 @@ Bridge verifies:
 - no failed member, attachment, child, retry, or effect-capable tool;
 - deadline and budget;
 - every incident citation points to changed line.
+
+Usage is resolved only after task and run `worker_pid` values clear. The verifier opens each expected profile's `state.db` with a read-only SQLite URI and selects closed sessions (`ended_at` non-null after token flush) using fields pinned Kanban workers actually populate: `source='kanban'`, expected model when that schema column exists, and `started_at`/`ended_at` within a fixed bounded window around the Kanban run. Profile-scoped state plus one-worker-per-profile concurrency provides role isolation. Exactly one row must match. Input/output token columns are required; cache-read/write columns are included when available. Zero matches, multiple matches, unsupported required columns, wrong source/model, out-of-window rows, or any negative count fail closed. Nullable Kanban `cwd`, optional pinned-handler `worker_session_id`, and task `session_id` are never trusted or required.
 
 Evidence, dissent, and residual-risk item schemas are exact as shown above. Strings, arrays, quotes, and item counts have fixed bounds.
 
@@ -485,6 +489,7 @@ Operator recovery remains explicit. No Postgres watchdog. Add bridge status/reco
 - profile effective tool schemas;
 - specialist/synthesis metadata;
 - dissent union;
+- profile-scoped usage matching, ambiguity, time/source/model bounds, nullable Kanban `cwd`, and negative counts;
 - incident five-condition gate;
 - adapter identity and verdict mapping;
 - bridge HMAC, replay, body, path, idempotency, and error handling;
