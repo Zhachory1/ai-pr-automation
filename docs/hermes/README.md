@@ -12,10 +12,11 @@ Compose producers -> Postgres requests/hermes_runs -> Compose hermes-controller
                                                    -> /p/<profile>/v1/runs
 ```
 
-Host launchd keeps only:
+Host launchd keeps:
 
 - pinned Hermes gateway bound to `127.0.0.1:8642`;
-- Hermes dashboard.
+- Hermes dashboard;
+- installed but inactive PR safety Kanban bridge definition bound to `127.0.0.1:8766`.
 
 Compose runs:
 
@@ -114,9 +115,11 @@ and review transitions. It makes no service-profile, service-board, model, GitHu
 ## Authority and producers
 
 Repository authority YAML is scope-of-attention, not credential security. Compose review/maintain
-producers discover open PRs, resolve exact heads, and enqueue deduped rows. Safety producer discovers
-merged PRs and writes immutable snapshots. Memory producer enqueues hourly-deduped schedule trigger.
-Producers make no model calls.
+producers discover open PRs, resolve exact heads, and enqueue deduped rows. Root-running safety producer
+discovers merged PRs and writes immutable snapshots under the root-owned, `staff`-group-readable `0750`
+snapshot root. Hermes bridge and gateway receive group read/traverse access only. Other shared runtime
+directories remain service-owned, `staff`-group-writable `0770`. Memory producer enqueues
+hourly-deduped schedule trigger. Producers make no model calls.
 
 Set in `.env`:
 
@@ -137,8 +140,48 @@ scripts/fleet.sh down
 ```
 
 `sync-support` also unloads and removes old dispatcher/producer LaunchDaemons and installed queue
-runner binaries. Source artifacts remain in repository only for bounded rollback/audit during bake;
-normal lifecycle cannot start them.
+runner binaries. It installs the root-owned safety bridge, v2 workflow support, read-only reconcile and
+preflight commands, creates its state directories, and renders its launchd plist. Bridge HMAC key defaults
+to `/Users/Shared/ai-pr-automation-runtime/hermes-bridge-secrets/key.json`: parent is root-owned,
+`staff`-group-readable/traversable `0750`, and key is service-user-owned `0600`. This keeps bridge key
+outside operator-owned `secrets/`, whose API configuration path is `0700`. It does not bootstrap or
+start bridge. It refuses support-byte replacement while any nonarchived bridge
+workflow exists and unloads a loaded bridge before replacement. If that scan fails, it reloads the old
+bridge plist when the bridge was previously loaded. Source artifacts remain in repository only for
+bounded rollback/audit during bake; normal lifecycle cannot start retired workers.
+
+Install and `sync-support` create all five v2 council profiles only when all five are absent and gateway,
+dashboard, and bridge are stopped. A partial set fails closed. If profiles are missing while gateway is
+running, run `scripts/fleet.sh down`, rerun install or `sync-support`, then run `scripts/fleet.sh up`.
+Existing complete sets are not replaced and must pass live preflight. Gateway launchd exports exact
+snapshot/workflow roots and the 120-second Kanban busy timeout used by profile MCP interpolation.
+Bridge preflight also probes a fresh database through pinned Hermes Python and fails unless linked
+SQLite reports `journal_mode=delete` and `busy_timeout=120000`.
+
+Bridge operations are separate from fleet lifecycle:
+
+```bash
+sudo scripts/hermes-native.sh bridge-start   # explicit activation; runs installed v2 preflight first
+sudo scripts/hermes-native.sh bridge-status
+sudo scripts/hermes-native.sh bridge-reconcile # read-only report under exact installed bridge environment
+sudo scripts/hermes-native.sh bridge-stop
+```
+
+The API requires signed requests, exact `Host: hermes-council.localhost:8766`, no `Origin`, and exact
+`application/json` for POST. Authentication headers are `X-Hermes-Auth-Generation`,
+`X-Hermes-Timestamp`, `X-Hermes-Nonce`, `X-Hermes-Body-SHA256`, and `X-Hermes-Signature`.
+Request HMAC-SHA256 input is newline-joined generation, timestamp, nonce, body SHA-256, method, and
+raw path. Signed responses use the same fields plus status as the last line. Timestamp tolerance is 60
+seconds; nonce retention is 120 seconds. Stop and archive bodies repeat exact persisted `operation_id`,
+create-body SHA-256 as `request_body_digest`, and safety request `nonce`. `GET /healthz`, create,
+status, stop, and archive responses are signed. Reconcile opens Kanban SQLite with `mode=ro` and is
+report-only; it never invokes the pinned connector, repairs, migrates, or removes bridge/Kanban state.
+
+Bridge design uses repository contents from the immutable snapshot root as whole-repository context
+for this PR-safety use case. Council tools remain root-owned, non-writable, and confined to configured
+snapshot/workflow roots. Model-provider policy authorization is not asserted here; PR6 owns that gate.
+This design does not grant access outside those roots or activate bridge, controller, or fleet routes.
+PR4 owns controller metrics; final cutover owns `ONCALL.md`, SLOs, alerts, and activation. Until then the unloaded bridge emits only bounded structured request records for local conformance.
 
 ## Restricted Kanban council profiles
 

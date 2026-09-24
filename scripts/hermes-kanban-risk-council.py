@@ -347,10 +347,21 @@ def v2_context(home, request_value, contract_value):
     contract_digest = hashlib.sha256(canonical(contract).encode()).hexdigest()
     workflow_id = "pr-risk-council-" + hashlib.sha256(request["operation_id"].encode()).hexdigest()[:32]
     artifact_digest = hashlib.sha256(canonical({"request":request,"contract_digest":contract_digest}).encode()).hexdigest()
-    root = home / "workflow-runs" / workflow_id
+    configured_root = os.environ.get("PR_SAFETY_WORKFLOW_ROOT")
+    workflow_root = Path(configured_root) if configured_root else home / "workflow-runs"
+    if not workflow_root.is_absolute(): fail("workflow root must be absolute")
+    if workflow_root.exists():
+        info = workflow_root.lstat()
+        if workflow_root.is_symlink() or not workflow_root.is_dir() or info.st_uid != os.geteuid() \
+                or stat_mode(workflow_root) != 0o700:
+            fail("unsafe workflow root")
+    elif configured_root:
+        fail("configured workflow root missing")
+    root = workflow_root / workflow_id
     return {"contract":contract,"request":request,"snapshot":snapshot,"policy":policy,"diff":diff,
             "policy_bytes":policy_bytes,"contract_digest":contract_digest,"workflow_id":workflow_id,
-            "artifact_digest":artifact_digest,"root":root,"input":root / "input","state":root / "state.json"}
+            "artifact_digest":artifact_digest,"workflow_root":workflow_root,"root":root,
+            "input":root / "input","state":root / "state.json"}
 
 
 def private_dir(path):
@@ -388,7 +399,7 @@ def v2_input_files(ctx):
 
 
 def prepare_v2_inputs(ctx):
-    private_dir(ctx["root"]); private_dir(ctx["input"])
+    private_dir(ctx["workflow_root"]); private_dir(ctx["root"]); private_dir(ctx["input"])
     for path, data in v2_input_files(ctx): immutable_file(path, data)
 
 
@@ -785,8 +796,9 @@ def cleanup_v2(home, install, request, contract):
     ctx = v2_context(home, request, contract); kb, _ = modules(install); current = status_v2(home, install, request, contract)
     if current["task_count"] != 5: fail("v2 council board task count mismatch")
     if not current["terminal"]: fail("cannot clean up active v2 council")
-    root, managed = ctx["root"].resolve(), (home / "workflow-runs").resolve()
-    if ctx["root"].is_symlink() or root.parent != managed: fail("refusing workflow input cleanup outside managed root")
+    root = ctx["root"].resolve(strict=True)
+    if ctx["root"].is_symlink() or root.parent != ctx["workflow_root"].resolve(strict=True):
+        fail("refusing workflow input cleanup outside managed root")
     removed = kb.remove_board(BOARD, archive=True)
     shutil.rmtree(root)
     return {"action":"cleanup","board":BOARD,"workflow_id":ctx["workflow_id"],

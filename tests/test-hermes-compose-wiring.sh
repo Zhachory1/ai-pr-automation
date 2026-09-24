@@ -6,6 +6,7 @@ for service in "${services[@]}"; do grep -Eq "^  ${service}:" docker-compose.yml
 grep -Fq 'HERMES_API_BASE_URL: http://host.docker.internal:8642' docker-compose.yml
 grep -Fq 'hermes_api_keys' docker-compose.yml
 grep -Fq 'GITHUB_TOKEN_FILE: /run/secrets/github_read_token' docker-compose.yml
+grep -A5 '^  pr-safety-producer:' docker-compose.yml | grep -Fq 'user: "0:0"'
 grep -Fq 'GITHUB_READ_TOKEN_FILE=' scripts/fleet.sh
 grep -Fq -- '-h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT"' scripts/hermes-compose-producer.sh
 grep -Fq 'gh auth setup-git' scripts/hermes-compose-producer.sh

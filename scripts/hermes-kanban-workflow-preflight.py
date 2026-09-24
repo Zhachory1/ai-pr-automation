@@ -355,6 +355,9 @@ from pathlib import Path
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+stop_helpers=['_dispatch_tick_lock','_terminate_reclaimed_worker','write_txn']
+if not callable(getattr(kbc,stop_helpers[0],None)) or any(not callable(getattr(kb,name,None)) for name in stop_helpers[1:]):
+ raise RuntimeError('pinned Kanban stop helpers changed')
 keys=['dispatch_in_gateway','review_dispatch','dispatch_interval_seconds','failure_limit','max_in_progress','max_in_progress_per_profile','auto_decompose','dispatch_stale_timeout_seconds','reconcile_orphans']
 conn=kbc.connect(Path(sys.argv[1]))
 roles=['reviewer','security-engineer','site-reliability-engineer','technical-architect']
@@ -370,7 +373,7 @@ assert kb.request_review(conn,review,summary='ready',reviewer='verifier',expecte
 review_run=kb.claim_review_task(conn,review,claimer='fixture-reviewer')
 assert review_run is not None
 assert kb.complete_task(conn,review,summary='approved',metadata={'artifact_digest':'fixture'},expected_run_id=review_run.current_run_id,fire_lifecycle_hook=False)
-print(json.dumps({'defaults':{x:DEFAULT_CONFIG['kanban'].get(x) for x in keys},'graph':{'parents':len(parents),'verifier_status':kb.get_task(conn,verifier).status},'review_status':kb.get_task(conn,review).status,'comment_count':len(kb.list_comments(conn,parents[0]))},sort_keys=True))
+print(json.dumps({'defaults':{x:DEFAULT_CONFIG['kanban'].get(x) for x in keys},'graph':{'parents':len(parents),'verifier_status':kb.get_task(conn,verifier).status},'review_status':kb.get_task(conn,review).status,'comment_count':len(kb.list_comments(conn,parents[0])),'stop_safety_helpers':stop_helpers},sort_keys=True))
 conn.close()
 '''
     env = {"PATH":os.environ.get("PATH", ""),"PYTHONPATH":str(install),"PYTHONUTF8":"1",
@@ -388,6 +391,8 @@ conn.close()
     if values.get("graph") != {"parents":4,"verifier_status":"ready"} \
             or values.get("review_status") != "done" or values.get("comment_count") != 1:
         fail("Kanban isolated graph/review probe failed")
+    if values.get("stop_safety_helpers") != ["_dispatch_tick_lock","_terminate_reclaimed_worker","write_txn"]:
+        fail("pinned Kanban stop helpers changed")
     return values
 
 
@@ -401,6 +406,7 @@ def preflight(home, install, contract_path, council_tools=COUNCIL_TOOLS_COMMAND,
               "board":contract["board"],"profiles":profiles,"kanban_defaults":runtime["defaults"],
               "isolated_probe":{"graph":runtime["graph"],"review_status":runtime["review_status"],
                                 "comment_count":runtime["comment_count"]},
+              "stop_safety_helpers":runtime["stop_safety_helpers"],
               "required_overrides":{"auto_decompose":False,"max_in_progress":5,
                                     "max_in_progress_per_profile":1},
               "deferred_runtime_enforcement":["deadline_seconds","max_active_workflows","profile_tool_policy","token_budget"],

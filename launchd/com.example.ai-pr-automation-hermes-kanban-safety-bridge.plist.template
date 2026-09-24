@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.ai-pr-automation-hermes-kanban-safety-bridge</string>
+  <key>UserName</key><string>__HERMES_USER__</string>
+  <key>ProgramArguments</key><array>
+    <string>__HERMES_INSTALL_DIR__/venv/bin/python</string>
+    <string>__BRIDGE_BIN__</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>HOME</key><string>__SERVICE_HOME__</string>
+    <key>HERMES_HOME</key><string>__HERMES_HOME__</string>
+    <key>HERMES_INSTALL_DIR</key><string>__HERMES_INSTALL_DIR__</string>
+    <key>HERMES_KANBAN_BRIDGE_BIND</key><string>127.0.0.1</string>
+    <key>HERMES_KANBAN_BUSY_TIMEOUT_MS</key><string>120000</string>
+    <key>HERMES_KANBAN_BRIDGE_PORT</key><string>__BRIDGE_PORT__</string>
+    <key>HERMES_KANBAN_BRIDGE_HOST_HEADER</key><string>__BRIDGE_HOST_HEADER__</string>
+    <key>HERMES_KANBAN_BRIDGE_STATE_ROOT</key><string>__BRIDGE_STATE_ROOT__</string>
+    <key>HERMES_KANBAN_BRIDGE_KEY_FILE</key><string>__BRIDGE_KEY_FILE__</string>
+    <key>HERMES_KANBAN_BRIDGE_CONTRACT</key><string>__BRIDGE_CONTRACT__</string>
+    <key>HERMES_KANBAN_RISK_COUNCIL</key><string>__RISK_COUNCIL__</string>
+    <key>HERMES_NATIVE_CONTRACT</key><string>__RUNTIME_CONTRACT__</string>
+    <key>PR_SAFETY_WORKFLOW_ROOT</key><string>__WORKFLOW_ROOT__</string>
+    <key>PR_SAFETY_SNAPSHOT_ROOT</key><string>__SNAPSHOT_ROOT__</string>
+    <key>PR_SAFETY_POLICY_PATH</key><string>__POLICY_PATH__</string>
+    <key>PR_SAFETY_POLICY_VERSION</key><string>__POLICY_VERSION__</string>
+    <key>PR_SAFETY_POLICY_DIGEST</key><string>__POLICY_DIGEST__</string>
+  </dict>
+  <key>WorkingDirectory</key><string>__SERVICE_HOME__</string>
+  <key>RunAtLoad</key><false/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>__LOG_ROOT__/bridge.out.log</string>
+  <key>StandardErrorPath</key><string>__LOG_ROOT__/bridge.err.log</string>
+</dict></plist>

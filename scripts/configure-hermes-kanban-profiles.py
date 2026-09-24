@@ -253,10 +253,12 @@ def check(home, contract, uid):
 
 
 def require_stopped():
-    for label in ("com.example.ai-pr-automation-hermes", "com.example.ai-pr-automation-hermes-dashboard"):
+    labels = ("com.example.ai-pr-automation-hermes", "com.example.ai-pr-automation-hermes-dashboard",
+              "com.example.ai-pr-automation-hermes-kanban-safety-bridge")
+    for label in labels:
         try: loaded = subprocess.run(["launchctl", "print", f"system/{label}"], capture_output=True).returncode == 0
         except FileNotFoundError: loaded = False
-        if loaded: fail("stop Hermes gateway and dashboard before apply/restore")
+        if loaded: fail("stop Hermes gateway, dashboard, and safety bridge before apply/restore")
 
 
 def main():
