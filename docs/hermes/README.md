@@ -138,7 +138,8 @@ Set in `.env`:
 - `GITHUB_READ_TOKEN_FILE`;
 - `PR_SAFETY_MERGED_PR_AUTHORS`, policy digest, shared snapshot path, and
   `PR_SAFETY_ANALYSIS_ENGINE=single|kanban`;
-- `HERMES_KANBAN_BRIDGE_KEY_FILE` for always-mounted, controller-only signed bridge access;
+- `HERMES_KANBAN_BRIDGE_KEY_FILE` for host bridge authentication;
+- `HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE` for Docker Desktop's controller-only key copy;
 - document stage/inbox paths;
 - memory source/state paths.
 
@@ -156,9 +157,10 @@ scripts/fleet.sh down
 runner binaries. It installs the root-owned safety bridge, v2 workflow support, read-only reconcile and
 preflight commands, creates its state directories, and renders its launchd plist. Bridge HMAC key defaults
 to `/Users/Shared/ai-pr-automation-runtime/hermes-bridge-secrets/key.json`: parent is root-owned,
-`staff`-group-readable/traversable `0750`, and key is service-user-owned `0600`. This keeps bridge key
-outside operator-owned `secrets/`, whose API configuration path is `0700`. It does not bootstrap or
-start bridge. Its state-file guard refuses support-byte replacement while any nonarchived bridge workflow
+`staff`-group-readable/traversable `0750`, and key is service-user-owned `0600`. `fleet.sh up` copies
+those exact bytes to operator-owned `secrets/hermes-kanban-bridge-key.json` with mode `0600`, because
+Docker Desktop mounts host files as the operator and cannot mount the service-owned source. Compose
+mounts only that controller copy. `sync-support` does not bootstrap or start bridge. Its state-file guard refuses support-byte replacement while any nonarchived bridge workflow
 exists and unloads a loaded bridge before replacement. If that scan fails, it reloads the old bridge plist
 when the bridge was previously loaded. Source artifacts remain in repository only for bounded
 rollback/audit during bake; normal lifecycle cannot start retired workers.
@@ -173,7 +175,8 @@ SQLite reports `journal_mode=delete` and `busy_timeout=120000`.
 
 `fleet.sh up` always exports the real dedicated bridge key. Native `up` reuses an installed version that
 passes preflight, or runs guarded `sync-support` when installation is needed, then starts gateway and
-dashboard. Fleet explicitly starts the bridge before Compose. `fleet.sh down` reverses this order: it
+dashboard. Fleet refreshes the operator-owned controller copy, explicitly starts bridge, then starts
+Compose. `fleet.sh down` reverses this order: it
 stops Compose first, then native `down` stops bridge, dashboard, and gateway. A same-version `down`/`up`
 restart is supported, including recovery of a persisted Kanban marker under `single`.
 
