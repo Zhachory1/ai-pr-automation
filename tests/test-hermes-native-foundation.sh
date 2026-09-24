@@ -150,12 +150,16 @@ grep -Fq '"$ROOT/scripts/hermes-kanban-workflow-preflight.py:$KANBAN_PREFLIGHT"'
 grep -Fq '"$ROOT/scripts/hermes-kanban-risk-council.py:$RISK_COUNCIL"' scripts/hermes-native.sh
 grep -Fq 'install -m 0444 -o root -g wheel "$ROOT/scripts/hermes_pr_safety_result.py" "$SAFETY_RESULT"' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/hermes_pr_safety_result.py:$SAFETY_RESULT"' scripts/hermes-native.sh
+grep -Fq 'install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-pr-safety-kanban-enqueue.py" "$KANBAN_ENQUEUE"' scripts/hermes-native.sh
+grep -Fq '"$ROOT/scripts/hermes-pr-safety-kanban-enqueue.py:$KANBAN_ENQUEUE"' scripts/hermes-native.sh
 grep -Fq '"$ROOT/scripts/configure-hermes-kanban-profiles.py:$PROFILE_CONFIGURATOR"' scripts/hermes-native.sh
 grep -Fq 'secrets.token_hex(32)' scripts/hermes-native.sh
 grep -Fq 'BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"' scripts/hermes-native.sh
 grep -Fq 'BRIDGE_KEY_PARENT="${BRIDGE_KEY_FILE%/*}"' scripts/hermes-native.sh
 grep -Fq 'if [[ ! -e "$BRIDGE_KEY_FILE" ]]' scripts/hermes-native.sh
-grep -Fq 'install -d -m 0750 -o root -g staff "$SNAPSHOT_ROOT" "$BRIDGE_KEY_PARENT"' scripts/hermes-native.sh
+grep -Fq 'install -d -m 0750 -o root -g staff "$SNAPSHOT_ROOT"' scripts/hermes-native.sh
+grep -Fq 'install -d -m 0750 -o "$SERVICE_USER" -g staff "$SNAPSHOT_ROOT/direct-kanban"' scripts/hermes-native.sh
+grep -Fq 'install -d -m 0750 -o root -g staff "$BRIDGE_KEY_PARENT"' scripts/hermes-native.sh
 ! grep -Fq '$SHARED_RUNTIME/secrets/hermes-kanban-safety-bridge-key.json' scripts/hermes-native.sh
 python3 - <<'PY'
 from pathlib import Path
@@ -178,6 +182,7 @@ case "$1" in
     [[ ",${TEST_LOADED_SERVICES:-}," == *",$2,"* ]]
     ;;
   bootout)
+    [[ "$2" != "system/test-producer" ]] || exit 1
     [[ -e "$TEST_LAUNCH_LOADED" ]] || exit 1
     [[ "${TEST_CREATE_BRIDGE_STATE:-0}" == 1 ]] && printf '{"phase":"active"}\n' > "$TEST_BRIDGE_STATE/workflows/appeared.json"
     rm -f "$TEST_LAUNCH_LOADED"
@@ -197,6 +202,7 @@ print(source[source.index('wait_unloaded() {'):source.index('\nsync_profile() {'
 PY
 )"
 BRIDGE_LABEL=test-bridge BRIDGE_STATE_ROOT="$TEST_BRIDGE_STATE"
+SAFETY_PRODUCER_LABEL=test-producer SAFETY_PRODUCER_PLIST="$tmp/producer.plist"
 if guard_error="$(prepare_bridge_support_sync 2>&1)"; then
   echo 'FAIL: workflow created before bridge unload was not detected' >&2; exit 1
 fi
@@ -352,8 +358,12 @@ grep -Fq '"$ROOT/scripts/hermes-native.sh" dashboard-start' scripts/hermes-nativ
 grep -Fq 'wait_unloaded "$LABEL"' scripts/hermes-native.sh
 grep -Fq 'wait_unloaded "$DASHBOARD_LABEL"' scripts/hermes-native.sh
 ! grep -Fq '"$ROOT/scripts/hermes-native.sh" dispatcher-start' scripts/hermes-native.sh
-! grep -Fq '"$ROOT/scripts/hermes-native.sh" producer-start' scripts/hermes-native.sh
-grep -Fq 'sudo "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
+grep -Fq 'producer-start)' scripts/hermes-native.sh
+grep -Fq 'producer-stop)' scripts/hermes-native.sh
+grep -Fq 'install -m 0555 -o root -g wheel "$ROOT/bin/hermes-pr-safety-producer" "$SAFETY_PRODUCER_BIN"' scripts/hermes-native.sh
+grep -Fq 'com.example.ai-pr-automation-producer-pr-safety.plist' scripts/hermes-native.sh
+grep -Fq 'sudo env PR_SAFETY_QUEUE_ENGINE="$PR_SAFETY_QUEUE_ENGINE"' scripts/fleet.sh
+grep -Fq 'PR_SAFETY_ALLOWED_ORGS="$PR_SAFETY_ALLOWED_ORGS" "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
 grep -Fq 'sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" up' scripts/fleet.sh
 grep -Fq 'HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml' scripts/fleet.sh
 grep -Fq 'export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"' scripts/fleet.sh
@@ -367,15 +377,17 @@ down=source[source.index('  down)'):source.index('  status)')]
 assert 'export HERMES_KANBAN_BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"' in source
 assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" up') == 1
 assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" bridge-start') == 1
-assert up.index('hermes-native.sh" up') < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up')
+assert up.index('hermes-native.sh" up') < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up') < up.index('hermes-native.sh" producer-start')
 assert 'bridge-recovery-state' not in source and 'read_safety_engine' not in source and 'resume' not in source
-assert down.index('compose.sh" down') < down.index('hermes-native.sh" down')
+assert down.index('hermes-native.sh" producer-stop') < down.index('compose.sh" down') < down.index('hermes-native.sh" down')
 PY
 grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
 grep -Fq 'HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime' scripts/fleet.sh
 grep -Fq 'MEMORY_CURATOR_STATE_DIR=$MEMORY_STATE' scripts/configure-hermes-role-env.sh
 grep -Fq 'install -d -m 0770 -o "$SERVICE_USER" -g staff "$DOC_STAGE" "$HANDOFF" "$MEMORY_STATE"' scripts/configure-hermes-role-env.sh
 grep -Fq 'install -d -m 0750 -o root -g staff "$SNAPSHOTS"' scripts/configure-hermes-role-env.sh
+grep -Fq 'install -d -m 0750 -o "$SERVICE_USER" -g staff "$SNAPSHOTS/direct-kanban"' scripts/configure-hermes-role-env.sh
+grep -Fq 'PR_SAFETY_QUEUE_ENGINE=${PR_SAFETY_QUEUE_ENGINE:-postgres}' scripts/configure-hermes-role-env.sh
 grep -Fq 'PR_SAFETY_POLICY_DIGEST=' scripts/configure-hermes-role-env.sh
 mkdir -p "$tmp/runtime"
 cat > "$tmp/fake-hermes" <<'SH'

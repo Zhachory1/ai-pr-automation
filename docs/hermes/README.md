@@ -1,6 +1,6 @@
 # Hermes API Control Plane
 
-Status: Compose control plane active; host dispatcher and producer launchd jobs retired.
+Status: Compose control plane active; host PR-safety producer is installed and runs only when `PR_SAFETY_QUEUE_ENGINE=kanban`; other host producer jobs remain retired.
 
 ## Architecture
 
@@ -16,14 +16,15 @@ Host launchd keeps:
 
 - pinned Hermes gateway bound to `127.0.0.1:8642`;
 - Hermes dashboard;
-- PR safety Kanban bridge bound to `127.0.0.1:8766`, always available for persisted-attempt recovery.
+- PR safety Kanban bridge bound to `127.0.0.1:8766`, always available for persisted-attempt recovery;
+- PR-safety launchd timer, inert unless queue engine is explicitly `kanban`.
 
 Compose runs:
 
 - `hermes-controller`;
 - `pr-producer-review`;
 - `pr-producer-maintain`;
-- `pr-safety-producer`;
+- `pr-safety-producer` in `postgres` mode; it idles when queue engine is `kanban`;
 - `memory-curate-producer`;
 - Postgres, Fleet Controller, and support services.
 
@@ -135,9 +136,11 @@ and review transitions. It makes no service-profile, service-board, model, GitHu
 ## Authority and producers
 
 Repository authority YAML is scope-of-attention, not credential security. Compose review/maintain
-producers discover open PRs, resolve exact heads, and enqueue deduped rows. Root-running safety producer
-discovers merged PRs and writes immutable snapshots under the root-owned, `staff`-group-readable `0750`
-snapshot root. Hermes bridge and gateway receive group read/traverse access only. Other shared runtime
+producers discover open PRs, resolve exact heads, and enqueue deduped rows. PR-safety queue engine defaults
+to `postgres`; when explicitly set to `kanban`, Compose safety discovery idles and the host launchd producer
+creates the fixed five-task graph through the pinned local Hermes CLI. The snapshot root stays root-owned
+`0750`; direct enqueue uses its service-owned `direct-kanban/` child, which legacy Postgres GC never scans.
+Each published snapshot is recursively changed to read/execute-only. Other shared runtime
 directories remain service-owned, `staff`-group-writable `0770`. Memory producer enqueues
 hourly-deduped schedule trigger. Producers make no model calls.
 
@@ -151,6 +154,25 @@ Set in `.env`:
 - `HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE` for Docker Desktop's controller-only key copy;
 - document stage/inbox paths;
 - memory source/state paths.
+
+## Direct CLI enqueue (opt-in)
+
+`PR_SAFETY_QUEUE_ENGINE=kanban scripts/fleet.sh up` selects the host producer; default `postgres` keeps
+Compose discovery. Pass the mode on every `fleet.sh up` (not only in `.env`). Fleet stops both safety
+producers before synchronizing mode, authors, and allowed orgs, then starts only the selected discovery path.
+Install merged support files with `sudo scripts/hermes-native.sh sync-support` before activation.
+
+The host producer calls `hermes-pr-safety-kanban-enqueue.py` using Hermes's Python. It validates the snapshot,
+reuses the existing restricted profiles/prompts, creates five blocked cards via CLI, verifies the complete
+graph, then releases synthesis to dependency-gated `todo` and the four specialists to `ready`. Repeated
+polls adopt the same cards, including archived cards; worker/human blocks are never automatically reopened.
+Keep operation boards and inputs: this enqueue-only slice deliberately adds no automated cleanup,
+Postgres settlement, final handoff publication, or human incident queue. Results remain on the Kanban board.
+No new bridge call, fork, journal, controller change, or production activation is part of this slice.
+
+Before switching engines, stop discovery and drain existing safety requests. Discovery history is not
+migrated between engines; select a bounded, approved pilot to avoid re-reviewing old merges. Provider policy,
+quality/cost evaluation, and human activation approval remain gates for production council traffic.
 
 ## Operations
 
@@ -193,8 +215,8 @@ SQLite reports `journal_mode=delete` and `busy_timeout=120000`.
 `fleet.sh up` always exports the real dedicated bridge key. Native `up` reuses an installed version that
 passes preflight, or runs guarded `sync-support` when installation is needed, then starts gateway and
 dashboard. Fleet refreshes the operator-owned controller copy, explicitly starts bridge, then starts
-Compose. `fleet.sh down` reverses this order: it
-stops Compose first, then native `down` stops bridge, dashboard, and gateway. A same-version `down`/`up`
+Compose, then the opt-in host safety producer. `fleet.sh down` stops that producer first,
+then Compose, then native bridge, dashboard, and gateway. A same-version `down`/`up`
 restart is supported, including recovery of a persisted Kanban marker under `single`.
 
 The state-file guard protects support/profile replacement, but it does not determine engine behavior or

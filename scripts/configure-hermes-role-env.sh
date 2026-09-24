@@ -9,6 +9,11 @@ HERMES_HOME="${HERMES_NATIVE_HOME:-$SERVICE_HOME/.hermes}"
 CONFIG_ROOT="${HERMES_NATIVE_CONFIG_ROOT:-/usr/local/etc/ai-pr-automation}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="$HERMES_HOME/.env"
+AUTHORITY="${HERMES_AUTHORITY_FILE:-$CONFIG_ROOT/authority.yaml}"
+if [[ "${PR_SAFETY_QUEUE_ENGINE:-postgres}" == kanban ]]; then
+  sudo -u "$SERVICE_USER" test -r "$AUTHORITY" \
+    || { echo "service user cannot read PR-safety authority: $AUTHORITY" >&2; exit 2; }
+fi
 # Docker Desktop cannot traverse the intentionally 0700 service home. Cross-runtime artifacts live
 # in a dedicated shared root. The service owns mutable role state; the root-running snapshot producer
 # owns snapshots, while staff can traverse/read them. Provider credentials stay in the private home.
@@ -22,19 +27,23 @@ POLICY="$CONFIG_ROOT/pr-safety-policy-v1.md"
 install -d -m 0755 -o root -g wheel "$STATE"
 install -d -m 0770 -o "$SERVICE_USER" -g staff "$DOC_STAGE" "$HANDOFF" "$MEMORY_STATE"
 install -d -m 0750 -o root -g staff "$SNAPSHOTS"
+install -d -m 0750 -o "$SERVICE_USER" -g staff "$SNAPSHOTS/direct-kanban"
 install -m 0444 -o root -g wheel "$ROOT/policy/pr-safety-policy-v1.md" "$POLICY"
 POLICY_DIGEST="$(shasum -a 256 "$POLICY" | awk '{print $1}')"
 
 tmp="$(mktemp /private/tmp/hermes-role-env.XXXXXX)"; trap 'rm -f "$tmp"' EXIT
 if [[ -f "$ENV_FILE" ]]; then
-  grep -vE '^(PGPASSWORD|REQUESTS_DB_USER|REQUESTS_DB_NAME|REQUESTS_DB_HOST|REQUESTS_DB_PORT|DOC_WRITER_STAGE_DIR|DOC_WRITER_INBOX_DIR|MEMORY_CURATOR_PRIVATE_DOCS|MEMORY_CURATOR_STATE_DIR|PR_SAFETY_MERGED_PR_AUTHORS|PR_SAFETY_SNAPSHOT_ROOT|PR_SAFETY_POLICY_ROOT|PR_SAFETY_POLICY_PATH|PR_SAFETY_POLICY_VERSION|PR_SAFETY_POLICY_DIGEST|HANDOFF_ROOT)=' "$ENV_FILE" > "$tmp" || true
+  grep -vE '^(PGPASSWORD|REQUESTS_DB_USER|REQUESTS_DB_NAME|REQUESTS_DB_HOST|REQUESTS_DB_PORT|DOC_WRITER_STAGE_DIR|DOC_WRITER_INBOX_DIR|MEMORY_CURATOR_PRIVATE_DOCS|MEMORY_CURATOR_STATE_DIR|PR_SAFETY_MERGED_PR_AUTHORS|PR_SAFETY_SNAPSHOT_ROOT|PR_SAFETY_POLICY_ROOT|PR_SAFETY_POLICY_PATH|PR_SAFETY_POLICY_VERSION|PR_SAFETY_POLICY_DIGEST|HANDOFF_ROOT|PR_SAFETY_QUEUE_ENGINE|PR_SAFETY_ALLOWED_ORGS|HERMES_AUTHORITY_FILE)=' "$ENV_FILE" > "$tmp" || true
 fi
 cat >> "$tmp" <<EOF
 DOC_WRITER_STAGE_DIR=$DOC_STAGE
 DOC_WRITER_INBOX_DIR=${HERMES_DOC_WRITER_INBOX_DIR:-/Users/zhach/private-docs/inbox}
 MEMORY_CURATOR_PRIVATE_DOCS=${HERMES_MEMORY_PRIVATE_DOCS:-/Users/zhach/private-docs}
 MEMORY_CURATOR_STATE_DIR=$MEMORY_STATE
-PR_SAFETY_MERGED_PR_AUTHORS=${HERMES_PR_SAFETY_AUTHORS:-Zhachory1,zhach1}
+PR_SAFETY_MERGED_PR_AUTHORS=${PR_SAFETY_MERGED_PR_AUTHORS:-${HERMES_PR_SAFETY_AUTHORS:-roktfleet,brucerokt}}
+PR_SAFETY_QUEUE_ENGINE=${PR_SAFETY_QUEUE_ENGINE:-postgres}
+PR_SAFETY_ALLOWED_ORGS=${PR_SAFETY_ALLOWED_ORGS:-ROKT}
+HERMES_AUTHORITY_FILE=$(printf '%q' "$AUTHORITY")
 PR_SAFETY_SNAPSHOT_ROOT=$SNAPSHOTS
 PR_SAFETY_POLICY_ROOT=$CONFIG_ROOT
 PR_SAFETY_POLICY_PATH=$POLICY

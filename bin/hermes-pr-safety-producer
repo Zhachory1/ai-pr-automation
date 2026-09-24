@@ -16,12 +16,29 @@ umask 077
 HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || echo /usr/local/libexec/ai-pr-automation)"
 : "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
 : "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
+QUEUE_ENGINE="${PR_SAFETY_QUEUE_ENGINE:-postgres}"
+[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban ]] \
+  || { echo "PR_SAFETY_QUEUE_ENGINE must be postgres or kanban" >&2; exit 2; }
 AUTHORITY="${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}"
 AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
+KANBAN_ENQUEUE="${HERMES_PR_SAFETY_KANBAN_ENQUEUE:-$HERE/scripts/hermes-pr-safety-kanban-enqueue.py}"
+[[ -f "$KANBAN_ENQUEUE" ]] || KANBAN_ENQUEUE="${HERMES_PR_SAFETY_KANBAN_ENQUEUE:-/usr/local/libexec/ai-pr-automation/hermes-pr-safety-kanban-enqueue.py}"
+HERMES_BIN="${HERMES_BIN:-${HOME:-/Users/hermes-agent}/.local/bin/hermes}"
+HERMES_HOME="${HERMES_HOME:-${HOME:-/Users/hermes-agent}/.hermes}"
+HERMES_PYTHON="${HERMES_PYTHON:-$HERMES_HOME/hermes-agent/venv/bin/python}"
+KANBAN_CONTRACT="${HERMES_KANBAN_BRIDGE_CONTRACT:-/usr/local/libexec/ai-pr-automation/pr-risk-council-kanban-v2.json}"
+RISK_COUNCIL="${HERMES_KANBAN_RISK_COUNCIL:-/usr/local/libexec/ai-pr-automation/hermes-kanban-risk-council.py}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
-need gh; need git; need jq; need psql; need python3
+need gh; need git; need jq; need python3
+if [[ "$QUEUE_ENGINE" == postgres ]]; then
+  need psql
+else
+  [[ -x "$HERMES_BIN" && -x "$HERMES_PYTHON" && -f "$KANBAN_ENQUEUE" \
+      && -f "$KANBAN_CONTRACT" && -f "$RISK_COUNCIL" ]] \
+    || { echo "host Hermes Kanban enqueue support is unavailable" >&2; exit 2; }
+fi
 
 digest() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
 resolve_path() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
@@ -44,6 +61,7 @@ SEARCH_LIMIT="${PR_SAFETY_MERGED_PR_SEARCH_LIMIT:-10}"
 SNAPSHOT_KEEP="${PR_SAFETY_SNAPSHOT_KEEP:-25}"
 
 SNAPSHOT_ROOT="$(resolve_path "$PR_SAFETY_SNAPSHOT_ROOT")"
+if [[ "$QUEUE_ENGINE" == kanban ]]; then SNAPSHOT_ROOT="$SNAPSHOT_ROOT/direct-kanban"; fi
 POLICY_ROOT="$(resolve_path "$PR_SAFETY_POLICY_ROOT")"
 POLICY_PATH="$(resolve_path "$PR_SAFETY_POLICY_PATH")"
 mkdir -p "$SNAPSHOT_ROOT"
@@ -95,7 +113,7 @@ snapshot_for() {
     printf '%s\t%s\n' "$snapshot" "$diff"
     return
   fi
-  tmp="$(mktemp -d "$SNAPSHOT_ROOT/.${op}.XXXXXX")"
+  tmp="$(mktemp -d "$SNAPSHOT_ROOT/.${op}.XXXXXX")" || return 1
   if ! gh repo clone "$repo" "$tmp/repo" -- --no-checkout --depth=1 >/dev/null 2>&1 ||
     ! git -C "$tmp/repo" fetch --no-tags --depth=1 origin "$base" "$head" >/dev/null 2>&1 ||
     ! git -C "$tmp/repo" checkout --detach "$head" >/dev/null 2>&1; then
@@ -125,7 +143,7 @@ snapshot_for() {
 # Review one merged PR record: {repo, number, mergeSha, baseSha}. The merge commit is the immutable
 # head; base is the PR base ref oid. diff_hash is computed from the snapshot, not trusted from input.
 process_pr() {
-  local record="$1" repo pr merge base op snapshot_info snapshot diff payload event_digest inserted
+  local record="$1" repo pr merge base op snapshot_info snapshot diff payload event_digest inserted result
   repo="$(jq -r '.repo' <<<"$record")"; pr="$(jq -r '.number' <<<"$record")"
   merge="$(jq -r '.mergeSha' <<<"$record")"; base="$(jq -r '.baseSha' <<<"$record")"
   [[ "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { log "skip: bad repo '$repo'"; return 0; }
@@ -140,6 +158,17 @@ process_pr() {
     --arg diff "$diff" --arg policy_version "$PR_SAFETY_POLICY_VERSION" --arg policy_digest "$PR_SAFETY_POLICY_DIGEST" \
     --arg snapshot "$snapshot" --arg policy_path "$POLICY_PATH" \
     '{operation_id:$op,repo:$repo,pr:($pr|tonumber),head_sha:$head,base_sha:$base,diff_hash:$diff,policy_version:$policy_version,policy_digest:$policy_digest,snapshot_path:$snapshot,policy_path:$policy_path}')"
+  if [[ "$QUEUE_ENGINE" == kanban ]]; then
+    if result="$(printf '%s' "$payload" | "$HERMES_PYTHON" -B "$KANBAN_ENQUEUE" \
+        --hermes-home "$HERMES_HOME" --hermes-bin "$HERMES_BIN" \
+        --risk-council "$RISK_COUNCIL" --contract "$KANBAN_CONTRACT")"; then
+      log "kanban $(jq -r '.status + " " + .board' <<<"$result") for $repo#$pr@$merge"
+    else
+      log "kanban enqueue failed for $repo#$pr@$merge"
+      return 1
+    fi
+    return
+  fi
   event_digest="$(jq -cS . <<<"$record" | digest)"
   inserted="$(psqlq -v merge_sha="$merge" -v event_digest="$event_digest" -v payload="$payload" \
     -v dk="$repo#$pr@$merge" -v lineage="$repo#$pr" \
@@ -171,17 +200,32 @@ records_for_author() {
   done < <(jq -r '.[] | [.repository.nameWithOwner, (.number|tostring)] | @tsv' <<<"$search")
 }
 
+process_records() {
+  local rec rc failed=0
+  while IFS= read -r rec; do
+    [[ -n "$rec" ]] || continue
+    # A failed graph must not starve later PRs; preserve errexit inside each record.
+    set +e
+    (set -e; process_pr "$rec")
+    rc=$?
+    set -e
+    if (( rc != 0 )); then failed=1; fi
+  done < "$1"
+  return "$failed"
+}
+
 # Test hook: a local JSON-lines fixture of normalized records, makes no network request.
 if [[ -n "${PR_SAFETY_MERGED_PR_INPUT_FILE:-}" ]]; then
   [[ -f "$PR_SAFETY_MERGED_PR_INPUT_FILE" && ! -L "$PR_SAFETY_MERGED_PR_INPUT_FILE" ]] \
     || { echo "PR_SAFETY_MERGED_PR_INPUT_FILE must be regular JSON-lines fixture" >&2; exit 2; }
-  while IFS= read -r rec; do [[ -n "$rec" ]] && process_pr "$rec"; done < "$PR_SAFETY_MERGED_PR_INPUT_FILE"
+  process_records "$PR_SAFETY_MERGED_PR_INPUT_FILE"
   exit 0
 fi
 
 # Remove old snapshots beyond SNAPSHOT_KEEP newest (by mtime), but never one still referenced by a
 # queued/running review. Snapshot dir name is the operation_id.
 gc_snapshots() {
+  [[ "$QUEUE_ENGINE" == postgres ]] || return 0
   [[ "$SNAPSHOT_KEEP" -gt 0 ]] || return 0
   local dirs op active
   dirs=$(ls -dt "$SNAPSHOT_ROOT"/pr-safety-* 2>/dev/null || true)
@@ -206,5 +250,5 @@ for author in "${authors[@]}"; do
   [[ -n "$author" ]] || continue
   records_for_author "$author" "$records"
 done
-while IFS= read -r rec; do [[ -n "$rec" ]] && process_pr "$rec"; done < "$records"
+process_records "$records"
 gc_snapshots

@@ -15,11 +15,20 @@ grep -Fq 'GITHUB_READ_TOKEN_FILE=' scripts/fleet.sh
 grep -Fq -- '-h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT"' scripts/hermes-compose-producer.sh
 grep -Fq 'gh auth setup-git' scripts/hermes-compose-producer.sh
 ! grep -A35 '^  hermes-controller:' docker-compose.yml | grep -Eq '(/Users/.*/\.hermes|\.ssh|OAuth|docker.sock)'
-! grep -Eq 'dispatcher-start|producer-start' scripts/fleet.sh
-! grep -Eq '^  (dispatcher|producer)-(start|stop)\)' scripts/hermes-native.sh
+! grep -Eq 'dispatcher-start' scripts/fleet.sh
+grep -Fq 'hermes-native.sh" producer-start' scripts/fleet.sh
+grep -Eq '^  producer-(start|stop)\)' scripts/hermes-native.sh
+grep -Fq 'PR_SAFETY_QUEUE_ENGINE: ${PR_SAFETY_QUEUE_ENGINE:-postgres}' docker-compose.yml
+grep -Fq '[[ "${PR_SAFETY_QUEUE_ENGINE:-postgres}" == kanban ]]' scripts/hermes-compose-producer.sh
 grep -Fq '"$ROOT/scripts/compose.sh" up -d --build' scripts/fleet.sh
 grep -Fq 'export HERMES_KANBAN_BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"' scripts/fleet.sh
 grep -Fq 'export HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE="${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:-$SHARED_RUNTIME/secrets/hermes-kanban-bridge-key.json}"' scripts/fleet.sh
+grep -Fq 'export PR_SAFETY_QUEUE_ENGINE="${PR_SAFETY_QUEUE_ENGINE:-postgres}"' scripts/fleet.sh
+grep -Fq 'sudo env PR_SAFETY_QUEUE_ENGINE="$PR_SAFETY_QUEUE_ENGINE"' scripts/fleet.sh
+grep -Fq 'PR_SAFETY_MERGED_PR_AUTHORS="$PR_SAFETY_MERGED_PR_AUTHORS"' scripts/fleet.sh
+grep -Fq 'PR_SAFETY_ALLOWED_ORGS="$PR_SAFETY_ALLOWED_ORGS" "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
+grep -Fq 'PR_SAFETY_QUEUE_ENGINE=${PR_SAFETY_QUEUE_ENGINE:-postgres}' scripts/configure-hermes-role-env.sh
+grep -Fq '. "$HERMES_HOME/.env"' launchd/com.example.ai-pr-automation-pr-safety-producer.plist.template
 grep -Fq 'file: ${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:?set HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE}' docker-compose.yml
 ! grep -Eq 'bridge-recovery-state|read_safety_engine|resume|/dev/null' scripts/fleet.sh
 ! grep -Fq 'bridge-recovery-state)' scripts/hermes-native.sh
@@ -41,11 +50,12 @@ assert 'hermes_kanban_bridge_key' in controller
 fleet=Path('scripts/fleet.sh').read_text()
 up=fleet[fleet.index('  up)'):fleet.index('  down)')]
 down=fleet[fleet.index('  down)'):fleet.index('  status)')]
+assert up.index('hermes-native.sh" producer-stop') < up.index('compose.sh" stop pr-safety-producer') < up.index('configure-hermes-role-env.sh')
 assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE"') == 2
 copy='sudo install -m 0600 -o "$(id -u)" -g "$(id -g)"'
 assert copy in up
-assert up.index('hermes-native.sh" up') < up.index(copy) < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up')
-assert down.index('compose.sh" down') < down.index('hermes-native.sh" down')
+assert up.index('hermes-native.sh" up') < up.index(copy) < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up') < up.index('hermes-native.sh" producer-start')
+assert down.index('hermes-native.sh" producer-stop') < down.index('compose.sh" down') < down.index('hermes-native.sh" down')
 assert 'eval ' not in fleet and 'source "$ROOT/.env"' not in fleet and '. "$ROOT/.env"' not in fleet
 native=Path('scripts/hermes-native.sh').read_text()
 native_up=native[native.index('  up)'):native.index('  down)')]
@@ -56,4 +66,4 @@ for name in ('pr-producer-review','pr-producer-maintain','pr-safety-producer','m
     assert 'hermes_kanban_bridge_key' not in source[start:end if end >= 0 else None], name
 PY
 ! grep -Fq 'eval ' scripts/fleet.sh
-echo 'PASS: bridge key and recovery service are always available before Compose'
+echo 'PASS: bridge recovery and direct-Kanban producer ownership are wired'

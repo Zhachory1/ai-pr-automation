@@ -350,6 +350,7 @@ services:
       HERMES_AUTHORITY_FILE: /config/authority.yaml
       GITHUB_TOKEN_FILE: /run/secrets/github_read_token
       PRODUCER_INTERVAL_SECONDS: ${PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}
+      PR_SAFETY_QUEUE_ENGINE: ${PR_SAFETY_QUEUE_ENGINE:-postgres}
       PR_SAFETY_MERGED_PR_AUTHORS: ${PR_SAFETY_MERGED_PR_AUTHORS:-roktfleet,brucerokt}
       PR_SAFETY_ALLOWED_ORGS: ${PR_SAFETY_ALLOWED_ORGS:-ROKT}
       PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}

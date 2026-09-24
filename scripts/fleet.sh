@@ -9,6 +9,9 @@ export HANDOFF_ROOT="${HANDOFF_ROOT:-$SHARED_RUNTIME/safety-handoffs}"
 export HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 export HERMES_KANBAN_BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"
 export HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE="${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:-$SHARED_RUNTIME/secrets/hermes-kanban-bridge-key.json}"
+export PR_SAFETY_QUEUE_ENGINE="${PR_SAFETY_QUEUE_ENGINE:-postgres}"
+[[ "$PR_SAFETY_QUEUE_ENGINE" == postgres || "$PR_SAFETY_QUEUE_ENGINE" == kanban ]] \
+  || { echo "PR_SAFETY_QUEUE_ENGINE must be postgres or kanban" >&2; exit 2; }
 export GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token}"
 AUTHORITY_SOURCE="${HERMES_AUTHORITY_SOURCE_FILE:-${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}}"
 DOCKER_AUTHORITY="${HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml}"
@@ -24,13 +27,18 @@ export PR_SAFETY_POLICY_DIGEST="${PR_SAFETY_POLICY_DIGEST:-$(shasum -a 256 "$ROO
 case "${1:-}" in
   up)
     "$ROOT/scripts/hermes-authority.py" --file "$AUTHORITY_SOURCE" >/dev/null
+    sudo "$ROOT/scripts/hermes-native.sh" producer-stop
+    "$ROOT/scripts/compose.sh" stop pr-safety-producer
     install -d -m 0700 "$(dirname "$DOCKER_AUTHORITY")"
     [[ ! -L "$DOCKER_AUTHORITY" && ( ! -e "$DOCKER_AUTHORITY" || -f "$DOCKER_AUTHORITY" ) ]] \
       || { echo "invalid Docker authority mirror: $DOCKER_AUTHORITY" >&2; exit 2; }
     cat "$AUTHORITY_SOURCE" > "$DOCKER_AUTHORITY"
     chmod 0644 "$DOCKER_AUTHORITY"
     export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"
-    sudo "$ROOT/scripts/configure-hermes-role-env.sh"
+    sudo env PR_SAFETY_QUEUE_ENGINE="$PR_SAFETY_QUEUE_ENGINE" \
+      HERMES_AUTHORITY_FILE="$AUTHORITY_SOURCE" \
+      PR_SAFETY_MERGED_PR_AUTHORS="$PR_SAFETY_MERGED_PR_AUTHORS" \
+      PR_SAFETY_ALLOWED_ORGS="$PR_SAFETY_ALLOWED_ORGS" "$ROOT/scripts/configure-hermes-role-env.sh"
     sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" up
     [[ -f "$HERMES_KANBAN_BRIDGE_KEY_FILE" ]] \
       || { echo "Kanban bridge key unavailable: $HERMES_KANBAN_BRIDGE_KEY_FILE" >&2; exit 2; }
@@ -41,8 +49,10 @@ case "${1:-}" in
     sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" bridge-start
     "$ROOT/scripts/compose.sh" --profile hermes-api-conformance run --rm hermes-api-conformance
     "$ROOT/scripts/compose.sh" up -d --build
+    sudo "$ROOT/scripts/hermes-native.sh" producer-start
     ;;
   down)
+    sudo "$ROOT/scripts/hermes-native.sh" producer-stop
     "$ROOT/scripts/compose.sh" down
     sudo "$ROOT/scripts/hermes-native.sh" down
     ;;
