@@ -86,6 +86,19 @@ def fail(message):
     raise ValueError(message)
 
 
+def effective_input_schema(value):
+    if isinstance(value, list):
+        return [effective_input_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {key:effective_input_schema(item) for key, item in value.items()}
+    if result.get("type") == "object":
+        result.setdefault("properties", {})
+        if result.get("required") == []:
+            result.pop("required")
+    return result
+
+
 def load_contract(path):
     data = json.loads(path.read_text())
     version = data.get("schema_version") if isinstance(data, dict) else None
@@ -246,7 +259,8 @@ def council_tools_report(path=COUNCIL_TOOLS_COMMAND, expected_uid=0, trusted_roo
             fail("council tools canonical schema drift")
     definitions = [{"type":"function","function":{
         "name":f"mcp__council_tools__{tool['name']}",
-        "description":tool["description"],"parameters":tool["inputSchema"]}} for tool in tools]
+        "description":tool["description"],
+        "parameters":effective_input_schema(tool["inputSchema"])}} for tool in tools]
     return {"command":str(COUNCIL_TOOLS_COMMAND),"installed_path":str(path),
             "tools":list(COUNCIL_TOOLS),"definitions":definitions}
 

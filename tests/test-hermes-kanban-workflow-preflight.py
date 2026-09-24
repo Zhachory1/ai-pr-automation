@@ -21,7 +21,7 @@ SERVER = ROOT / "bin/hermes-council-tools"
 SERVER_TOOLS = runpy.run_path(SERVER)["TOOLS"]
 SERVER_DEFINITIONS = [{"type":"function","function":{
     "name":f"mcp__council_tools__{tool['name']}","description":tool["description"],
-    "parameters":tool["inputSchema"]}} for tool in SERVER_TOOLS]
+    "parameters":preflight.effective_input_schema(tool["inputSchema"])}} for tool in SERVER_TOOLS]
 
 
 class KanbanWorkflowPreflightTest(unittest.TestCase):
@@ -143,6 +143,14 @@ def discover_mcp_tools(allowed_mcp_names=None):
                          ["_dispatch_tick_lock","_terminate_reclaimed_worker","write_txn"])
         self.assertEqual(result["deferred_runtime_enforcement"],
                          ["deadline_seconds","max_active_workflows","profile_tool_policy","token_budget"])
+
+    def test_effective_schema_matches_pinned_mcp_object_normalization(self):
+        definitions = {item["function"]["name"]:item["function"]["parameters"]
+                       for item in SERVER_DEFINITIONS}
+        self.assertNotIn("required", definitions["mcp__council_tools__kanban_show"])
+        self.assertNotIn("required", definitions["mcp__council_tools__kanban_heartbeat"])
+        self.assertEqual(definitions["mcp__council_tools__kanban_complete"]
+                         ["properties"]["metadata"]["properties"], {})
 
     def test_v2_proves_exact_profiles_graph_and_council_tools(self):
         with tempfile.TemporaryDirectory() as td:
