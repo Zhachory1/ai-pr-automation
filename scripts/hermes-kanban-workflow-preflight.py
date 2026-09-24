@@ -202,8 +202,13 @@ def validate_installed_council_tools(path, expected_uid=0, trusted_root=Path("/"
     if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != expected_uid \
             or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o555:
         fail("council tools missing or unsafe")
+    # In a repository checkout, compare installed bytes to the source binary. The
+    # installed preflight lives beside support files under /usr/local/libexec, where
+    # no repository-relative bin/ tree exists; native sync-support already performs
+    # and preflights the source-to-installed byte comparison before this check runs.
     source = Path(__file__).resolve().parents[1] / "bin/hermes-council-tools"
-    if path.read_bytes() != source.read_bytes():
+    if source.exists() and (source.is_symlink() or not source.is_file()
+            or path.read_bytes() != source.read_bytes()):
         fail("installed council tools differs from repository source")
 
 

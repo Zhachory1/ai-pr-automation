@@ -170,6 +170,16 @@ def discover_mcp_tools(allowed_mcp_names=None):
         self.assertNotIn("profile_tool_policy", result["deferred_runtime_enforcement"])
         self.assertEqual((result["service_state_writes"], result["model_calls"]), (0, 0))
 
+    def test_installed_layout_without_repository_bin_uses_trusted_installed_binary(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve(); server, support = self.installed_council_tools(root)
+            original = preflight.__file__
+            try:
+                preflight.__file__ = str(support / "hermes-kanban-workflow-preflight.py")
+                preflight.validate_installed_council_tools(server, os.getuid(), support)
+            finally:
+                preflight.__file__ = original
+
     def test_v2_profile_tool_and_contract_drift_fail(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td).resolve(); home, install = self.fixture(root, V2_CONTRACT)
