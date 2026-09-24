@@ -206,8 +206,8 @@ controller states remain enough; no mirror of every upstream state.
 
 Pin supported Hermes runtime:
 
-- version `0.21.3`;
-- commit `14efb46089250e8b9e56e59b74291cf8dce8b207`;
+- version `0.21.5`;
+- commit `f97608f178d1ffeca59860195ab7da295f7c8e5f`;
 - Runs API conformance fixture required before startup and upgrade.
 
 `profile_generation` is SHA-256 over immutable profile files + pinned Hermes manifest. Controller

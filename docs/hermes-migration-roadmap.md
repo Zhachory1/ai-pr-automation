@@ -8,7 +8,7 @@ Owner: Zhach
 
 Decision scope: migrate commodity agent orchestration to Hermes. Keep domain safety controls until parity proven.
 
-Hermes baseline: [`NousResearch/hermes-agent@14efb460`](https://github.com/NousResearch/hermes-agent/commit/14efb46089250e8b9e56e59b74291cf8dce8b207)
+Hermes baseline: [`NousResearch/hermes-agent@f97608f1`](https://github.com/NousResearch/hermes-agent/commit/f97608f178d1ffeca59860195ab7da295f7c8e5f)
 
 ## Decision
 

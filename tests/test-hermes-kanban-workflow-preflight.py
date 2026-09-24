@@ -147,10 +147,11 @@ def discover_mcp_tools(allowed_mcp_names=None):
     def test_effective_schema_matches_pinned_mcp_object_normalization(self):
         definitions = {item["function"]["name"]:item["function"]["parameters"]
                        for item in SERVER_DEFINITIONS}
-        self.assertNotIn("required", definitions["mcp__council_tools__kanban_show"])
-        self.assertNotIn("required", definitions["mcp__council_tools__kanban_heartbeat"])
-        self.assertEqual(definitions["mcp__council_tools__kanban_complete"]
-                         ["properties"]["metadata"]["properties"], {})
+        self.assertEqual(definitions["mcp__council_tools__kanban_show"]["required"], [])
+        self.assertEqual(definitions["mcp__council_tools__kanban_heartbeat"]["required"], [])
+        metadata = definitions["mcp__council_tools__kanban_complete"]["properties"]["metadata"]
+        self.assertEqual(metadata["properties"], {})
+        self.assertEqual(metadata["required"], [])
 
     def test_v2_proves_exact_profiles_graph_and_council_tools(self):
         with tempfile.TemporaryDirectory() as td:

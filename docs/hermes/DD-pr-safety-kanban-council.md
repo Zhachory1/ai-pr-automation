@@ -104,7 +104,7 @@ Rules:
 - one attempt per task;
 - zero retries;
 - no fallback provider/model;
-- `claude-sonnet-5` is exact Anthropic catalog ID in pinned Hermes v0.21.3; no dated Sonnet 5 ID exists in that catalog;
+- `claude-sonnet-5` is exact Anthropic catalog ID in pinned Hermes v0.21.5; no dated Sonnet 5 ID exists in that catalog;
 - four specialist tasks ready in parallel;
 - synthesis blocked on all four;
 - no attachments or child tasks;
@@ -145,7 +145,7 @@ workflow-input/
 
 ### Narrow MCP design kickback
 
-Pinned Hermes v0.21.3 auto-adds its full worker Kanban toolset when `HERMES_KANBAN_TASK` is present. That set includes attachment and URL tools and does not meet this workflow's capability boundary. PR 1 therefore adds repo-owned stdio MCP `hermes-council-tools`, installed root-owned mode 0555 at `/usr/local/libexec/ai-pr-automation/hermes-council-tools`.
+Pinned Hermes v0.21.5 auto-adds its full worker Kanban toolset when `HERMES_KANBAN_TASK` is present. That set includes attachment and URL tools and does not meet this workflow's capability boundary. PR 1 therefore adds repo-owned stdio MCP `hermes-council-tools`, installed root-owned mode 0555 at `/usr/local/libexec/ai-pr-automation/hermes-council-tools`.
 
 Gateway launch config pins `HERMES_COUNCIL_TOOLS_PYTHON` to the installed Hermes venv. Profile MCP config interpolates it into `COUNCIL_TOOLS_PYTHON`; the server validates that alias and re-executes through it before importing handlers, so `/usr/bin/env` or launchd PATH cannot select another Python/runtime.
 

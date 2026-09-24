@@ -19,12 +19,12 @@ for file in SOUL.md config.yaml distribution.yaml .no-bundled-skills; do
 done
 cat > "$tmp/service/.local/bin/hermes" <<EOF
 #!/usr/bin/env bash
-if [[ "\${1:-}" == --version ]]; then echo 'Hermes Agent v0.21.3'; exit 0; fi
+if [[ "\${1:-}" == --version ]]; then echo 'Hermes Agent v0.21.5'; exit 0; fi
 [[ "\$*" == '-p smoke-v1 profile show smoke-v1' ]]
 EOF
 chmod +x "$tmp/service/.local/bin/hermes"
 cat > "$tmp/contract.env" <<EOF
-HERMES_NATIVE_VERSION=0.21.3
+HERMES_NATIVE_VERSION=0.21.5
 HERMES_NATIVE_COMMIT=$commit
 HERMES_INSTALLER_SHA256=$(printf installer | shasum -a 256 | awk '{print $1}')
 EOF
@@ -40,7 +40,7 @@ python3 - "$tmp/manifest.json" "$commit" "$tmp/service/.local/bin/hermes" "$prof
 import hashlib,json,pathlib,sys
 out,commit,launcher,profile=sys.argv[1:]
 pathlib.Path(out).write_text(json.dumps({
-  'version':'0.21.3','commit':commit,
+  'version':'0.21.5','commit':commit,
   'installer_sha256':hashlib.sha256(b'installer').hexdigest(),
   'launcher_sha256':hashlib.sha256(pathlib.Path(launcher).read_bytes()).hexdigest(),
   'profile_digest':profile}))
