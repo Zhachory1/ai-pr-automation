@@ -48,13 +48,22 @@ class KanbanWorkflowPreflightTest(unittest.TestCase):
             "def _handle_heartbeat(args): pass\n"
             "def _handle_complete(args): pass\n"
             "def _handle_block(args): pass\n")
-        (install / "hermes_cli/kanban_db_connect.py").write_text("class Conn:\n def close(self): pass\ndef connect(path): return Conn()\n")
+        (install / "hermes_cli/kanban_db_connect.py").write_text(
+            "from contextlib import contextmanager\n"
+            "class Conn:\n def close(self): pass\n"
+            "def connect(path): return Conn()\n"
+            "@contextmanager\n"
+            "def _dispatch_tick_lock(path): yield True\n")
         (install / "hermes_cli/kanban_db.py").write_text('''import os
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 tasks={}; comments={}; seq=0
 def _normalize_board_slug(value): return value if value and value == value.strip().lower() else None
 def kanban_db_path(board=None): return Path(os.environ["HERMES_KANBAN_DB"])
+def _terminate_reclaimed_worker(pid,claim_lock,signal_fn=None): return {"terminated":True}
+@contextmanager
+def write_txn(conn): yield
 def create_task(conn,*,title,assignee=None,parents=None,**kw):
  global seq; seq+=1; key=f"t_{seq}"; tasks[key]={"status":"todo" if parents else "ready","assignee":assignee,"parents":parents or []}; return key
 def get_task(conn,key): return SimpleNamespace(**tasks[key])
@@ -130,6 +139,8 @@ def discover_mcp_tools(allowed_mcp_names=None):
         self.assertEqual({value["model"] for key, value in result["profiles"].items() if key != "council-orchestrator"},
                          {"claude-haiku-4-5-20251001"})
         self.assertEqual(result["kanban_defaults"]["failure_limit"], 2)
+        self.assertEqual(result["stop_safety_helpers"],
+                         ["_dispatch_tick_lock","_terminate_reclaimed_worker","write_txn"])
         self.assertEqual(result["deferred_runtime_enforcement"],
                          ["deadline_seconds","max_active_workflows","profile_tool_policy","token_budget"])
 
@@ -232,6 +243,31 @@ def discover_mcp_tools(allowed_mcp_names=None):
             path = install / "hermes_cli/config_defaults.py"
             path.write_text(path.read_text().replace("'failure_limit': 2", "'failure_limit': 3"))
             with self.assertRaisesRegex(ValueError, "defaults changed"): preflight.preflight(home, install, CONTRACT)
+
+    def test_runtime_rejects_missing_dispatch_lock_helper(self):
+        with tempfile.TemporaryDirectory() as td:
+            home, install = self.fixture(pathlib.Path(td))
+            path = install / "hermes_cli/kanban_db_connect.py"
+            path.write_text(path.read_text().replace("@contextmanager\ndef _dispatch_tick_lock(path): yield True",
+                                                     "_dispatch_tick_lock = None"))
+            with self.assertRaisesRegex(ValueError, "pinned Kanban stop helpers changed"):
+                preflight.preflight(home, install, CONTRACT)
+
+    def test_runtime_rejects_missing_termination_or_write_transaction_helper(self):
+        for helper in ("_terminate_reclaimed_worker", "write_txn"):
+            with self.subTest(helper=helper), tempfile.TemporaryDirectory() as td:
+                home, install = self.fixture(pathlib.Path(td))
+                path = install / "hermes_cli/kanban_db.py"
+                source = path.read_text()
+                if helper == "_terminate_reclaimed_worker":
+                    source = source.replace(
+                        "def _terminate_reclaimed_worker(pid,claim_lock,signal_fn=None): return {\"terminated\":True}",
+                        "_terminate_reclaimed_worker = None")
+                else:
+                    source = source.replace("@contextmanager\ndef write_txn(conn): yield", "write_txn = None")
+                path.write_text(source)
+                with self.assertRaisesRegex(ValueError, "pinned Kanban stop helpers changed"):
+                    preflight.preflight(home, install, CONTRACT)
 
     def test_contract_rejects_opus_and_budget_drift(self):
         data = json.loads(CONTRACT.read_text()); data["profiles"]["council-reviewer"]["model"] = "claude-opus-5"

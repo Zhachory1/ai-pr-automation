@@ -336,6 +336,7 @@ services:
   pr-safety-producer:
     image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
     restart: unless-stopped
+    user: "0:0"
     command: ["/app/hermes-compose-producer.sh", "pr-safety"]
     environment:
       REQUESTS_DB_HOST: db-requests

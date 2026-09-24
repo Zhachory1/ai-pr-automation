@@ -1,0 +1,809 @@
+#!/usr/bin/env python3
+"""Authenticated localhost owner boundary for the PR safety Kanban council."""
+import argparse
+import hashlib
+import hmac
+import importlib.util
+import json
+import os
+import re
+import shutil
+import socket
+import sqlite3
+import stat
+import sys
+import threading
+import time
+from contextlib import closing
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+BOARD = "pr-risk-council"
+BODY_LIMIT = 1_048_576
+AUTH_WINDOW_SECONDS = 60
+NONCE_RETENTION_SECONDS = 120
+DEFAULT_PORT = 8766
+DEFAULT_HOST_HEADER = "hermes-council.localhost:8766"
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+NONCE_RE = re.compile(r"^[0-9a-f]{32,64}$")
+OPERATION_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
+WORKFLOW_RE = re.compile(r"^pr-risk-council-[0-9a-f]{32}$")
+REQUEST_READ_DEADLINE_SECONDS = 5
+KANBAN_BUSY_TIMEOUT_MS = 120000
+ACTIVE_PHASES = {"creating", "active", "stopping", "stopped", "terminal", "archiving"}
+STATE_PHASES = ACTIVE_PHASES | {"archived"}
+REQUEST_KEYS = {"operation_id", "repo", "pr", "head_sha", "base_sha", "diff_hash", "policy_version",
+                "policy_digest", "snapshot_path", "policy_path", "nonce"}
+AUTH_HEADERS = {
+    "generation": "X-Hermes-Auth-Generation",
+    "timestamp": "X-Hermes-Timestamp",
+    "nonce": "X-Hermes-Nonce",
+    "digest": "X-Hermes-Body-SHA256",
+    "signature": "X-Hermes-Signature",
+}
+
+
+class BridgeError(Exception):
+    def __init__(self, status, code, body=None):
+        super().__init__(code); self.status = status; self.code = code
+        self.body = body or {"error":code}
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def body_digest(body):
+    return hashlib.sha256(body).hexdigest()
+
+
+def request_preimage(generation, timestamp, nonce, digest, method, path):
+    return f"{generation}\n{timestamp}\n{nonce}\n{digest}\n{method}\n{path}".encode()
+
+
+def response_preimage(generation, timestamp, nonce, digest, method, path, status):
+    return f"{generation}\n{timestamp}\n{nonce}\n{digest}\n{method}\n{path}\n{status}".encode()
+
+
+def signature(key, preimage):
+    return hmac.new(key, preimage, hashlib.sha256).hexdigest()
+
+
+def regular_private(path, uid, mode=0o600):
+    try: info = path.lstat()
+    except OSError as error: raise BridgeError(503, "configuration_unavailable") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_uid != uid \
+            or stat.S_IMODE(info.st_mode) != mode or info.st_nlink != 1:
+        raise BridgeError(503, "unsafe_configuration")
+    return path
+
+
+def private_dir(path, uid, read_only=False):
+    if not path.exists() and not read_only:
+        path.mkdir(mode=0o700, parents=True)
+    try: info = path.lstat()
+    except OSError as error: raise BridgeError(503, "state_unavailable") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_uid != uid \
+            or stat.S_IMODE(info.st_mode) != 0o700:
+        raise BridgeError(503, "unsafe_state_directory")
+    return path
+
+
+def atomic_json(path, value):
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w") as output:
+            output.write(canonical(value) + "\n"); output.flush(); os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try: os.fsync(directory)
+        finally: os.close(directory)
+    finally:
+        try: temporary.unlink()
+        except FileNotFoundError: pass
+
+
+def load_module(path):
+    spec = importlib.util.spec_from_file_location("installed_hermes_kanban_risk_council", path)
+    if spec is None or spec.loader is None: raise BridgeError(503, "workflow_module_unavailable")
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    for name in ("v2_context", "setup_v2", "status_v2", "cleanup_v2", "modules"):
+        if not callable(getattr(module, name, None)): raise BridgeError(503, "workflow_module_incompatible")
+    return module
+
+
+def definition_file(path):
+    try: info = path.lstat()
+    except OSError as error: raise BridgeError(503, "profile_definition_unsafe") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise BridgeError(503, "profile_definition_unsafe")
+    return path
+
+
+def framed_digest(root, runtime_contract):
+    digest = hashlib.sha256()
+    required = ("SOUL.md", "config.yaml", "profile.yaml", ".no-bundled-skills", ".council-profile")
+    paths = [definition_file(root / name) for name in required]
+    skills = root / "skills"
+    try: skills_info = skills.lstat()
+    except OSError as error: raise BridgeError(503, "profile_definition_unsafe") from error
+    if stat.S_ISLNK(skills_info.st_mode) or not stat.S_ISDIR(skills_info.st_mode):
+        raise BridgeError(503, "profile_definition_unsafe")
+    for directory, names, files in os.walk(skills, followlinks=False):
+        base = Path(directory)
+        for name in names:
+            info = (base / name).lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise BridgeError(503, "profile_definition_unsafe")
+        paths.extend(definition_file(base / name) for name in files)
+    for path in sorted(paths, key=lambda item: str(item.relative_to(root))):
+        digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes() + b"\0")
+    digest.update(definition_file(runtime_contract).read_bytes())
+    return digest.hexdigest()
+
+
+class Bridge:
+    def __init__(self, *, home, install, state_root, workflow_root, key_file, contract_file,
+                 runtime_contract, workflow_module, min_free_bytes=104_857_600, read_only=False, now=time.time):
+        self.home, self.install = Path(home), Path(install)
+        self.state_root, self.workflow_root = Path(state_root), Path(workflow_root)
+        self.key_file, self.contract_file = Path(key_file), Path(contract_file)
+        self.runtime_contract, self.workflow_module = Path(runtime_contract), Path(workflow_module)
+        self.uid, self.now, self.min_free_bytes, self.read_only = os.geteuid(), now, min_free_bytes, read_only
+        private_dir(self.state_root, self.uid, read_only); private_dir(self.workflow_root, self.uid, read_only)
+        self.states = private_dir(self.state_root / "workflows", self.uid, read_only)
+        key_data = json.loads(regular_private(self.key_file, self.uid).read_text())
+        if set(key_data) != {"schema_version", "auth_generation", "key"} \
+                or key_data["schema_version"] != 1 or type(key_data["auth_generation"]) is not int \
+                or key_data["auth_generation"] < 1 or not isinstance(key_data["key"], str) \
+                or not DIGEST_RE.fullmatch(key_data["key"]):
+            raise BridgeError(503, "invalid_key_file")
+        self.generation, self.key = key_data["auth_generation"], bytes.fromhex(key_data["key"])
+        self.nonce_file = self.state_root / "nonces.json"
+        if self.nonce_file.exists():
+            regular_private(self.nonce_file, self.uid)
+        elif not read_only:
+            atomic_json(self.nonce_file, {"schema_version":1,"nonces":{}})
+        self.contract_bytes = self.contract_file.read_bytes()
+        self.contract = json.loads(self.contract_bytes)
+        self.council = load_module(self.workflow_module)
+        if getattr(self.council, "BOARD", None) != BOARD or set(getattr(self.council, "REQUEST_KEYS", ())) != REQUEST_KEYS:
+            raise BridgeError(503, "workflow_module_incompatible")
+        try: self.council.validate_v2_contract(self.contract)
+        except (AttributeError, ValueError, OSError, json.JSONDecodeError) as error:
+            raise BridgeError(503, "invalid_workflow_contract") from error
+        self.contract_digest = hashlib.sha256(canonical(self.contract).encode()).hexdigest()
+        self.runtime_digest = hashlib.sha256(self.runtime_contract.read_bytes()).hexdigest()
+        self.profile_generations = {}
+        for name in self.contract["profiles"]:
+            root = self.home / "profiles" / name
+            if not root.is_dir() or root.is_symlink(): raise BridgeError(503, "profile_unavailable")
+            self.profile_generations[name] = framed_digest(root, self.runtime_contract)
+        kb, kbc = self.council.modules(self.install)
+        if not callable(getattr(kb, "kanban_db_path", None)):
+            raise BridgeError(503, "workflow_module_incompatible")
+        self.kb, self.kbc = kb, kbc
+        if self.read_only:
+            if self.raw_board_present(): self.sqlite_check(full=True)
+            return
+        if not callable(getattr(kb, "_terminate_reclaimed_worker", None)) \
+                or not callable(getattr(kb, "write_txn", None)) \
+                or not callable(getattr(kbc, "_dispatch_tick_lock", None)) \
+                or not callable(getattr(kbc, "_resolve_busy_timeout_ms", None)):
+            raise BridgeError(503, "workflow_module_incompatible")
+        try: busy_timeout = kbc._resolve_busy_timeout_ms()
+        except (OSError, TypeError, ValueError) as error:
+            raise BridgeError(503, "kanban_busy_timeout_mismatch") from error
+        if busy_timeout != KANBAN_BUSY_TIMEOUT_MS:
+            raise BridgeError(503, "kanban_busy_timeout_mismatch")
+        if kb.board_exists(BOARD): self.sqlite_check(full=True)
+
+    def state_path(self, workflow_id):
+        if not WORKFLOW_RE.fullmatch(workflow_id): raise BridgeError(404, "unknown_workflow")
+        return self.states / f"{workflow_id}.json"
+
+    def load_state(self, workflow_id):
+        path = self.state_path(workflow_id)
+        if not path.exists(): raise BridgeError(404, "unknown_workflow")
+        data = json.loads(regular_private(path, self.uid).read_text())
+        required = {"schema_version","phase","workflow_id","operation_id","request_identity","request_body_digest",
+                    "safety_request_nonce","artifact_digest","contract_digest","profile_generations","runtime_digest",
+                    "task_ids","created_at","deadline_at","result_digest","result_package","terminal_failure",
+                    "archive_cleanup_confirmed"}
+        digests = (data.get("request_body_digest"), data.get("artifact_digest"), data.get("contract_digest"),
+                   data.get("runtime_digest"))
+        profiles, task_ids = data.get("profile_generations"), data.get("task_ids")
+        operation_id, identity = data.get("operation_id"), data.get("request_identity")
+        identity_keys = {"operation_id","repo","pr","head_sha","base_sha","diff_hash","policy_version",
+                         "policy_digest"} if data.get("phase") == "archived" else REQUEST_KEYS
+        valid = set(data) == required and data.get("schema_version") == 1 \
+            and data.get("phase") in STATE_PHASES and data.get("workflow_id") == workflow_id \
+            and isinstance(operation_id, str) and OPERATION_RE.fullmatch(operation_id) \
+            and workflow_id == "pr-risk-council-" + hashlib.sha256(operation_id.encode()).hexdigest()[:32] \
+            and isinstance(identity, dict) and set(identity) == identity_keys \
+            and identity.get("operation_id") == operation_id \
+            and isinstance(data.get("safety_request_nonce"), str) \
+            and re.fullmatch(r"[0-9a-f]{32}", data["safety_request_nonce"]) \
+            and all(isinstance(value, str) and DIGEST_RE.fullmatch(value) for value in digests) \
+            and isinstance(profiles, dict) and bool(profiles) \
+            and all(isinstance(name, str) and isinstance(value, str) and DIGEST_RE.fullmatch(value)
+                    for name, value in profiles.items()) \
+            and isinstance(task_ids, dict) and (data.get("phase") == "creating" and task_ids == {} \
+                or set(task_ids) == {"review","security","reliability","architecture","synthesis"} \
+                and len(set(task_ids.values())) == 5 \
+                and all(isinstance(value, str) and value for value in task_ids.values())) \
+            and type(data.get("created_at")) is int and type(data.get("deadline_at")) is int \
+            and type(data.get("archive_cleanup_confirmed")) is bool \
+            and (data.get("phase") != "archived" or data["archive_cleanup_confirmed"]) \
+            and (data.get("result_digest") is None or isinstance(data["result_digest"], str)
+                 and DIGEST_RE.fullmatch(data["result_digest"])) \
+            and (data.get("result_package") is None or isinstance(data["result_package"], dict)) \
+            and data.get("terminal_failure") in {None,"expired","member_failed","verification_failed"}
+        if not valid: raise BridgeError(409, "state_identity_mismatch")
+        if data["phase"] != "archived" and (data["contract_digest"] != self.contract_digest \
+                or data["runtime_digest"] != self.runtime_digest \
+                or data["profile_generations"] != self.profile_generations):
+            raise BridgeError(409, "state_identity_mismatch")
+        return data
+
+    def save_state(self, state):
+        atomic_json(self.state_path(state["workflow_id"]), state)
+
+    def validate_action_request(self, workflow_id, request):
+        state = self.load_state(workflow_id)
+        expected = {"operation_id":state["operation_id"],"request_body_digest":state["request_body_digest"],
+                    "nonce":state["safety_request_nonce"]}
+        if request != expected: raise BridgeError(409, "request_identity_conflict")
+
+    def all_states(self):
+        result = []
+        for path in sorted(self.states.glob("*.json")):
+            if path.name.startswith("."): continue
+            result.append(self.load_state(path.stem))
+        return result
+
+    def check_disk(self):
+        for path in (self.state_root, self.workflow_root):
+            if shutil.disk_usage(path).free < self.min_free_bytes: raise BridgeError(503, "insufficient_disk_headroom")
+
+    def consume_nonce(self, nonce, timestamp):
+        now = int(self.now())
+        ledger = json.loads(regular_private(self.nonce_file, self.uid).read_text())
+        if set(ledger) != {"schema_version","nonces"} or ledger["schema_version"] != 1 \
+                or not isinstance(ledger["nonces"], dict):
+            raise BridgeError(503, "nonce_ledger_invalid")
+        retained = {key:value for key,value in ledger["nonces"].items()
+                    if type(value) is int and now - value <= NONCE_RETENTION_SECONDS}
+        if nonce in retained: raise BridgeError(409, "replayed_nonce")
+        retained[nonce] = now
+        atomic_json(self.nonce_file, {"schema_version":1,"nonces":retained})
+
+    def authenticate(self, headers, method, path, body):
+        values = {}
+        for key, name in AUTH_HEADERS.items():
+            all_values = headers.get_all(name, [])
+            if len(all_values) != 1: raise BridgeError(401, "authentication_required")
+            values[key] = all_values[0]
+        try: generation, timestamp = int(values["generation"]), int(values["timestamp"])
+        except ValueError as error: raise BridgeError(401, "invalid_authentication") from error
+        now = int(self.now())
+        if values["generation"] != str(generation) or values["timestamp"] != str(timestamp) \
+                or generation != self.generation or abs(now - timestamp) > AUTH_WINDOW_SECONDS \
+                or not NONCE_RE.fullmatch(values["nonce"]) \
+                or not DIGEST_RE.fullmatch(values["digest"]) \
+                or not DIGEST_RE.fullmatch(values["signature"]):
+            raise BridgeError(401, "invalid_authentication")
+        digest = body_digest(body)
+        expected = signature(self.key, request_preimage(generation, timestamp, values["nonce"], digest, method, path))
+        if values["digest"] != digest or not hmac.compare_digest(values["signature"], expected):
+            raise BridgeError(401, "invalid_authentication")
+        self.consume_nonce(values["nonce"], timestamp)
+        return values["nonce"]
+
+    def current_digests(self, state):
+        if hashlib.sha256(self.runtime_contract.read_bytes()).hexdigest() != state["runtime_digest"]:
+            raise BridgeError(409, "runtime_digest_mismatch")
+        for name, expected in state["profile_generations"].items():
+            if framed_digest(self.home / "profiles" / name, self.runtime_contract) != expected:
+                raise BridgeError(409, "profile_digest_mismatch")
+
+    def raw_db_path(self):
+        return Path(self.kb.kanban_db_path(BOARD))
+
+    def raw_board_present(self):
+        path = self.raw_db_path()
+        try: info = path.lstat()
+        except FileNotFoundError: return False
+        except OSError as error: raise BridgeError(503, "kanban_store_unavailable") from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise BridgeError(503, "kanban_store_unavailable")
+        return True
+
+    def raw_connect(self):
+        path = self.raw_db_path()
+        if not self.raw_board_present(): raise BridgeError(409, "state_board_mismatch")
+        try: return sqlite3.connect(path.resolve(strict=True).as_uri() + "?mode=ro", uri=True, timeout=0)
+        except (OSError, sqlite3.Error) as error: raise BridgeError(503, "kanban_store_unavailable") from error
+
+    def sqlite_check(self, full=False):
+        if self.read_only:
+            try:
+                with closing(self.raw_connect()) as db:
+                    mode = str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                    integrity = [row[0] for row in db.execute("PRAGMA integrity_check").fetchall()] if full else ["ok"]
+            except BridgeError: raise
+            except (OSError, sqlite3.Error) as error: raise BridgeError(503, "kanban_store_unavailable") from error
+            if mode != "delete": raise BridgeError(503, "kanban_journal_mode_mismatch")
+            if integrity != ["ok"]: raise BridgeError(503, "kanban_integrity_failure")
+            return
+        kb, kbc = self.council.modules(self.install)
+        if not kb.board_exists(BOARD): raise BridgeError(409, "state_board_mismatch")
+        resolver = getattr(kbc, "_resolve_busy_timeout_ms", None)
+        try: expected_busy = resolver() if callable(resolver) else None
+        except (OSError, TypeError, ValueError) as error:
+            raise BridgeError(503, "kanban_busy_timeout_mismatch") from error
+        if expected_busy != KANBAN_BUSY_TIMEOUT_MS:
+            raise BridgeError(503, "kanban_busy_timeout_mismatch")
+        try:
+            with kbc.connect_closing(board=BOARD) as db:
+                mode = str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                busy = int(db.execute("PRAGMA busy_timeout").fetchone()[0])
+                integrity = [row[0] for row in db.execute("PRAGMA integrity_check").fetchall()] if full else ["ok"]
+        except (OSError, sqlite3.Error) as error: raise BridgeError(503, "kanban_store_unavailable") from error
+        if mode != "delete": raise BridgeError(503, "kanban_journal_mode_mismatch")
+        if busy != expected_busy: raise BridgeError(503, "kanban_busy_timeout_mismatch")
+        if integrity != ["ok"]: raise BridgeError(503, "kanban_integrity_failure")
+
+    def request_from_state(self, state):
+        request = state["request_identity"]
+        if state["phase"] == "archived" or not isinstance(request, dict) or set(request) != REQUEST_KEYS:
+            raise BridgeError(410 if state["phase"] == "archived" else 409, "archived_workflow" if state["phase"] == "archived" else "state_identity_mismatch")
+        return request
+
+    def assert_graph(self, state):
+        if self.read_only:
+            board = self.raw_board_present()
+            if state["phase"] == "archived":
+                return
+            if not board: raise BridgeError(409, "state_board_mismatch")
+            council_path = self.workflow_root / state["workflow_id"] / "state.json"
+            try: council_state = json.loads(regular_private(council_path, self.uid).read_text())
+            except (OSError, json.JSONDecodeError) as error:
+                raise BridgeError(409, "state_board_mismatch") from error
+            try:
+                with closing(self.raw_connect()) as conn:
+                    actual = {str(row[0]) for row in conn.execute("SELECT id FROM tasks").fetchall()}
+            except BridgeError: raise
+            except (OSError, sqlite3.Error) as error:
+                raise BridgeError(503, "kanban_store_unavailable") from error
+            if council_state.get("tasks") != state["task_ids"] or actual != set(state["task_ids"].values()):
+                raise BridgeError(409, "state_board_mismatch")
+            return
+        kb, kbc = self.council.modules(self.install)
+        board = kb.board_exists(BOARD)
+        if state["phase"] == "archived":
+            if board: raise BridgeError(409, "state_board_mismatch")
+            return
+        if not board: raise BridgeError(409, "state_board_mismatch")
+        ctx = self.council.v2_context(self.home, self.request_from_state(state), self.contract)
+        council_state = self.council.v2_state(ctx)
+        expected = set(state["task_ids"].values())
+        try:
+            with kbc.connect_closing(board=BOARD) as conn:
+                actual = {str(row[0]) for row in conn.execute("SELECT id FROM tasks").fetchall()}
+        except (OSError, sqlite3.Error) as error:
+            raise BridgeError(503, "kanban_store_unavailable") from error
+        if council_state.get("tasks") != state["task_ids"] or actual != expected:
+            raise BridgeError(409, "state_board_mismatch")
+
+    def resume_create(self, state):
+        self.check_disk(); self.current_digests(state)
+        request = self.request_from_state(state)
+        try: result = self.council.setup_v2(self.home, self.install, request, self.contract)
+        except (OSError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+            raise BridgeError(422, "workflow_preflight_failed") from error
+        tasks = result.get("tasks")
+        if not isinstance(tasks, dict) or set(tasks) != {"review","security","reliability","architecture","synthesis"}:
+            raise BridgeError(422, "workflow_setup_failed")
+        state["task_ids"] = tasks
+        self.sqlite_check(full=True); self.assert_graph(state)
+        state["phase"] = "active"; self.save_state(state)
+        return state
+
+    def create(self, body, request):
+        if not isinstance(request, dict) or not isinstance(request.get("operation_id"), str) \
+                or not OPERATION_RE.fullmatch(request["operation_id"]):
+            raise BridgeError(400, "invalid_request_body")
+        workflow_id = "pr-risk-council-" + hashlib.sha256(request["operation_id"].encode()).hexdigest()[:32]
+        digest, path = body_digest(body), self.state_path(workflow_id)
+        if path.exists():
+            state = self.load_state(workflow_id)
+            if state["request_body_digest"] != digest: raise BridgeError(409, "request_identity_conflict")
+            if state["phase"] == "archived": raise BridgeError(410, "archived_workflow",
+                {"error":"archived_workflow","tombstone":self.public_state(state)})
+            if state["phase"] == "creating": self.resume_create(state)
+            return 200, self.public_state(self.load_state(workflow_id))
+        if set(request) != REQUEST_KEYS: raise BridgeError(400, "invalid_request_body")
+        try: ctx = self.council.v2_context(self.home, request, self.contract)
+        except (OSError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+            raise BridgeError(422, "workflow_preflight_failed") from error
+        if any(item["phase"] in ACTIVE_PHASES for item in self.all_states()): raise BridgeError(429, "workflow_busy")
+        self.check_disk()
+        now = int(self.now())
+        state = {"schema_version":1,"phase":"creating","workflow_id":workflow_id,
+                 "operation_id":request["operation_id"],"request_identity":request,
+                 "request_body_digest":digest,"safety_request_nonce":request["nonce"],
+                 "artifact_digest":ctx["artifact_digest"],
+                 "contract_digest":self.contract_digest,"profile_generations":self.profile_generations,
+                 "runtime_digest":self.runtime_digest,"task_ids":{},"created_at":now,
+                 "deadline_at":now + int(self.contract["deadline_seconds"]),"result_digest":None,
+                 "result_package":None,"terminal_failure":None,"archive_cleanup_confirmed":False}
+        self.save_state(state)
+        self.resume_create(state)
+        return 201, self.public_state(self.load_state(workflow_id))
+
+    def status(self, workflow_id):
+        state = self.load_state(workflow_id)
+        if state["phase"] == "archived": raise BridgeError(410, "archived_workflow",
+            {"error":"archived_workflow","tombstone":self.public_state(state)})
+        if state["phase"] == "creating": state = self.resume_create(state)
+        if state["phase"] in {"stopped","terminal"}: return self.public_state(state)
+        if state["phase"] == "archiving": return self.archive(workflow_id)
+        if state["phase"] == "stopping": return self.stop(workflow_id)
+        self.check_disk(); self.current_digests(state); self.sqlite_check(); self.assert_graph(state)
+        try: current = self.council.status_v2(self.home, self.install, self.request_from_state(state), self.contract)
+        except (OSError, ValueError, UnicodeError, json.JSONDecodeError, sqlite3.Error) as error:
+            raise BridgeError(409, "state_board_mismatch") from error
+        statuses = {item.get("status") for item in current.get("tasks", {}).values()}
+        failure = None
+        if int(self.now()) > state["deadline_at"]: failure = "expired"
+        elif statuses & {"failed","blocked","cancelled","archived"}: failure = "member_failed"
+        if failure:
+            state["phase"] = "stopping"; state["terminal_failure"] = failure; self.save_state(state)
+            return self.stop(workflow_id)
+        if current.get("terminal"):
+            if current.get("verified") and isinstance(current.get("package"), dict):
+                package = current["package"]
+                state["result_package"] = package
+                state["result_digest"] = body_digest(canonical(package).encode())
+            else:
+                state["phase"] = "stopping"; state["terminal_failure"] = "verification_failed"; self.save_state(state)
+                return self.stop(workflow_id)
+            state["phase"] = "terminal"; self.save_state(state)
+        return self.public_state(state, current if state["phase"] == "active" else None)
+
+    def clear_worker_pids(self, conn, task_id, run_id, pid, claim_lock):
+        with self.kb.write_txn(conn):
+            task_rows = conn.execute(
+                "UPDATE tasks SET worker_pid = NULL WHERE id = ? AND status = 'running' "
+                "AND current_run_id = ? AND worker_pid = ? AND claim_lock = ?",
+                (task_id, run_id, pid, claim_lock),
+            ).rowcount
+            run_rows = conn.execute(
+                "UPDATE task_runs SET worker_pid = NULL WHERE id = ? AND task_id = ? "
+                "AND status = 'running' AND ended_at IS NULL AND worker_pid = ? AND claim_lock = ?",
+                (run_id, task_id, pid, claim_lock),
+            ).rowcount
+            if task_rows != 1 or run_rows != 1:
+                raise BridgeError(503, "worker_termination_unconfirmed")
+
+    def stop(self, workflow_id, terminal_failure=None):
+        state = self.load_state(workflow_id)
+        if state["phase"] == "archived": raise BridgeError(410, "archived_workflow",
+            {"error":"archived_workflow","tombstone":self.public_state(state)})
+        if state["phase"] in {"stopped","terminal"}: return self.public_state(state)
+        if state["phase"] == "creating": state = self.resume_create(state)
+        if state["phase"] == "archiving": raise BridgeError(409, "archive_in_progress")
+        failure = state["terminal_failure"] or terminal_failure
+        state["phase"] = "stopping"; state["terminal_failure"] = failure; self.save_state(state)
+        kb, kbc = self.council.modules(self.install)
+        try:
+            with kbc._dispatch_tick_lock(kb.kanban_db_path(BOARD)) as acquired:
+                if acquired is not True: raise BridgeError(503, "dispatch_lock_unavailable")
+                self.check_disk(); self.current_digests(state); self.sqlite_check(); self.assert_graph(state)
+                with kbc.connect_closing(board=BOARD) as conn:
+                    tasks, workers = [], []
+                    for task_id in state["task_ids"].values():
+                        task, runs = kb.get_task(conn, task_id), kb.list_runs(conn, task_id)
+                        if task is None: raise BridgeError(409, "state_board_mismatch")
+                        tasks.append((task_id, task))
+                        active_runs = [run for run in runs if getattr(run, "ended_at", None) is None]
+                        if getattr(task, "status", None) == "running":
+                            pid, claim_lock = getattr(task, "worker_pid", None), getattr(task, "claim_lock", None)
+                            run_id = getattr(task, "current_run_id", None)
+                            matching = [run for run in active_runs if getattr(run, "id", None) == run_id
+                                        and getattr(run, "claim_lock", None) == claim_lock
+                                        and getattr(run, "status", None) == "running"]
+                            if not isinstance(claim_lock, str) or not claim_lock or type(run_id) is not int \
+                                    or len(matching) != 1:
+                                raise BridgeError(503, "worker_termination_unconfirmed")
+                            run_pid = getattr(matching[0], "worker_pid", None)
+                            if pid is None and run_pid is None:
+                                continue
+                            if type(pid) is not int or pid <= 0 or run_pid != pid:
+                                raise BridgeError(503, "worker_termination_unconfirmed")
+                            workers.append((task_id, run_id, pid, claim_lock))
+                        elif getattr(task, "worker_pid", None) is not None \
+                                or getattr(task, "claim_lock", None) is not None or active_runs:
+                            raise BridgeError(503, "worker_termination_unconfirmed")
+                    for task_id, run_id, pid, claim_lock in workers:
+                        termination = kb._terminate_reclaimed_worker(pid, claim_lock)
+                        if not isinstance(termination, dict) or termination.get("host_local") is not True \
+                                or termination.get("terminated") is not True:
+                            raise BridgeError(503, "worker_termination_unconfirmed")
+                        self.clear_worker_pids(conn, task_id, run_id, pid, claim_lock)
+                    for task_id, task in tasks:
+                        if getattr(task, "status", None) != "archived": kb.archive_task(conn, task_id)
+                    for task_id in state["task_ids"].values():
+                        task, runs = kb.get_task(conn, task_id), kb.list_runs(conn, task_id)
+                        if task is None or getattr(task, "status", None) != "archived" \
+                                or getattr(task, "worker_pid", None) is not None \
+                                or any(getattr(run, "worker_pid", None) is not None or getattr(run, "ended_at", None) is None for run in runs):
+                            raise BridgeError(503, "worker_termination_unconfirmed")
+        except BridgeError: raise
+        except (OSError, ValueError, sqlite3.Error) as error:
+            raise BridgeError(503, "worker_termination_unconfirmed") from error
+        state["phase"] = "terminal" if failure else "stopped"
+        state["terminal_failure"] = failure
+        self.save_state(state); return self.public_state(state)
+
+    def archive(self, workflow_id):
+        state = self.load_state(workflow_id)
+        if state["phase"] == "archived": return self.public_state(state)
+        if state["phase"] not in {"terminal","stopped","archiving"}: raise BridgeError(409, "workflow_not_terminal")
+        resuming_archive = state["phase"] == "archiving"
+        kb, _ = self.council.modules(self.install)
+        if not kb.board_exists(BOARD) and not resuming_archive:
+            raise BridgeError(409, "state_board_mismatch")
+        if not resuming_archive: state["phase"] = "archiving"; self.save_state(state)
+        self.check_disk(); self.current_digests(state)
+        request = self.request_from_state(state)
+        try:
+            if kb.board_exists(BOARD):
+                self.assert_graph(state)
+                result = self.council.cleanup_v2(self.home, self.install, request, self.contract)
+                if not isinstance(result, dict) or result.get("archived") is not True:
+                    raise BridgeError(503, "archive_failed")
+                if kb.board_exists(BOARD): raise BridgeError(503, "archive_failed")
+                state["archive_cleanup_confirmed"] = True; self.save_state(state)
+            elif resuming_archive:
+                # Board removal is the first irreversible cleanup step. Its absence while the
+                # durable state says archiving is sufficient to resume after response/process loss.
+                state["archive_cleanup_confirmed"] = True; self.save_state(state)
+            if kb.board_exists(BOARD) or not state["archive_cleanup_confirmed"]:
+                raise BridgeError(503, "archive_failed")
+            root = self.workflow_root / workflow_id
+            if root.exists():
+                resolved = root.resolve()
+                if root.is_symlink() or resolved.parent != self.workflow_root.resolve():
+                    raise BridgeError(409, "unsafe_workflow_root")
+                shutil.rmtree(root)
+        except BridgeError: raise
+        except (OSError, ValueError, UnicodeError, json.JSONDecodeError, sqlite3.Error) as error:
+            raise BridgeError(503, "archive_failed") from error
+        state["phase"] = "archived"; state["result_package"] = None
+        state["request_identity"] = {key:request[key] for key in
+            ("operation_id","repo","pr","head_sha","base_sha","diff_hash","policy_version","policy_digest")}
+        self.save_state(state)
+        return self.public_state(state)
+
+    @staticmethod
+    def public_state(state, current=None):
+        body = {key:state[key] for key in ("schema_version","phase","workflow_id","operation_id",
+                "request_body_digest","safety_request_nonce","artifact_digest","contract_digest",
+                "profile_generations","runtime_digest","task_ids","created_at","deadline_at",
+                "result_digest","result_package","terminal_failure","archive_cleanup_confirmed")}
+        if current is not None: body["status"] = current
+        return body
+
+    def reconcile_report(self):
+        if self.read_only:
+            board, rows = self.raw_board_present(), []
+            if board: self.sqlite_check(full=True)
+            for state in self.all_states():
+                mismatch = False if state["phase"] == "archived" else not board
+                status = None
+                if board and state["phase"] != "archived":
+                    try:
+                        self.assert_graph(state)
+                        with closing(self.raw_connect()) as db:
+                            db.row_factory = sqlite3.Row
+                            task_rows = db.execute("SELECT id,status,worker_pid FROM tasks ORDER BY id").fetchall()
+                        expected = set(state["task_ids"].values())
+                        mismatch = {row["id"] for row in task_rows} != expected
+                        status = {row["id"]:{"status":row["status"],"worker_pid":row["worker_pid"]}
+                                  for row in task_rows}
+                    except Exception: mismatch = True; status = {"error":"unavailable"}
+                rows.append({"workflow_id":state["workflow_id"],"phase":state["phase"],"board_present":board,
+                             "mismatch":mismatch,"status":status})
+            return {"schema_version":1,"board":BOARD,"board_present":board,"workflows":rows}
+        kb, kbc = self.council.modules(self.install); board = bool(kb.board_exists(BOARD)); rows = []
+        if board: self.sqlite_check(full=True)
+        for state in self.all_states():
+            mismatch = False if state["phase"] == "archived" else not board
+            status = None
+            if board and state["phase"] != "archived":
+                try:
+                    self.assert_graph(state)
+                    with kbc.connect_closing(board=BOARD) as db:
+                        db.row_factory = sqlite3.Row
+                        task_rows = db.execute("SELECT id,status,worker_pid FROM tasks ORDER BY id").fetchall()
+                    expected = set(state["task_ids"].values())
+                    mismatch = {row["id"] for row in task_rows} != expected
+                    status = {row["id"]:{"status":row["status"],"worker_pid":row["worker_pid"]}
+                              for row in task_rows}
+                except Exception: mismatch = True; status = {"error":"unavailable"}
+            rows.append({"workflow_id":state["workflow_id"],"phase":state["phase"],"board_present":board,
+                         "mismatch":mismatch,"status":status})
+        return {"schema_version":1,"board":BOARD,"board_present":board,"workflows":rows}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "HermesKanbanSafetyBridge/1"
+    sys_version = ""
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(REQUEST_READ_DEADLINE_SECONDS)
+        self.read_deadline = threading.Timer(REQUEST_READ_DEADLINE_SECONDS, self._expire_connection)
+        self.read_deadline.daemon = True
+        self.read_deadline.start()
+
+    def finish(self):
+        try: super().finish()
+        finally: self._cancel_read_deadline()
+
+    def _expire_connection(self):
+        try: self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
+
+    def _cancel_read_deadline(self):
+        deadline = getattr(self, "read_deadline", None)
+        if deadline is not None:
+            deadline.cancel(); self.read_deadline = None
+
+    def log_message(self, form, *args):
+        pass
+
+    def _single_header(self, name):
+        values = self.headers.get_all(name, [])
+        return values[0] if len(values) == 1 else None
+
+    def _read_body(self):
+        if self.headers.get_all("Transfer-Encoding", []): raise BridgeError(400, "transfer_encoding_forbidden")
+        raw = self._single_header("Content-Length")
+        if raw is None:
+            if self.command == "POST": raise BridgeError(411, "content_length_required")
+            self._cancel_read_deadline()
+            return b""
+        try: length = int(raw)
+        except ValueError as error: raise BridgeError(400, "invalid_content_length") from error
+        if length < 0: raise BridgeError(400, "invalid_content_length")
+        if length > BODY_LIMIT: raise BridgeError(413, "body_too_large")
+        if self.command != "POST" and length != 0: raise BridgeError(400, "body_forbidden")
+        body = self.rfile.read(length)
+        if len(body) != length: raise BridgeError(400, "incomplete_body")
+        self._cancel_read_deadline()
+        return body
+
+    def _dispatch(self):
+        path = self.path
+        self.route_class, self.workflow_id = "unknown", None
+        if path == "/healthz": self.route_class = "health"
+        elif path == "/v1/councils": self.route_class = "create"
+        else:
+            route = re.fullmatch(r"/v1/councils/(pr-risk-council-[0-9a-f]{32})(?:/(stop|archive))?", path)
+            if route:
+                self.workflow_id = route.group(1)
+                self.route_class = route.group(2) or "status"
+        if "?" in path or "#" in path: raise BridgeError(404, "unknown_endpoint")
+        if self._single_header("Host") != self.server.host_header: raise BridgeError(400, "invalid_host")
+        if self.headers.get_all("Origin", []): raise BridgeError(403, "origin_forbidden")
+        body = self._read_body()
+        content_type = self.headers.get_all("Content-Type", [])
+        if self.command == "POST":
+            if content_type != ["application/json"]: raise BridgeError(415, "unsupported_content_type")
+        elif content_type: raise BridgeError(415, "content_type_forbidden")
+        try: nonce = self.server.bridge.authenticate(self.headers, self.command, path, body)
+        except BridgeError as error:
+            if error.code == "replayed_nonce": self.auth_nonce = self._single_header(AUTH_HEADERS["nonce"])
+            raise
+        self.auth_nonce = nonce
+        if self.command == "GET" and path == "/healthz":
+            return 200, {"status":"ok","auth_generation":self.server.bridge.generation}, nonce
+        match = re.fullmatch(r"/v1/councils/(pr-risk-council-[0-9a-f]{32})(?:/(stop|archive))?", path)
+        if self.command == "POST" and path == "/v1/councils":
+            try: request = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error: raise BridgeError(400, "invalid_json") from error
+            status, response = self.server.bridge.create(body, request)
+            self.workflow_id = response["workflow_id"]
+            return status, response, nonce
+        if match and self.command == "GET" and match.group(2) is None:
+            return 200, self.server.bridge.status(match.group(1)), nonce
+        if match and self.command == "POST" and match.group(2) in {"stop","archive"}:
+            try: request = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error: raise BridgeError(400, "invalid_json") from error
+            self.server.bridge.validate_action_request(match.group(1), request)
+            action = self.server.bridge.stop if match.group(2) == "stop" else self.server.bridge.archive
+            return 200, action(match.group(1)), nonce
+        raise BridgeError(404, "unknown_endpoint")
+
+    def _handle(self):
+        self.auth_nonce = None; nonce = "0" * 32; self.route_class = "unknown"; self.workflow_id = None
+        error_code = None
+        try: status, value, nonce = self._dispatch()
+        except BridgeError as error:
+            nonce = self.auth_nonce or nonce; status, value, error_code = error.status, error.body, error.code
+        except Exception: status, value, error_code = 500, {"error":"internal_error"}, "internal_error"
+        body = (canonical(value) + "\n").encode(); digest = body_digest(body); timestamp = int(self.server.bridge.now())
+        response_signature = signature(self.server.bridge.key, response_preimage(
+            self.server.bridge.generation, timestamp, nonce, digest, self.command, self.path, status))
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(AUTH_HEADERS["generation"], str(self.server.bridge.generation))
+        self.send_header(AUTH_HEADERS["timestamp"], str(timestamp))
+        self.send_header(AUTH_HEADERS["nonce"], nonce)
+        self.send_header(AUTH_HEADERS["digest"], digest)
+        self.send_header(AUTH_HEADERS["signature"], response_signature)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers(); self.wfile.write(body)
+        sys.stderr.write(canonical({"auth_generation":self.server.bridge.generation,"error":error_code,
+            "route_class":self.route_class,"status":status,"workflow_id":self.workflow_id}) + "\n")
+
+    do_GET = _handle
+    do_POST = _handle
+    do_OPTIONS = _handle
+    do_PUT = _handle
+    do_DELETE = _handle
+    do_PATCH = _handle
+
+
+class Server(HTTPServer):
+    allow_reuse_address = False
+    def __init__(self, address, handler, bridge, host_header):
+        self.bridge, self.host_header = bridge, host_header
+        super().__init__(address, handler)
+
+    def handle_error(self, request, client_address):
+        sys.stderr.write(canonical({"auth_generation":self.bridge.generation,"error":"connection_error",
+            "route_class":"unknown","status":500,"workflow_id":None}) + "\n")
+
+
+def arguments():
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bind", default=os.environ.get("HERMES_KANBAN_BRIDGE_BIND", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("HERMES_KANBAN_BRIDGE_PORT", DEFAULT_PORT)))
+    parser.add_argument("--host-header", default=os.environ.get("HERMES_KANBAN_BRIDGE_HOST_HEADER", DEFAULT_HOST_HEADER))
+    parser.add_argument("--hermes-home", type=Path, default=home)
+    parser.add_argument("--install-dir", type=Path, default=Path(os.environ.get("HERMES_INSTALL_DIR", home / "hermes-agent")))
+    parser.add_argument("--state-root", type=Path, default=Path(os.environ.get("HERMES_KANBAN_BRIDGE_STATE_ROOT", Path.home() / ".local/state/ai-pr-automation/hermes-kanban-safety-bridge")))
+    parser.add_argument("--workflow-root", type=Path, default=Path(os.environ.get("PR_SAFETY_WORKFLOW_ROOT", home / "workflow-runs")))
+    parser.add_argument("--key-file", type=Path, default=Path(os.environ.get("HERMES_KANBAN_BRIDGE_KEY_FILE", "/Users/Shared/ai-pr-automation-runtime/hermes-bridge-secrets/key.json")))
+    parser.add_argument("--contract", type=Path, default=Path(os.environ.get("HERMES_KANBAN_BRIDGE_CONTRACT", "/usr/local/libexec/ai-pr-automation/pr-risk-council-kanban-v2.json")))
+    parser.add_argument("--runtime-contract", type=Path, default=Path(os.environ.get("HERMES_NATIVE_CONTRACT", "/usr/local/libexec/ai-pr-automation/hermes-native.env")))
+    parser.add_argument("--workflow-module", type=Path, default=Path(os.environ.get("HERMES_KANBAN_RISK_COUNCIL", "/usr/local/libexec/ai-pr-automation/hermes-kanban-risk-council.py")))
+    parser.add_argument("--min-free-bytes", type=int, default=int(os.environ.get("HERMES_KANBAN_BRIDGE_MIN_FREE_BYTES", "104857600")))
+    return parser.parse_args()
+
+
+def build_bridge(args, read_only=False):
+    if args.bind != "127.0.0.1" or not 1 <= args.port <= 65535: raise SystemExit("bridge requires fixed loopback bind")
+    if args.host_header != f"hermes-council.localhost:{args.port}": raise SystemExit("bridge Host contract does not match port")
+    return Bridge(home=args.hermes_home, install=args.install_dir, state_root=args.state_root,
+                  workflow_root=args.workflow_root, key_file=args.key_file, contract_file=args.contract,
+                  runtime_contract=args.runtime_contract, workflow_module=args.workflow_module,
+                  min_free_bytes=args.min_free_bytes, read_only=read_only)
+
+
+def main():
+    args = arguments(); bridge = build_bridge(args)
+    server = Server((args.bind, args.port), Handler, bridge, args.host_header)
+    try: server.serve_forever()
+    except KeyboardInterrupt: pass
+    finally: server.server_close()
+
+
+if __name__ == "__main__": main()

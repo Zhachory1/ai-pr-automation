@@ -220,15 +220,19 @@ def complete_task(conn,key,**kw):
             path.write_text(path.read_text().replace("claude-haiku-4-5-20251001","claude-opus-5"))
             with self.assertRaisesRegex(ValueError,"policy mismatch"): council.setup(home,install)
 
-    def test_v2_dynamic_setup_resume_status_and_cleanup(self):
+    def test_v2_dynamic_setup_resume_status_and_cleanup_uses_configured_workflow_root(self):
         with tempfile.TemporaryDirectory() as td:
             root=pathlib.Path(td); request,snapshot,policy=self.v2_request(root)
             home,install=self.fixture(root,CONTRACT_V2)
-            with mock.patch.dict(os.environ,self.v2_env(request,snapshot,policy),clear=False):
+            workflow_root=root/"configured-workflows"; workflow_root.mkdir(); workflow_root.chmod(0o700)
+            env={**self.v2_env(request,snapshot,policy),"PR_SAFETY_WORKFLOW_ROOT":str(workflow_root)}
+            with mock.patch.dict(os.environ,env,clear=False):
                 setup=council.setup(home,install,request,CONTRACT_V2)
                 self.assertFalse(setup["resumed"]); self.assertEqual(len(setup["tasks"]),5)
                 resumed=council.setup(home,install,request,CONTRACT_V2); self.assertTrue(resumed["resumed"])
                 ctx=council.v2_context(home,request,CONTRACT_V2)
+                self.assertEqual(ctx["root"].parent,workflow_root)
+                self.assertFalse((home/"workflow-runs").exists())
                 self.assertEqual(ctx["root"].stat().st_mode & 0o777,0o700)
                 self.assertEqual((ctx["root"]/".council-tools.json").stat().st_mode & 0o777,0o440)
                 self.assertEqual((ctx["input"]/"identity.json").stat().st_mode & 0o777,0o440)
@@ -266,6 +270,7 @@ def complete_task(conn,key,**kw):
                 self.assertTrue(council.status(home,install,request,CONTRACT_V2)["verified"])
                 self.assertTrue(council.cleanup(home,install,request,CONTRACT_V2)["archived"])
                 self.assertFalse(ctx["root"].exists())
+                self.assertFalse((home/"workflow-runs").exists())
 
     def test_v2_usage_matches_one_trusted_session_and_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
@@ -374,6 +379,19 @@ def complete_task(conn,key,**kw):
                 with mock.patch.dict(os.environ,env,clear=True), self.assertRaises(ValueError):
                     council.setup(home,install,request,CONTRACT_V2)
                 self.assertFalse((home/"workflow-runs").exists())
+
+    def test_v2_context_rejects_unsafe_configured_workflow_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td); request,snapshot,policy=self.v2_request(root); home,_=self.fixture(root,CONTRACT_V2)
+            unsafe=root/"unsafe-workflows"; unsafe.mkdir(); unsafe.chmod(0o755)
+            target=root/"target-workflows"; target.mkdir(); target.chmod(0o700)
+            alias=root/"workflow-alias"; alias.symlink_to(target, target_is_directory=True)
+            for name,value in (("relative","relative"),("missing",str(root/"missing")),
+                               ("mode",str(unsafe)),("symlink",str(alias))):
+                with self.subTest(name=name):
+                    env={**self.v2_env(request,snapshot,policy),"PR_SAFETY_WORKFLOW_ROOT":value}
+                    with mock.patch.dict(os.environ,env,clear=False), self.assertRaisesRegex(ValueError,"workflow root"):
+                        council.v2_context(home,request,CONTRACT_V2)
 
     def test_v2_profile_check_rejects_extra_config_and_mcp_json(self):
         for name,mutate in (

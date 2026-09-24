@@ -145,10 +145,14 @@ class KanbanCouncilProfilesTest(unittest.TestCase):
             self.assertTrue(profiles.restore(home, CONTRACT, os.getuid(), os.getgid())["restored"])
             self.assertFalse(target.exists())
 
-    def test_apply_requires_stopped_gateway(self):
-        with mock.patch.object(profiles.subprocess, "run", return_value=type("R", (), {"returncode":0})()):
-            with self.assertRaisesRegex(ValueError, "stop Hermes gateway"):
+    def test_apply_requires_gateway_dashboard_and_bridge_stopped(self):
+        result = type("R", (), {"returncode":1})()
+        bridge_loaded = type("R", (), {"returncode":0})()
+        with mock.patch.object(profiles.subprocess, "run", side_effect=[result,result,bridge_loaded]) as run:
+            with self.assertRaisesRegex(ValueError, "stop Hermes gateway, dashboard, and safety bridge"):
                 profiles.require_stopped()
+        self.assertEqual(run.call_args_list[-1].args[0],
+            ["launchctl","print","system/com.example.ai-pr-automation-hermes-kanban-safety-bridge"])
 
     def test_cli_check_is_machine_readable_and_inert(self):
         with tempfile.TemporaryDirectory() as td:

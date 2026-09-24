@@ -20,6 +20,27 @@ PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes.plist"
 LABEL="com.example.ai-pr-automation-hermes"
 DASHBOARD_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes-dashboard.plist"
 DASHBOARD_LABEL="com.example.ai-pr-automation-hermes-dashboard"
+BRIDGE_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes-kanban-safety-bridge.plist"
+BRIDGE_LABEL="com.example.ai-pr-automation-hermes-kanban-safety-bridge"
+BRIDGE_BIN="$SUPPORT_ROOT/hermes-kanban-safety-bridge"
+BRIDGE_RECONCILE="$SUPPORT_ROOT/hermes-kanban-safety-bridge-reconcile.py"
+BRIDGE_PREFLIGHT="$SUPPORT_ROOT/hermes-kanban-safety-bridge-preflight.py"
+KANBAN_PREFLIGHT="$SUPPORT_ROOT/hermes-kanban-workflow-preflight.py"
+RISK_COUNCIL="$SUPPORT_ROOT/hermes-kanban-risk-council.py"
+PROFILE_CONFIGURATOR="$SUPPORT_ROOT/configure-hermes-kanban-profiles.py"
+BRIDGE_CONTRACT="$SUPPORT_ROOT/pr-risk-council-kanban-v2.json"
+RUNTIME_CONTRACT="$SUPPORT_ROOT/hermes-native.env"
+V2_PROFILES=(council-orchestrator-v2 council-reviewer-v2 council-security-v2 council-reliability-v2 council-architect-v2)
+BRIDGE_STATE_ROOT="${HERMES_KANBAN_BRIDGE_STATE_ROOT:-$SERVICE_HOME/.local/state/ai-pr-automation/hermes-kanban-safety-bridge}"
+WORKFLOW_ROOT="${PR_SAFETY_WORKFLOW_ROOT:-$HERMES_HOME/workflow-runs}"
+BRIDGE_PORT="${HERMES_KANBAN_BRIDGE_PORT:-8766}"
+BRIDGE_HOST_HEADER="${HERMES_KANBAN_BRIDGE_HOST_HEADER:-hermes-council.localhost:$BRIDGE_PORT}"
+SHARED_RUNTIME="${HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime}"
+SNAPSHOT_ROOT="${PR_SAFETY_SNAPSHOT_ROOT:-$SHARED_RUNTIME/safety-snapshots}"
+POLICY_PATH="${PR_SAFETY_POLICY_PATH:-$CONFIG_ROOT/pr-safety-policy-v1.md}"
+POLICY_VERSION="${PR_SAFETY_POLICY_VERSION:-v1}"
+BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"
+BRIDGE_KEY_PARENT="${BRIDGE_KEY_FILE%/*}"
 HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token}"
 
@@ -32,6 +53,59 @@ wait_unloaded() {
     sleep .2
   done
   echo "$label did not unload within 10 seconds" >&2; exit 2
+}
+
+prepare_bridge_support_sync() {
+  local bridge_was_loaded=false scan_error
+  launchctl print "system/$BRIDGE_LABEL" >/dev/null 2>&1 && bridge_was_loaded=true
+  launchctl bootout "system/$BRIDGE_LABEL" 2>/dev/null || true
+  wait_unloaded "$BRIDGE_LABEL"
+  if ! scan_error="$(python3 - "$BRIDGE_STATE_ROOT/workflows" 2>&1 <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for path in root.glob("*.json") if root.is_dir() else ():
+    try: phase = json.loads(path.read_text()).get("phase")
+    except (OSError, json.JSONDecodeError): raise SystemExit(f"invalid bridge state: {path.name}")
+    if phase != "archived": raise SystemExit(f"nonarchived bridge workflow blocks support sync: {path.stem}")
+PY
+)"; then
+    if [[ "$bridge_was_loaded" == true ]]; then
+      launchctl bootstrap system "$BRIDGE_PLIST" >/dev/null 2>&1 \
+        || echo "failed to restart previous bridge plist: $BRIDGE_PLIST" >&2
+    fi
+    echo "$scan_error" >&2
+    return 1
+  fi
+}
+
+service_loaded() {
+  launchctl print "system/$1" >/dev/null 2>&1
+}
+
+require_v2_services_unloaded() {
+  local label
+  for label in "$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL"; do
+    if service_loaded "$label"; then
+      echo "v2 council profiles missing while Hermes services are loaded; run scripts/fleet.sh down, rerun install/sync-support, then scripts/fleet.sh up" >&2
+      return 1
+    fi
+  done
+}
+
+provision_v2_profiles() {
+  local count=0 name
+  for name in "${V2_PROFILES[@]}"; do
+    [[ ! -e "$HERMES_HOME/profiles/$name" && ! -L "$HERMES_HOME/profiles/$name" ]] || count=$((count + 1))
+  done
+  if [[ "$count" == 0 ]]; then
+    require_v2_services_unloaded || return
+    sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+      "$INSTALL_DIR/venv/bin/python" -B "$PROFILE_CONFIGURATOR" --hermes-home "$HERMES_HOME" \
+      --service-user "$SERVICE_USER" --contract "$BRIDGE_CONTRACT" --apply
+  elif [[ "$count" != "${#V2_PROFILES[@]}" ]]; then
+    echo "partial v2 council profile set; restore a fully stopped fleet before install/sync-support" >&2
+    return 1
+  fi
 }
 
 sync_profile() {
@@ -56,8 +130,12 @@ sync_profile() {
 
 install_native() {
   need_root; need_user
-  install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT"
-  install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME"
+  prepare_bridge_support_sync
+  install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT" "$SHARED_RUNTIME" "$SHARED_RUNTIME/secrets"
+  install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$BRIDGE_STATE_ROOT" \
+    "$BRIDGE_STATE_ROOT/workflows" "$WORKFLOW_ROOT"
+  install -d -m 0750 -o root -g staff "$SNAPSHOT_ROOT" "$BRIDGE_KEY_PARENT"
+  install -m 0444 -o root -g wheel "$ROOT/policy/pr-safety-policy-v1.md" "$POLICY_PATH"
   # Retire old host queue lifecycle. Compose owns dispatcher and producers.
   local legacy
   for legacy in com.example.ai-pr-automation-watchdog com.example.ai-pr-automation-dispatcher \
@@ -76,7 +154,7 @@ install_native() {
     "$LOG_ROOT/watchdog.out.log" "$LOG_ROOT/watchdog.err.log"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer"
   local logfile
-  for logfile in gateway.out gateway.err dashboard.out dashboard.err; do
+  for logfile in gateway.out gateway.err dashboard.out dashboard.err bridge.out bridge.err; do
     install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"
   done
   local installer=""
@@ -99,19 +177,52 @@ install_native() {
   install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
   install -m 0555 -o root -g wheel "$ROOT/bin/hermes-council-tools" "$SUPPORT_ROOT/hermes-council-tools"
-  cmp -s "$ROOT/bin/hermes-council-tools" "$SUPPORT_ROOT/hermes-council-tools" \
-    || { echo "Hermes council tools install mismatch" >&2; exit 2; }
+  install -m 0555 -o root -g wheel "$ROOT/bin/hermes-kanban-safety-bridge" "$BRIDGE_BIN"
+  install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-kanban-safety-bridge-reconcile.py" "$BRIDGE_RECONCILE"
+  install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-kanban-safety-bridge-preflight.py" "$BRIDGE_PREFLIGHT"
+  install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-kanban-workflow-preflight.py" "$KANBAN_PREFLIGHT"
+  install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-kanban-risk-council.py" "$RISK_COUNCIL"
+  install -m 0555 -o root -g wheel "$ROOT/scripts/configure-hermes-kanban-profiles.py" "$PROFILE_CONFIGURATOR"
+  install -m 0444 -o root -g wheel "$ROOT/agent-config/hermes/workflows/pr-risk-council-kanban-v2.json" "$BRIDGE_CONTRACT"
+  install -m 0444 -o root -g wheel "$ROOT/agent-config/hermes/native.env" "$RUNTIME_CONTRACT"
+  for pair in "$ROOT/bin/hermes-council-tools:$SUPPORT_ROOT/hermes-council-tools" \
+    "$ROOT/bin/hermes-kanban-safety-bridge:$BRIDGE_BIN" \
+    "$ROOT/scripts/hermes-kanban-safety-bridge-reconcile.py:$BRIDGE_RECONCILE" \
+    "$ROOT/scripts/hermes-kanban-safety-bridge-preflight.py:$BRIDGE_PREFLIGHT" \
+    "$ROOT/scripts/hermes-kanban-workflow-preflight.py:$KANBAN_PREFLIGHT" \
+    "$ROOT/scripts/hermes-kanban-risk-council.py:$RISK_COUNCIL" \
+    "$ROOT/scripts/configure-hermes-kanban-profiles.py:$PROFILE_CONFIGURATOR" \
+    "$ROOT/agent-config/hermes/workflows/pr-risk-council-kanban-v2.json:$BRIDGE_CONTRACT" \
+    "$ROOT/agent-config/hermes/native.env:$RUNTIME_CONTRACT"; do
+    cmp -s "${pair%%:*}" "${pair#*:}" || { echo "Hermes support install mismatch" >&2; exit 2; }
+  done
+  provision_v2_profiles
+  if [[ ! -e "$BRIDGE_KEY_FILE" ]]; then
+    python3 - "$BRIDGE_KEY_FILE" "$(id -u "$SERVICE_USER")" "$(id -g "$SERVICE_USER")" <<'PY'
+import json, os, pathlib, secrets, sys
+path, uid, gid = pathlib.Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+temporary = path.with_name(path.name + f".tmp-{os.getpid()}")
+fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+with os.fdopen(fd, "w") as output:
+    json.dump({"schema_version":1,"auth_generation":1,"key":secrets.token_hex(32)}, output,
+              sort_keys=True, separators=(",", ":")); output.write("\n"); output.flush(); os.fsync(output.fileno())
+os.chown(temporary, uid, gid); os.replace(temporary, path)
+directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+try: os.fsync(directory)
+finally: os.close(directory)
+PY
+  fi
   [[ ! -x "$ROOT/bin/doc-writer-reconcile" ]] || install -m 0555 "$ROOT/bin/doc-writer-reconcile" "$SUPPORT_ROOT/doc-writer-reconcile"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-hermes.plist.template" "$PLIST" \
     "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$INSTALL_DIR" "$LAUNCHER" "$WRAPPER" \
-    "$MAINTENANCE_FILE" "$LOG_ROOT" <<'PY'
+    "$MAINTENANCE_FILE" "$SNAPSHOT_ROOT" "$WORKFLOW_ROOT" "$LOG_ROOT" <<'PY'
 import os, pathlib, sys
-source, target, user, home, hermes_home, install_dir, binary, wrapper, maintenance, logs = sys.argv[1:]
+source, target, user, home, hermes_home, install_dir, binary, wrapper, maintenance, snapshot, workflow, logs = sys.argv[1:]
 text = pathlib.Path(source).read_text()
 for key, value in {"__HERMES_USER__":user,"__SERVICE_HOME__":home,"__HERMES_HOME__":hermes_home,
                    "__HERMES_INSTALL_DIR__":install_dir,"__HERMES_BIN__":binary,
-                   "__GATEWAY_WRAPPER__":wrapper,
-                   "__MAINTENANCE_FILE__":maintenance,"__LOG_ROOT__":logs}.items():
+                   "__GATEWAY_WRAPPER__":wrapper,"__MAINTENANCE_FILE__":maintenance,
+                   "__SNAPSHOT_ROOT__":snapshot,"__WORKFLOW_ROOT__":workflow,"__LOG_ROOT__":logs}.items():
     text = text.replace(key, value)
 temporary = pathlib.Path(target + ".tmp")
 temporary.write_text(text)
@@ -131,6 +242,26 @@ temporary = pathlib.Path(target + ".tmp")
 temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
 PY
   plutil -lint "$DASHBOARD_PLIST" >/dev/null
+  local policy_digest
+  policy_digest="$(shasum -a 256 "$POLICY_PATH" | awk '{print $1}')"
+  python3 - "$ROOT/launchd/com.example.ai-pr-automation-hermes-kanban-safety-bridge.plist.template" \
+    "$BRIDGE_PLIST" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$INSTALL_DIR" "$BRIDGE_BIN" \
+    "$BRIDGE_PORT" "$BRIDGE_HOST_HEADER" "$BRIDGE_STATE_ROOT" "$BRIDGE_KEY_FILE" "$BRIDGE_CONTRACT" \
+    "$RISK_COUNCIL" "$RUNTIME_CONTRACT" "$WORKFLOW_ROOT" "$SNAPSHOT_ROOT" "$POLICY_PATH" \
+    "$POLICY_VERSION" "$policy_digest" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, user, home, hermes_home, install, bridge, port, host, state, key, contract, risk, runtime, workflow, snapshot, policy, version, digest, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+values = {"__HERMES_USER__":user,"__SERVICE_HOME__":home,"__HERMES_HOME__":hermes_home,
+          "__HERMES_INSTALL_DIR__":install,"__BRIDGE_BIN__":bridge,"__BRIDGE_PORT__":port,
+          "__BRIDGE_HOST_HEADER__":host,"__BRIDGE_STATE_ROOT__":state,"__BRIDGE_KEY_FILE__":key,
+          "__BRIDGE_CONTRACT__":contract,"__RISK_COUNCIL__":risk,"__RUNTIME_CONTRACT__":runtime,
+          "__WORKFLOW_ROOT__":workflow,"__SNAPSHOT_ROOT__":snapshot,"__POLICY_PATH__":policy,
+          "__POLICY_VERSION__":version,"__POLICY_DIGEST__":digest,"__LOG_ROOT__":logs}
+for name, value in values.items(): text = text.replace(name, value)
+temporary = pathlib.Path(target + ".tmp"); temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "$BRIDGE_PLIST" >/dev/null
   python3 - "$MANIFEST" "$HERMES_NATIVE_VERSION" "$HERMES_NATIVE_COMMIT" \
     "$HERMES_INSTALLER_SHA256" "$LAUNCHER" "$ROOT/agent-config/hermes/profiles/smoke-v1" <<'PY'
 import hashlib, json, os, pathlib, sys
@@ -155,13 +286,46 @@ PY
 preflight() {
   python3 "$ROOT/scripts/hermes-native-preflight.py" --contract "$ROOT/agent-config/hermes/native.env" \
     --manifest "$MANIFEST" --install-dir "$INSTALL_DIR" --hermes-home "$HERMES_HOME" \
-    --profile-source "$PROFILE_ROOT/smoke-v1" --service-user "$SERVICE_USER"
+    --profile-source "$PROFILE_ROOT/smoke-v1" --service-user "$SERVICE_USER" \
+    --gateway-plist "$PLIST" --gateway-wrapper "$WRAPPER" --maintenance-file "$MAINTENANCE_FILE" \
+    --snapshot-root "$SNAPSHOT_ROOT" --workflow-root "$WORKFLOW_ROOT" \
+    --bridge-preflight "$BRIDGE_PREFLIGHT" \
+    --bridge-argument=--service-user --bridge-argument="$SERVICE_USER" \
+    --bridge-argument=--bridge --bridge-argument="$BRIDGE_BIN" \
+    --bridge-argument=--reconcile --bridge-argument="$BRIDGE_RECONCILE" \
+    --bridge-argument=--risk-council --bridge-argument="$RISK_COUNCIL" \
+    --bridge-argument=--contract --bridge-argument="$BRIDGE_CONTRACT" \
+    --bridge-argument=--runtime-contract --bridge-argument="$RUNTIME_CONTRACT" \
+    --bridge-argument=--self-path --bridge-argument="$BRIDGE_PREFLIGHT" \
+    --bridge-argument=--plist --bridge-argument="$BRIDGE_PLIST" \
+    --bridge-argument=--key-file --bridge-argument="$BRIDGE_KEY_FILE" \
+    --bridge-argument=--state-root --bridge-argument="$BRIDGE_STATE_ROOT" \
+    --bridge-argument=--workflow-root --bridge-argument="$WORKFLOW_ROOT" \
+    --bridge-argument=--hermes-home --bridge-argument="$HERMES_HOME" \
+    --bridge-argument=--install-dir --bridge-argument="$INSTALL_DIR" \
+    --bridge-argument=--snapshot-root --bridge-argument="$SNAPSHOT_ROOT" \
+    --bridge-argument=--policy-path --bridge-argument="$POLICY_PATH" \
+    --bridge-argument=--policy-version --bridge-argument="$POLICY_VERSION" \
+    --bridge-argument=--policy-digest --bridge-argument="$(shasum -a 256 "$POLICY_PATH" | awk '{print $1}')" \
+    --bridge-argument=--port --bridge-argument="$BRIDGE_PORT" \
+    --bridge-argument=--host-header --bridge-argument="$BRIDGE_HOST_HEADER" \
+    --bridge-argument=--installed-source --bridge-argument="$BRIDGE_BIN=$ROOT/bin/hermes-kanban-safety-bridge" \
+    --bridge-argument=--installed-source --bridge-argument="$BRIDGE_RECONCILE=$ROOT/scripts/hermes-kanban-safety-bridge-reconcile.py" \
+    --bridge-argument=--installed-source --bridge-argument="$BRIDGE_PREFLIGHT=$ROOT/scripts/hermes-kanban-safety-bridge-preflight.py" \
+    --bridge-argument=--installed-source --bridge-argument="$KANBAN_PREFLIGHT=$ROOT/scripts/hermes-kanban-workflow-preflight.py" \
+    --bridge-argument=--installed-source --bridge-argument="$RISK_COUNCIL=$ROOT/scripts/hermes-kanban-risk-council.py" \
+    --bridge-argument=--installed-source --bridge-argument="$PROFILE_CONFIGURATOR=$ROOT/scripts/configure-hermes-kanban-profiles.py" \
+    --bridge-argument=--installed-source --bridge-argument="$BRIDGE_CONTRACT=$ROOT/agent-config/hermes/workflows/pr-risk-council-kanban-v2.json" \
+    --bridge-argument=--installed-source --bridge-argument="$RUNTIME_CONTRACT=$ROOT/agent-config/hermes/native.env"
+  sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+    HERMES_KANBAN_BUSY_TIMEOUT_MS=120000 "$INSTALL_DIR/venv/bin/python" -B "$KANBAN_PREFLIGHT" \
+    --hermes-home "$HERMES_HOME" --install-dir "$INSTALL_DIR" --contract "$BRIDGE_CONTRACT" >/dev/null
 }
 
 case "${1:-}" in
   install) install_native ;;
   sync-support) HERMES_SUPPORT_ONLY=true install_native ;;
-  sync-profiles) need_root; need_user; sync_profile; preflight ;;
+  sync-profiles) need_root; need_user; prepare_bridge_support_sync; sync_profile; preflight ;;
   preflight) preflight ;;
   start)
     need_root; preflight; rm -f "$MAINTENANCE_FILE"
@@ -171,6 +335,33 @@ case "${1:-}" in
     need_root; install -m 0444 /dev/null "$MAINTENANCE_FILE"
     launchctl bootout "system/$LABEL" 2>/dev/null || true
     wait_unloaded "$LABEL"
+    ;;
+  bridge-start)
+    need_root; preflight
+    launchctl bootstrap system "$BRIDGE_PLIST" 2>/dev/null || launchctl kickstart -k "system/$BRIDGE_LABEL"
+    ;;
+  bridge-stop)
+    need_root
+    launchctl bootout "system/$BRIDGE_LABEL" 2>/dev/null || true
+    wait_unloaded "$BRIDGE_LABEL"
+    ;;
+  bridge-reconcile)
+    need_root
+    policy_digest="$(shasum -a 256 "$POLICY_PATH" | awk '{print $1}')"
+    sudo -u "$SERVICE_USER" env -i HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+      HERMES_INSTALL_DIR="$INSTALL_DIR" HERMES_KANBAN_BRIDGE_BIND=127.0.0.1 \
+      HERMES_KANBAN_BUSY_TIMEOUT_MS=120000 HERMES_KANBAN_BRIDGE_PORT="$BRIDGE_PORT" \
+      HERMES_KANBAN_BRIDGE_HOST_HEADER="$BRIDGE_HOST_HEADER" HERMES_KANBAN_BRIDGE_STATE_ROOT="$BRIDGE_STATE_ROOT" \
+      HERMES_KANBAN_BRIDGE_KEY_FILE="$BRIDGE_KEY_FILE" HERMES_KANBAN_BRIDGE_CONTRACT="$BRIDGE_CONTRACT" \
+      HERMES_KANBAN_RISK_COUNCIL="$RISK_COUNCIL" HERMES_NATIVE_CONTRACT="$RUNTIME_CONTRACT" \
+      PR_SAFETY_WORKFLOW_ROOT="$WORKFLOW_ROOT" PR_SAFETY_SNAPSHOT_ROOT="$SNAPSHOT_ROOT" \
+      PR_SAFETY_POLICY_PATH="$POLICY_PATH" PR_SAFETY_POLICY_VERSION="$POLICY_VERSION" \
+      PR_SAFETY_POLICY_DIGEST="$policy_digest" HERMES_KANBAN_BRIDGE_BIN="$BRIDGE_BIN" \
+      "$INSTALL_DIR/venv/bin/python" -B "$BRIDGE_RECONCILE"
+    ;;
+  bridge-status)
+    launchctl print "system/$BRIDGE_LABEL" 2>/dev/null | awk -v name="$BRIDGE_LABEL" \
+      '/^[[:space:]]*state =/{print name ": " $0; found=1; exit} END{if(!found) print name ": not loaded"}'
     ;;
   dashboard-start)
     need_root
@@ -199,5 +390,5 @@ case "${1:-}" in
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

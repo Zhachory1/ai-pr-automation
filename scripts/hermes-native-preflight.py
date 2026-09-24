@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import plistlib
 import stat
 import subprocess
 from pathlib import Path
@@ -52,6 +53,13 @@ def main():
     parser.add_argument("--hermes-home", type=Path, required=True)
     parser.add_argument("--profile-source", type=Path, required=True)
     parser.add_argument("--service-user")
+    parser.add_argument("--bridge-preflight", type=Path)
+    parser.add_argument("--bridge-argument", action="append", default=[])
+    parser.add_argument("--gateway-plist", type=Path)
+    parser.add_argument("--gateway-wrapper", type=Path)
+    parser.add_argument("--maintenance-file", type=Path)
+    parser.add_argument("--snapshot-root", type=Path)
+    parser.add_argument("--workflow-root", type=Path)
     args = parser.parse_args()
 
     contract = {}
@@ -95,8 +103,28 @@ def main():
     if contract["HERMES_NATIVE_VERSION"] not in version:
         fail("Hermes version output does not match contract")
     run(*command, "-p", "smoke-v1", "profile", "show", "smoke-v1", env=environment)
+    gateway = None
+    if args.gateway_plist:
+        if not all((args.gateway_wrapper,args.maintenance_file,args.snapshot_root,args.workflow_root)):
+            fail("gateway preflight arguments incomplete")
+        with regular(args.gateway_plist).open("rb") as source: plist = plistlib.load(source)
+        expected_env = {"HOME":str(home.parent),"HERMES_HOME":str(home),"HERMES_BIN":str(launcher),
+                        "HERMES_COUNCIL_TOOLS_PYTHON":str(install / "venv/bin/python"),
+                        "HERMES_MAINTENANCE_FILE":str(args.maintenance_file),
+                        "HERMES_KANBAN_BUSY_TIMEOUT_MS":"120000",
+                        "PR_SAFETY_SNAPSHOT_ROOT":str(args.snapshot_root),
+                        "PR_SAFETY_WORKFLOW_ROOT":str(args.workflow_root)}
+        if (args.service_user and plist.get("UserName") != args.service_user) \
+                or plist.get("ProgramArguments") != [str(args.gateway_wrapper)] \
+                or plist.get("EnvironmentVariables") != expected_env or plist.get("RunAtLoad") is not False:
+            fail("gateway launchd configuration mismatch")
+        gateway = "ready"
+    bridge = None
+    if args.bridge_preflight:
+        bridge = json.loads(run(str(regular(args.bridge_preflight)), *args.bridge_argument))
     print(json.dumps({"status": "ready", "version": manifest["version"], "commit": manifest["commit"],
-                      "profile": "smoke-v1"}, sort_keys=True, separators=(",", ":")))
+                      "profile": "smoke-v1", "gateway": gateway, "bridge": bridge},
+                     sort_keys=True, separators=(",", ":")))
 
 
 if __name__ == "__main__":
