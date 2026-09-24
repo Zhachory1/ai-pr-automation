@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "workflow": "pr-risk-council",
+  "engine": "kanban",
+  "board": "pr-risk-council",
+  "deadline_seconds": 900,
+  "token_budget": 150000,
+  "max_active_workflows": 1,
+  "tools": [
+    "snapshot_read",
+    "snapshot_search",
+    "kanban_show",
+    "kanban_comment",
+    "kanban_heartbeat",
+    "kanban_complete",
+    "kanban_block"
+  ],
+  "profiles": {
+    "council-reviewer-v2": {
+      "source": "reviewer",
+      "role": "review",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "council-security-v2": {
+      "source": "security-engineer",
+      "role": "security",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "council-reliability-v2": {
+      "source": "site-reliability-engineer",
+      "role": "reliability",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "council-architect-v2": {
+      "source": "technical-architect",
+      "role": "architecture",
+      "model": "claude-haiku-4-5-20251001"
+    },
+    "council-orchestrator-v2": {
+      "source": "orchestrator",
+      "role": "synthesis",
+      "model": "claude-sonnet-5"
+    }
+  },
+  "task_graph": {
+    "specialists": ["review", "security", "reliability", "architecture"],
+    "synthesis": "synthesis",
+    "edges": [
+      ["review", "synthesis"],
+      ["security", "synthesis"],
+      ["reliability", "synthesis"],
+      ["architecture", "synthesis"]
+    ]
+  }
+}

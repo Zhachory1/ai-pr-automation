@@ -59,14 +59,19 @@ Need production graph identities without changing proven v1 canary profiles.
 
 Create:
 
-- `agent-config/hermes/workflows/pr-risk-council-kanban-v2.json`.
+- `agent-config/hermes/workflows/pr-risk-council-kanban-v2.json`;
+- `bin/hermes-council-tools`;
+- `tests/test-hermes-council-tools.py`.
 
 Modify:
 
 - `scripts/configure-hermes-kanban-profiles.py`;
 - `scripts/hermes-kanban-workflow-preflight.py`;
+- `scripts/hermes-native.sh`;
+- `launchd/com.example.ai-pr-automation-hermes.plist.template`;
 - `tests/test-hermes-kanban-profiles.py`;
-- `tests/test-hermes-kanban-workflow-preflight.py`.
+- `tests/test-hermes-kanban-workflow-preflight.py`;
+- `tests/test-hermes-native-foundation.sh`.
 
 ### Work
 
@@ -78,16 +83,23 @@ Modify:
   - `council-orchestrator-v2`.
 - Lock Haiku specialists and Sonnet synthesizer.
 - Keep fallback empty.
-- Keep memory, MCP, plugins, web, terminal, delegation, and connections off.
-- Enable only `read_file`, `search_files`, and worker-owned Kanban lifecycle tools.
-- Prove effective schemas from pinned runtime. Do not trust config text alone.
+- Keep memory, plugins, web, terminal, delegation, connections, built-in file tools, and all other MCP off.
+- Add bounded repo-owned stdio MCP with exactly `snapshot_read`, `snapshot_search`, `kanban_show`, `kanban_comment`, `kanban_heartbeat`, `kanban_complete`, and `kanban_block`; define the mode-0440 `.council-tools.json` protocol under the validated `COUNCIL_WORKSPACE` alias interpolated from `HERMES_KANBAN_WORKSPACE`.
+- Keep Kanban task, board, run, and claim lock out of model schemas. MCP config interpolates worker identity, DB, workspace, roots, profile, and interpreter into explicit `COUNCIL_*` aliases so pinned safe-env filtering cannot drop them. Validate aliases; restore only required task, run, claim lock, board, DB, and profile env around exact pinned handlers; remove the delegated-child marker only there because this MCP is the explicitly supervised own-task transport.
+- Set `platform_toolsets.cli: [council-tools]` and `agent.disabled_toolsets: [delegation, kanban]` so pinned worker auto-tools cannot add create, link, list, unblock, review-routing, attachment, or URL capabilities.
+- Confine logical snapshot/input paths to validated `COUNCIL_SNAPSHOT_ROOT` and `COUNCIL_WORKFLOW_ROOT` aliases interpolated from `PR_SAFETY_SNAPSHOT_ROOT` and `PR_SAFETY_WORKFLOW_ROOT`; reject absolute paths, `..`, symlinks, non-regular files, non-UTF-8 text, paths over 4,096 characters or 32 components, and bound violations.
+- Enforce fixed 256 KiB JSON-RPC request, 1 MiB file, 2,000-file/4,096-entry/32-level/16 MiB search, 100-result, 256-character query, 2,000-character returned-line, and bounded Kanban text/metadata limits.
+- Defer `PR_SAFETY_WORKFLOW_ROOT`, binding creation, and live bound reads to PR 3 bridge work.
+- Install root-owned mode 0555 at `/usr/local/libexec/ai-pr-automation/hermes-council-tools`, verify installed bytes match repo source, and pin its interpreter to the installed Hermes venv through launchd env.
+- Prove exact seven MCP-prefixed model definitions through real stdio MCP discovery (`initialize` and `tools/list`), full canonical schemas, zero built-ins, exact model, alias interpolation, and empty fallback lists from pinned runtime. Do not trust config text alone.
 - Keep v1 check/apply/restore behavior unchanged.
 
 ### Acceptance
 
 - V1 profile bytes and contract unchanged.
-- V2 check reports exact five profiles/models/tools.
-- Any write/terminal/web/effect tool fails preflight.
+- V2 check reports exact five profiles, models, and seven tools.
+- Council-tools protocol and unit confinement tests prove bounded read/search, fail-closed path handling, required worker env, own-task-only routing, and exact pinned handler calls; no live bound read is claimed.
+- Any built-in Kanban, write/terminal/web/effect, or extra MCP tool fails preflight.
 - Any Opus/fallback fails preflight.
 - Check mode writes zero state.
 - Apply/restore remains stopped-service only.
@@ -95,10 +107,10 @@ Modify:
 ### Validation
 
 ```bash
-python3 -m unittest tests.test_hermes_kanban_profiles tests.test_hermes_kanban_workflow_preflight
+python3 -m unittest tests/test-hermes-kanban-profiles.py tests/test-hermes-kanban-workflow-preflight.py tests/test-hermes-council-tools.py
 ```
 
-Live read-only check as `hermes-agent`. No apply in this PR.
+Run pinned-runtime effective-tool preflight as `hermes-agent`. Do not configure `PR_SAFETY_WORKFLOW_ROOT`, perform a live bound read, apply profiles, or activate a route in this PR.
 
 ## PR 2: Fixed Graph And Pure Mapping
 

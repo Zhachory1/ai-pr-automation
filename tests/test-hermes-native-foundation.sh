@@ -70,6 +70,11 @@ grep -Fq 'scripts/configure-hermes-api.py' scripts/hermes-native.sh
 grep -Fq '/Users/hermes-agent/.hermes/hermes-agent/venv/bin/python scripts/hermes-kanban-workflow-preflight.py' docs/hermes/README.md
 grep -Fq 'scripts/hermes-kanban-council-canary.py setup' docs/hermes/README.md
 grep -Fq 'install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"' scripts/hermes-native.sh
+grep -Fq 'install -m 0555 -o root -g wheel "$ROOT/bin/hermes-council-tools" "$SUPPORT_ROOT/hermes-council-tools"' scripts/hermes-native.sh
+grep -Fq 'cmp -s "$ROOT/bin/hermes-council-tools" "$SUPPORT_ROOT/hermes-council-tools"' scripts/hermes-native.sh
+! grep -Fq 'hermes-snapshot-reader' scripts/hermes-native.sh
+grep -Fq '<key>HERMES_COUNCIL_TOOLS_PYTHON</key><string>__HERMES_INSTALL_DIR__/venv/bin/python</string>' launchd/com.example.ai-pr-automation-hermes.plist.template
+grep -Fq '"__HERMES_INSTALL_DIR__":install_dir' scripts/hermes-native.sh
 grep -Fq 'HERMES_API_KEYS_FILE=' scripts/hermes-native.sh
 grep -Fq '/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json' scripts/hermes-native.sh
 grep -Fq 'os.chown(args.keys_file, operator.pw_uid, operator.pw_gid)' scripts/configure-hermes-api.py

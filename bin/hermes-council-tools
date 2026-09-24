@@ -1,0 +1,495 @@
+#!/usr/bin/env python3
+"""Bounded snapshot and own-task Kanban stdio MCP for PR safety councils."""
+import json
+import os
+import re
+import stat
+import sys
+from contextlib import contextmanager
+from pathlib import Path, PurePosixPath
+
+PROTOCOL = "2024-11-05"
+BINDING = ".council-tools.json"
+MAX_REQUEST_BYTES = 262_144
+MAX_BINDING_BYTES = 4_096
+MAX_PATH_CHARS = 4_096
+MAX_PATH_DEPTH = 32
+MAX_FILE_BYTES = 1_048_576
+MAX_SEARCH_FILES = 2_000
+MAX_SEARCH_ENTRIES = 4_096
+MAX_SEARCH_DEPTH = 32
+MAX_SEARCH_BYTES = 16_777_216
+MAX_SEARCH_RESULTS = 100
+MAX_QUERY_CHARS = 256
+MAX_LINE_CHARS = 2_000
+MAX_KANBAN_TEXT_CHARS = 16_000
+MAX_HEARTBEAT_CHARS = 2_000
+MAX_METADATA_BYTES = 65_536
+MAX_METADATA_DEPTH = 16
+MAX_METADATA_ENTRIES = 1_024
+MAX_TOOL_RESULT_CHARS = 1_048_576
+NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def object_schema(properties, required=()):
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(required),
+        "additionalProperties": False,
+    }
+
+
+PATH_SCHEMA = {"type":"string","minLength":1,"maxLength":MAX_PATH_CHARS}
+TEXT_SCHEMA = {"type":"string","minLength":1,"maxLength":MAX_KANBAN_TEXT_CHARS}
+TOOLS = [
+    {
+        "name": "snapshot_read",
+        "description": "Read one bounded UTF-8 file from the bound snapshot or workflow input.",
+        "inputSchema": object_schema({"path": PATH_SCHEMA}, ("path",)),
+    },
+    {
+        "name": "snapshot_search",
+        "description": "Search bounded UTF-8 files for a literal string in the bound snapshot or workflow input.",
+        "inputSchema": object_schema({
+            "path": PATH_SCHEMA,
+            "query": {"type":"string","minLength":1,"maxLength":MAX_QUERY_CHARS},
+            "max_results": {"type":"integer","minimum":1,"maximum":MAX_SEARCH_RESULTS},
+        }, ("path", "query")),
+    },
+    {
+        "name": "kanban_show",
+        "description": "Show only the Kanban task assigned to this worker.",
+        "inputSchema": object_schema({}),
+    },
+    {
+        "name": "kanban_comment",
+        "description": "Add a bounded comment only to the Kanban task assigned to this worker.",
+        "inputSchema": object_schema({"body": TEXT_SCHEMA}, ("body",)),
+    },
+    {
+        "name": "kanban_heartbeat",
+        "description": "Heartbeat only the Kanban task and claim assigned to this worker.",
+        "inputSchema": object_schema({
+            "note": {"type":"string","minLength":1,"maxLength":MAX_HEARTBEAT_CHARS},
+        }),
+    },
+    {
+        "name": "kanban_complete",
+        "description": "Complete only the Kanban task and run assigned to this worker.",
+        "inputSchema": object_schema({
+            "summary": TEXT_SCHEMA,
+            "metadata": {"type":"object","maxProperties":64,"additionalProperties":True,
+                         "description":"Bounded structured handoff metadata. The artifacts key is forbidden."},
+        }, ("summary", "metadata")),
+    },
+    {
+        "name": "kanban_block",
+        "description": "Block only the Kanban task and run assigned to this worker.",
+        "inputSchema": object_schema({
+            "reason": TEXT_SCHEMA,
+            "kind": {"type":"string","enum":["dependency","needs_input","capability","transient"]},
+        }, ("reason", "kind")),
+    },
+]
+TOOL_BY_NAME = {tool["name"]: tool for tool in TOOLS}
+KANBAN_HANDLERS = {
+    "kanban_show": "_handle_show",
+    "kanban_comment": "_handle_comment",
+    "kanban_heartbeat": "_handle_heartbeat",
+    "kanban_complete": "_handle_complete",
+    "kanban_block": "_handle_block",
+}
+COUNCIL_ALIASES = {
+    "task":"COUNCIL_TASK_ID", "run_id":"COUNCIL_RUN_ID",
+    "claim_lock":"COUNCIL_CLAIM_LOCK", "board":"COUNCIL_BOARD",
+    "db":"COUNCIL_DB", "workspace":"COUNCIL_WORKSPACE",
+    "snapshot_root":"COUNCIL_SNAPSHOT_ROOT", "workflow_root":"COUNCIL_WORKFLOW_ROOT",
+    "profile":"COUNCIL_PROFILE", "python":"COUNCIL_TOOLS_PYTHON",
+}
+HANDLER_ENV = {
+    "task":"HERMES_KANBAN_TASK", "run_id":"HERMES_KANBAN_RUN_ID",
+    "claim_lock":"HERMES_KANBAN_CLAIM_LOCK", "board":"HERMES_KANBAN_BOARD",
+    "db":"HERMES_KANBAN_DB", "profile":"HERMES_PROFILE",
+}
+BOARD_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+def validated_aliases():
+    values = {name:os.environ.get(env_name, "") for name, env_name in COUNCIL_ALIASES.items()}
+    missing = [COUNCIL_ALIASES[name] for name, value in values.items() if not value]
+    if missing:
+        fail("missing required council environment: " + ", ".join(missing))
+    if len(values["task"]) > 128 or len(values["claim_lock"]) > 256 \
+            or any("\n" in value or "\r" in value for value in values.values()):
+        fail("invalid council environment")
+    try:
+        if int(values["run_id"]) <= 0:
+            raise ValueError
+    except ValueError:
+        fail("COUNCIL_RUN_ID must be a positive integer")
+    if not BOARD_RE.fullmatch(values["board"]):
+        fail("invalid COUNCIL_BOARD")
+    if not PROFILE_RE.fullmatch(values["profile"]):
+        fail("invalid COUNCIL_PROFILE")
+    db = Path(values["db"])
+    if not db.is_absolute() or db.is_symlink() or not db.is_file():
+        fail("COUNCIL_DB must be an absolute regular file")
+    for name in ("workspace", "snapshot_root", "workflow_root"):
+        path = Path(values[name])
+        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+            fail(f"COUNCIL_{name.upper()} must be an absolute directory")
+    python = Path(values["python"])
+    if not python.is_absolute() or not os.access(python, os.X_OK):
+        fail("COUNCIL_TOOLS_PYTHON must be an absolute executable")
+    return values
+
+
+def ensure_pinned_runtime(configured):
+    candidate = Path(configured)
+    if candidate.resolve() != Path(sys.executable).resolve():
+        os.execve(candidate, [str(candidate), "-B", str(Path(__file__).resolve())], os.environ)
+
+
+def reject_symlink_components(path, label):
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            fail(f"unsafe {label} root")
+
+
+def safe_binding(aliases):
+    workspace = Path(aliases["workspace"])
+    if workspace.is_symlink() or not workspace.is_dir():
+        fail("unsafe Kanban workspace")
+    path = workspace / BINDING
+    fd = os.open(path, os.O_RDONLY | NOFOLLOW | NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1 \
+                or stat.S_IMODE(info.st_mode) != 0o440 or info.st_size > MAX_BINDING_BYTES:
+            fail("unsafe council tools binding")
+        data = json.loads(os.read(fd, MAX_BINDING_BYTES + 1))
+    finally:
+        os.close(fd)
+    if not isinstance(data, dict) or set(data) != {"schema_version", "snapshot_root", "input_root"} \
+            or data["schema_version"] != 1:
+        fail("invalid council tools binding")
+    roots = {}
+    for name, alias_name in (("snapshot", "snapshot_root"), ("input", "workflow_root")):
+        allowed_value, bound_value = aliases[alias_name], data[f"{name}_root"]
+        if not allowed_value or not os.path.isabs(allowed_value) or not isinstance(bound_value, str) \
+                or not os.path.isabs(bound_value):
+            fail(f"invalid {name} root")
+        allowed_path, bound_path = Path(allowed_value), Path(bound_value)
+        reject_symlink_components(allowed_path, name)
+        reject_symlink_components(bound_path, name)
+        try:
+            relative = bound_path.relative_to(allowed_path)
+        except ValueError:
+            fail(f"{name} root escaped configured root")
+        if ".." in relative.parts:
+            fail(f"{name} root escaped configured root")
+        allowed, bound = allowed_path.resolve(strict=True), bound_path.resolve(strict=True)
+        if bound != allowed and allowed not in bound.parents:
+            fail(f"{name} root escaped configured root")
+        if allowed_path.is_symlink() or bound_path.is_symlink() or not allowed.is_dir() or not bound.is_dir():
+            fail(f"unsafe {name} root")
+        roots[name] = bound
+    return roots
+
+
+def logical_path(value, allow_root=False):
+    if not isinstance(value, str) or not value or len(value) > MAX_PATH_CHARS or "\\" in value:
+        fail("path must be a bounded logical snapshot/ or input/ path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts) \
+            or path.parts[0] not in {"snapshot", "input"} or len(path.parts) - 1 > MAX_PATH_DEPTH \
+            or (len(path.parts) == 1 and not allow_root):
+        fail("path must be a bounded logical snapshot/ or input/ path")
+    return path.parts[0], path.parts[1:]
+
+
+def open_beneath(root, parts):
+    fd = os.open(root, os.O_RDONLY | NOFOLLOW | NONBLOCK)
+    try:
+        for part in parts:
+            child = os.open(part, os.O_RDONLY | NOFOLLOW | NONBLOCK, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def read_fd(fd):
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_FILE_BYTES:
+        fail("file is not a bounded regular file")
+    data = b""
+    while len(data) <= MAX_FILE_BYTES:
+        chunk = os.read(fd, min(65_536, MAX_FILE_BYTES + 1 - len(data)))
+        if not chunk:
+            break
+        data += chunk
+    if len(data) > MAX_FILE_BYTES:
+        fail("file exceeds read limit")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        fail("file is not UTF-8 text")
+
+
+def snapshot_read(arguments, aliases):
+    roots = safe_binding(aliases)
+    name, parts = logical_path(arguments["path"])
+    fd = open_beneath(roots[name], parts)
+    try:
+        return read_fd(fd)
+    finally:
+        os.close(fd)
+
+
+def snapshot_search(arguments, aliases):
+    query, limit = arguments["query"], arguments.get("max_results", MAX_SEARCH_RESULTS)
+    roots = safe_binding(aliases)
+    name, parts = logical_path(arguments["path"], allow_root=True)
+    start = open_beneath(roots[name], parts)
+    base = "/".join((name, *parts))
+    files = entries = bytes_seen = 0
+    matches = []
+    stack = [{"fd":start,"logical":base,"depth":len(parts),"iterator":None}]
+    try:
+        while stack:
+            frame = stack[-1]
+            info = os.fstat(frame["fd"])
+            if stat.S_ISREG(info.st_mode):
+                files += 1
+                if files > MAX_SEARCH_FILES or info.st_size > MAX_FILE_BYTES \
+                        or bytes_seen + info.st_size > MAX_SEARCH_BYTES:
+                    fail("snapshot_search scan limit exceeded")
+                bytes_seen += info.st_size
+                text = read_fd(frame["fd"])
+                for number, line in enumerate(text.splitlines(), 1):
+                    if query in line:
+                        matches.append({"path":frame["logical"],"line":number,"text":line[:MAX_LINE_CHARS]})
+                        if len(matches) > limit:
+                            break
+                os.close(frame["fd"]); stack.pop()
+                if len(matches) > limit:
+                    break
+                continue
+            if not stat.S_ISDIR(info.st_mode):
+                fail("search path contains non-regular entry")
+            if frame["iterator"] is None:
+                frame["iterator"] = os.scandir(frame["fd"])
+            try:
+                entry = next(frame["iterator"])
+            except StopIteration:
+                frame["iterator"].close(); os.close(frame["fd"]); stack.pop()
+                continue
+            entries += 1
+            if entries > MAX_SEARCH_ENTRIES:
+                fail("snapshot_search entry limit exceeded")
+            child = os.open(entry.name, os.O_RDONLY | NOFOLLOW | NONBLOCK, dir_fd=frame["fd"])
+            child_info = os.fstat(child)
+            if stat.S_ISDIR(child_info.st_mode) and frame["depth"] >= MAX_SEARCH_DEPTH:
+                os.close(child)
+                fail("snapshot_search depth limit exceeded")
+            stack.append({"fd":child,"logical":f"{frame['logical']}/{entry.name}",
+                          "depth":frame["depth"] + 1,"iterator":None})
+    finally:
+        for frame in stack:
+            if frame["iterator"] is not None:
+                frame["iterator"].close()
+            try:
+                os.close(frame["fd"])
+            except OSError:
+                pass
+    return json.dumps({"matches":matches[:limit],"truncated":len(matches) > limit},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def validate_metadata(value):
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(encoded) > MAX_METADATA_BYTES or len(value) > 64:
+        fail("kanban_complete metadata exceeds limit")
+    if "artifacts" in value:
+        fail("kanban_complete metadata may not declare artifacts")
+    entries = 0
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > MAX_METADATA_DEPTH:
+            fail("kanban_complete metadata depth exceeds limit")
+        if isinstance(item, dict):
+            entries += len(item)
+            stack.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            entries += len(item)
+            stack.extend((child, depth + 1) for child in item)
+        elif isinstance(item, str) and len(item) > MAX_KANBAN_TEXT_CHARS:
+            fail("kanban_complete metadata string exceeds limit")
+        if entries > MAX_METADATA_ENTRIES:
+            fail("kanban_complete metadata entry limit exceeded")
+
+
+def validate_arguments(name, arguments):
+    schema = TOOL_BY_NAME[name]["inputSchema"]
+    if not isinstance(arguments, dict) or set(arguments) - set(schema["properties"]) \
+            or not set(schema["required"]) <= set(arguments):
+        fail(f"invalid arguments for {name}")
+    for key, value in arguments.items():
+        prop = schema["properties"][key]
+        kind = prop["type"]
+        if kind == "string":
+            if not isinstance(value, str) or len(value) < prop.get("minLength", 0) \
+                    or len(value) > prop.get("maxLength", sys.maxsize) \
+                    or "enum" in prop and value not in prop["enum"]:
+                fail(f"invalid {key} for {name}")
+        elif kind == "integer":
+            if isinstance(value, bool) or not isinstance(value, int) \
+                    or value < prop.get("minimum", value) or value > prop.get("maximum", value):
+                fail(f"invalid {key} for {name}")
+        elif kind == "object":
+            if not isinstance(value, dict):
+                fail(f"invalid {key} for {name}")
+            validate_metadata(value)
+
+
+@contextmanager
+def own_task_handler_env(aliases):
+    previous = dict(os.environ)
+    try:
+        for key in tuple(os.environ):
+            if key.startswith("HERMES_KANBAN_"):
+                os.environ.pop(key, None)
+        os.environ.update({env_name:aliases[name] for name, env_name in HANDLER_ENV.items()})
+        # MCP safe-env marks descendants as delegated. This server is the dispatcher's
+        # explicitly supervised own-task transport, so only this handler scope removes that fence.
+        os.environ.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
+
+
+def kanban_call(name, arguments, aliases):
+    with own_task_handler_env(aliases):
+        from hermes_cli import kanban_db
+        if kanban_db._normalize_board_slug(aliases["board"]) != aliases["board"] \
+                or Path(kanban_db.kanban_db_path(board=aliases["board"])).resolve() != Path(aliases["db"]).resolve():
+            fail("council DB/board binding mismatch")
+        from tools import kanban_tools
+        handler = getattr(kanban_tools, KANBAN_HANDLERS[name])
+        forwarded = {"task_id":aliases["task"],"board":aliases["board"],**arguments}
+        text = handler(forwarded)
+    if not isinstance(text, str) or len(text) > MAX_TOOL_RESULT_CHARS:
+        fail(f"{name} returned an invalid or oversized result")
+    try:
+        parsed = json.loads(text)
+        is_error = isinstance(parsed, dict) and "error" in parsed
+    except json.JSONDecodeError:
+        is_error = False
+    return text, is_error
+
+
+def send(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def result(req_id, text, is_error=False):
+    body = {"content": [{"type": "text", "text": text}]}
+    if is_error:
+        body["isError"] = True
+    send({"jsonrpc": "2.0", "id": req_id, "result": body})
+
+
+def rpc_error(req_id, code, message):
+    send({"jsonrpc":"2.0","id":req_id,"error":{"code":code,"message":message}})
+
+
+def read_requests():
+    while True:
+        raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
+        if not raw:
+            return
+        if len(raw) > MAX_REQUEST_BYTES:
+            while raw and not raw.endswith(b"\n"):
+                raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
+            rpc_error(None, -32700, "request line too long")
+            continue
+        try:
+            yield json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            rpc_error(None, -32700, "parse error")
+
+
+def main():
+    aliases = validated_aliases()
+    ensure_pinned_runtime(aliases["python"])
+    for message in read_requests():
+        if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" \
+                or not isinstance(message.get("method"), str):
+            rpc_error(message.get("id") if isinstance(message, dict) else None, -32600, "invalid request")
+            continue
+        req_id, method, params = message.get("id"), message["method"], message.get("params", {})
+        if "id" in message and (isinstance(req_id, bool) or not isinstance(req_id, (str, int, type(None)))):
+            rpc_error(None, -32600, "invalid request")
+            continue
+        reply = "id" in message
+        if method == "initialize":
+            if not isinstance(params, dict):
+                if reply:
+                    rpc_error(req_id, -32602, "invalid params")
+            elif reply:
+                send({"jsonrpc": "2.0", "id": req_id, "result": {
+                    "protocolVersion": PROTOCOL,
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": "hermes-council-tools", "version": "1.0.0"},
+                }})
+        elif method in ("notifications/initialized", "initialized"):
+            if not isinstance(params, dict) and reply:
+                rpc_error(req_id, -32602, "invalid params")
+        elif method == "tools/list":
+            if not isinstance(params, dict):
+                if reply:
+                    rpc_error(req_id, -32602, "invalid params")
+            elif reply:
+                send({"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}})
+        elif method == "tools/call":
+            if not isinstance(params, dict) or set(params) != {"name", "arguments"} \
+                    or not isinstance(params.get("name"), str) or not isinstance(params.get("arguments"), dict) \
+                    or params["name"] not in TOOL_BY_NAME:
+                if reply:
+                    rpc_error(req_id, -32602, "invalid params")
+                continue
+            try:
+                name, arguments = params["name"], params["arguments"]
+                validate_arguments(name, arguments)
+                if name == "snapshot_read":
+                    text, is_error = snapshot_read(arguments, aliases), False
+                elif name == "snapshot_search":
+                    text, is_error = snapshot_search(arguments, aliases), False
+                else:
+                    text, is_error = kanban_call(name, arguments, aliases)
+                if reply:
+                    result(req_id, text, is_error)
+            except Exception as error:
+                if reply:
+                    result(req_id, str(error), True)
+        elif reply:
+            rpc_error(req_id, -32601, "method not found")
+
+
+if __name__ == "__main__":
+    main()

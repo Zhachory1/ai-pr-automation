@@ -15,13 +15,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("kanban_profiles", ROOT / "scripts/configure-hermes-kanban-profiles.py")
 profiles = importlib.util.module_from_spec(spec); spec.loader.exec_module(profiles)
 CONTRACT_PATH = ROOT / "agent-config/hermes/workflows/pr-risk-council-kanban.json"
+V2_CONTRACT_PATH = ROOT / "agent-config/hermes/workflows/pr-risk-council-kanban-v2.json"
 CONTRACT = profiles.load_contract(CONTRACT_PATH)
+V2_CONTRACT = profiles.load_contract(V2_CONTRACT_PATH)
 
 
 class KanbanCouncilProfilesTest(unittest.TestCase):
-    def home(self, root):
+    def home(self, root, contract=CONTRACT):
         home = root / ".hermes"; (home / "profiles").mkdir(parents=True)
-        for value in CONTRACT["profiles"].values():
+        for value in contract["profiles"].values():
             source = home / "profiles" / value["source"]; (source / "skills/example").mkdir(parents=True)
             (source / "SOUL.md").write_text(f"# {value['role']}\n")
             (source / "skills/example/SKILL.md").write_text("# Example\n")
@@ -54,6 +56,45 @@ class KanbanCouncilProfilesTest(unittest.TestCase):
             self.assertTrue(profiles.restore(home, CONTRACT, os.getuid(), os.getgid())["restored"])
             self.assertEqual(source.read_bytes(), original)
             self.assertFalse(any((home / "profiles" / target).exists() for target in CONTRACT["profiles"]))
+
+    def test_v2_check_apply_and_restore_use_exact_council_tool_profiles(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = self.home(pathlib.Path(td), V2_CONTRACT)
+            before = {path.relative_to(home):path.read_bytes() for path in home.rglob("*") if path.is_file()}
+            checked = profiles.check(home, V2_CONTRACT, os.getuid())
+            self.assertEqual({path.relative_to(home):path.read_bytes() for path in home.rglob("*") if path.is_file()}, before)
+            self.assertEqual(checked["writes"], 0)
+            self.assertEqual(checked["profiles"], V2_CONTRACT["profiles"])
+            self.assertEqual(checked["tools"], profiles.COUNCIL_TOOLS)
+            result = profiles.apply(home, V2_CONTRACT, os.getuid(), os.getgid())
+            self.assertEqual(set(result["profiles"]), set(V2_CONTRACT["profiles"]))
+            self.assertTrue(profiles.state_path(home, V2_CONTRACT).is_file())
+            self.assertFalse(profiles.state_path(home, CONTRACT).exists())
+            for target, policy in V2_CONTRACT["profiles"].items():
+                root = home / "profiles" / target
+                config = yaml.safe_load((root / "config.yaml").read_text())
+                self.assertEqual(config, profiles.profile_config(policy["role"], policy["model"], 2))
+                self.assertEqual(config["platform_toolsets"], {"cli":["council-tools"],"api_server":["no_mcp"]})
+                self.assertEqual(config["agent"]["disabled_toolsets"], ["delegation", "kanban"])
+                self.assertEqual(config["mcp_servers"], {"council-tools":{
+                    "command":"/usr/local/libexec/ai-pr-automation/hermes-council-tools",
+                    "args":[],"env":profiles.COUNCIL_ENV,"enabled":True,
+                    "tools":{"include":profiles.COUNCIL_TOOLS}}})
+                self.assertFalse((root / "mcp.json").exists())
+            self.assertTrue(profiles.restore(home, V2_CONTRACT, os.getuid(), os.getgid())["restored"])
+            self.assertFalse(profiles.state_path(home, V2_CONTRACT).exists())
+
+    def test_v2_contract_rejects_source_model_and_graph_drift(self):
+        for mutate, message in (
+            (lambda data: data["profiles"]["council-security-v2"].update(source="reviewer"), "source profile changed"),
+            (lambda data: data["profiles"]["council-reviewer-v2"].update(model="claude-opus-5"), "model cost policy changed"),
+            (lambda data: data["task_graph"]["edges"].pop(), "workflow contract changed"),
+            (lambda data: data["tools"].append("kanban_create"), "workflow contract"),
+        ):
+            data = json.loads(V2_CONTRACT_PATH.read_text()); mutate(data)
+            with tempfile.TemporaryDirectory() as td:
+                path = pathlib.Path(td) / "contract.json"; path.write_text(json.dumps(data))
+                with self.assertRaisesRegex(ValueError, message): profiles.load_contract(path)
 
     def test_existing_target_or_symlink_source_fails_before_writes(self):
         with tempfile.TemporaryDirectory() as td:
