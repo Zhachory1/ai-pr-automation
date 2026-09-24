@@ -153,6 +153,14 @@ scripts/fleet.sh logs
 scripts/fleet.sh down
 ```
 
+For a pinned Hermes version change, stop both control planes before replacing runtime bytes:
+
+```bash
+scripts/fleet.sh down
+sudo scripts/hermes-native.sh install
+PR_SAFETY_ANALYSIS_ENGINE=single scripts/fleet.sh up
+```
+
 `sync-support` also unloads and removes old dispatcher/producer LaunchDaemons and installed queue
 runner binaries. It installs the root-owned safety bridge, v2 workflow support, read-only reconcile and
 preflight commands, creates its state directories, and renders its launchd plist. Bridge HMAC key defaults

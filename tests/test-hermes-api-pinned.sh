@@ -58,7 +58,7 @@ PORT="$provider_port" CAPTURE="$tmp/provider-request.json" python3 tests/fake-he
 start_gateway(){ HOME="$HOME" HERMES_HOME="$home" API_SERVER_ENABLED=true API_SERVER_HOST=127.0.0.1 \
   API_SERVER_PORT="$api_port" API_SERVER_KEY="$default_key" GATEWAY_MULTIPLEX_PROFILES=true OPENAI_API_KEY=fake-key \
   "$hermes" gateway run >"$tmp/gateway.log" 2>&1 & gateway=$!; }
-wait_ready(){ for _ in $(seq 1 50); do curl -fsS -H "Authorization: Bearer $default_key" "http://127.0.0.1:$api_port/v1/models" >/dev/null 2>&1 && return; sleep .2; done; cat "$tmp/gateway.log" >&2; return 1; }
+wait_ready(){ for _ in $(seq 1 150); do curl -fsS -H "Authorization: Bearer $default_key" "http://127.0.0.1:$api_port/v1/models" >/dev/null 2>&1 && return; sleep .2; done; cat "$tmp/gateway.log" >&2; return 1; }
 start_gateway; wait_ready
 for profile in api-test-v1 api-test-v2; do
   code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $default_key" \

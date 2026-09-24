@@ -94,8 +94,7 @@ def effective_input_schema(value):
     result = {key:effective_input_schema(item) for key, item in value.items()}
     if result.get("type") == "object":
         result.setdefault("properties", {})
-        if result.get("required") == []:
-            result.pop("required")
+        result.setdefault("required", [])
     return result
 
 
