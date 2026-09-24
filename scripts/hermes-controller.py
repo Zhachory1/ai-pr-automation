@@ -422,6 +422,12 @@ class Controller:
                     return response["run_id"]
                 return None
             if status == 409:
+                # 409 means the Hermes API received a duplicate submission and the run
+                # outcome is unknown.  For idempotent kinds (pr-review) that is a safe
+                # retry (failed); for side-effectful kinds (doc-write, pr-maintain,
+                # swe-implement) the state is genuinely ambiguous so we reconcile rather
+                # than risk a duplicate side effect.  This differs from failure_settlement,
+                # which treats *known* failures of doc-write as retryable (failed).
                 settlement = "failed" if attempt["kind"] == "pr-review" else "reconcile"
                 self.settle(attempt, settlement, "Hermes idempotency conflict", attempt_state=settlement)
                 return None
