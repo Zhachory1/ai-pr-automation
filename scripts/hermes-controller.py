@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 import psycopg
 from psycopg.rows import dict_row
 
+from hermes_pr_safety_result import map_council_safety, normalize_safety, publish_safety_handoff, valid_safety
+
 KINDS = {
     "pr-review": ("pr-review-v1", 1),
     "pr-maintain": ("pr-maintain-v1", 3),
@@ -141,93 +143,6 @@ def parse_safety_output(output):
 
 def parse_direct_output(output):
     return parse_embedded_output(output, {"detail", "nonce", "posted_ref", "status"})
-
-
-def normalize_safety(value):
-    if not isinstance(value, dict): return value
-    value = dict(value)
-    value.pop("snapshot_path", None); value.pop("policy_path", None)
-    incident = value.get("incident")
-    if isinstance(incident, dict) and incident.get("candidate") is True:
-        value["status"] = "incident_candidate"
-    return value
-
-
-def valid_council_incident_evidence(value):
-    return isinstance(value, list) and bool(value) and all(
-        strict_object(item, {"path","line","side","quote"})
-        and isinstance(item["path"], str) and bool(item["path"]) and len(item["path"]) <= 4096
-        and not pathlib.PurePosixPath(item["path"]).is_absolute()
-        and ".." not in pathlib.PurePosixPath(item["path"]).parts
-        and type(item["line"]) is int and item["line"] > 0 and item["side"] in {"old","new"}
-        and isinstance(item["quote"], str) and bool(item["quote"]) and len(item["quote"]) <= 2000
-        for item in value)
-
-
-def map_council_safety(package, payload, nonce):
-    copied = json.loads(canonical(package))
-    incident = copied["incident"]
-    predicates = ("changed_line_cause", "concrete_trigger", "severe_impact",
-                  "high_confidence_chain", "stop_rollback_or_page")
-    verdict_candidate = copied["verdict"] == "incident_candidate"
-    if incident["candidate"] is not verdict_candidate \
-            or incident["candidate"] is not all(incident[key] is True for key in predicates):
-        raise ValueError("inconsistent council incident candidate")
-    if (verdict_candidate or incident["candidate"] or any(incident[key] is True for key in predicates)) \
-            and not valid_council_incident_evidence(incident.get("evidence")):
-        raise ValueError("council incident candidate requires evidence")
-    incident_candidate = verdict_candidate and all(incident[key] is True for key in predicates)
-    human = list(copied["human_decisions_needed"])
-    for item in copied["dissent"]:
-        if item["disposition"] == "unresolved" and item not in human: human.append(item)
-    for item in copied["residual_risk"]:
-        if item["requires_human_decision"] is True and item not in human: human.append(item)
-    status = {"clear":"clear","changes_requested":"changes_requested",
-              "needs_human_decision":"needs_human_decision","incident_candidate":"needs_human_decision",
-              "inconclusive":"needs_human_decision"}[copied["verdict"]]
-    if incident_candidate: status = "incident_candidate"
-    gaps = bool(copied["findings"] or human or incident["evidence"]
-                or copied["coverage"].get("gaps") or copied["documentation"].get("required_updates")
-                or copied["observability"].get("recommended_metrics")
-                or copied["observability"].get("recommended_slos_or_runbooks"))
-    if status == "clear" and gaps: status = "changes_requested"
-    coverage = copied["coverage"]
-    coverage["council"] = {"workflow_id":copied["workflow_id"],
-                           "artifact_digest":copied["artifact_digest"],
-                           "dissent":copied["dissent"],"residual_risk":copied["residual_risk"]}
-    mapped_incident = dict(incident, candidate=incident_candidate)
-    identity = {key:payload[key] for key in ("operation_id","repo","pr","head_sha","base_sha","diff_hash",
-                                              "policy_version","policy_digest")}
-    return {"nonce":nonce,**identity,"status":status,"intent":copied["intent"],
-            "findings":copied["findings"],"coverage":coverage,"documentation":copied["documentation"],
-            "observability":copied["observability"],"incident":mapped_incident,
-            "human_decisions_needed":human}
-
-
-def valid_safety(value, payload, nonce):
-    required = {"nonce", "operation_id", "repo", "pr", "head_sha", "base_sha", "diff_hash",
-                "policy_version", "policy_digest", "status", "intent", "findings", "coverage",
-                "documentation", "observability", "incident", "human_decisions_needed"}
-    if not strict_object(value, required):
-        return False
-    if value.get("nonce") != nonce:
-        return False
-    for key in ("operation_id", "repo", "pr", "head_sha", "base_sha", "diff_hash",
-                "policy_version", "policy_digest"):
-        if value.get(key) != payload.get(key):
-            return False
-    if value["status"] not in {"clear", "changes_requested", "needs_human_decision", "incident_candidate", "superseded"}:
-        return False
-    if not isinstance(value["findings"], list) or not isinstance(value["human_decisions_needed"], list):
-        return False
-    incident = value.get("incident")
-    if not isinstance(incident, dict) or not isinstance(incident.get("candidate"), bool):
-        return False
-    if (value["status"] == "incident_candidate") != incident["candidate"]:
-        return False
-    if value["status"] == "clear" and (value["findings"] or value["human_decisions_needed"] or incident["candidate"]):
-        return False
-    return True
 
 
 def valid_memories(value):
@@ -722,26 +637,7 @@ class Controller:
             (attempt["request_id"], attempt["attempt_no"], nonce))
 
     def write_safety_handoff(self, attempt, value):
-        payload = attempt["payload"]
-        name = f"{payload['repo'].replace('/', '__')}__pr{payload['pr']}__{payload['operation_id']}.md"
-        target = pathlib.Path(os.environ["HANDOFF_ROOT"]) / name
-        body = ("<!-- pr-safety identity\n" + "\n".join(f"{key}: {payload[key]}" for key in
-            ("operation_id","repo","pr","head_sha","base_sha","diff_hash","policy_version")) +
-            f"\nstatus: {value['status']}\nincident_candidate: {str(value['incident']['candidate']).lower()}\n-->\n\n"
-            "## Concrete breakage\n\n```json\n" + canonical(value["findings"]) + "\n```\n\n"
-            "## Human decisions\n\n```json\n" + canonical({"intent":value["intent"],"items":value["human_decisions_needed"]}) + "\n```\n")
-        coverage = value.get("coverage")
-        council = coverage.get("council") if isinstance(coverage, dict) else None
-        if isinstance(council, dict):
-            body += "\n## Council context\n\n```json\n" + canonical(council) + "\n```\n"
-        data = body.encode(); target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
-        except FileExistsError:
-            if target.is_symlink() or target.read_bytes() != data: raise ValueError("existing safety handoff differs")
-        else:
-            with os.fdopen(fd, "wb") as output: output.write(data); output.flush(); os.fsync(output.fileno())
-        return str(target), hashlib.sha256(data).hexdigest()
+        return publish_safety_handoff(os.environ["HANDOFF_ROOT"], attempt["payload"], value)
 
     def settle_safety_result(self, attempt, value):
         value = normalize_safety(value)

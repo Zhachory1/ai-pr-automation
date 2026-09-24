@@ -27,6 +27,7 @@ BRIDGE_RECONCILE="$SUPPORT_ROOT/hermes-kanban-safety-bridge-reconcile.py"
 BRIDGE_PREFLIGHT="$SUPPORT_ROOT/hermes-kanban-safety-bridge-preflight.py"
 KANBAN_PREFLIGHT="$SUPPORT_ROOT/hermes-kanban-workflow-preflight.py"
 RISK_COUNCIL="$SUPPORT_ROOT/hermes-kanban-risk-council.py"
+SAFETY_RESULT="$SUPPORT_ROOT/hermes_pr_safety_result.py"
 PROFILE_CONFIGURATOR="$SUPPORT_ROOT/configure-hermes-kanban-profiles.py"
 BRIDGE_CONTRACT="$SUPPORT_ROOT/pr-risk-council-kanban-v2.json"
 RUNTIME_CONTRACT="$SUPPORT_ROOT/hermes-native.env"
@@ -196,6 +197,7 @@ install_native() {
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-kanban-safety-bridge-preflight.py" "$BRIDGE_PREFLIGHT"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-kanban-workflow-preflight.py" "$KANBAN_PREFLIGHT"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-kanban-risk-council.py" "$RISK_COUNCIL"
+  install -m 0444 -o root -g wheel "$ROOT/scripts/hermes_pr_safety_result.py" "$SAFETY_RESULT"
   install -m 0555 -o root -g wheel "$ROOT/scripts/configure-hermes-kanban-profiles.py" "$PROFILE_CONFIGURATOR"
   install -m 0444 -o root -g wheel "$ROOT/agent-config/hermes/workflows/pr-risk-council-kanban-v2.json" "$BRIDGE_CONTRACT"
   install -m 0444 -o root -g wheel "$ROOT/agent-config/hermes/native.env" "$RUNTIME_CONTRACT"
@@ -205,6 +207,7 @@ install_native() {
     "$ROOT/scripts/hermes-kanban-safety-bridge-preflight.py:$BRIDGE_PREFLIGHT" \
     "$ROOT/scripts/hermes-kanban-workflow-preflight.py:$KANBAN_PREFLIGHT" \
     "$ROOT/scripts/hermes-kanban-risk-council.py:$RISK_COUNCIL" \
+    "$ROOT/scripts/hermes_pr_safety_result.py:$SAFETY_RESULT" \
     "$ROOT/scripts/configure-hermes-kanban-profiles.py:$PROFILE_CONFIGURATOR" \
     "$ROOT/agent-config/hermes/workflows/pr-risk-council-kanban-v2.json:$BRIDGE_CONTRACT" \
     "$ROOT/agent-config/hermes/native.env:$RUNTIME_CONTRACT"; do
@@ -328,6 +331,7 @@ preflight() {
     --bridge-argument=--installed-source --bridge-argument="$BRIDGE_PREFLIGHT=$ROOT/scripts/hermes-kanban-safety-bridge-preflight.py" \
     --bridge-argument=--installed-source --bridge-argument="$KANBAN_PREFLIGHT=$ROOT/scripts/hermes-kanban-workflow-preflight.py" \
     --bridge-argument=--installed-source --bridge-argument="$RISK_COUNCIL=$ROOT/scripts/hermes-kanban-risk-council.py" \
+    --bridge-argument=--installed-source --bridge-argument="$SAFETY_RESULT=$ROOT/scripts/hermes_pr_safety_result.py" \
     --bridge-argument=--installed-source --bridge-argument="$PROFILE_CONFIGURATOR=$ROOT/scripts/configure-hermes-kanban-profiles.py" \
     --bridge-argument=--installed-source --bridge-argument="$BRIDGE_CONTRACT=$ROOT/agent-config/hermes/workflows/pr-risk-council-kanban-v2.json" \
     --bridge-argument=--installed-source --bridge-argument="$RUNTIME_CONTRACT=$ROOT/agent-config/hermes/native.env"

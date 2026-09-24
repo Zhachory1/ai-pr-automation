@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY scripts/hermes-controller.py /app/hermes-controller.py
+COPY scripts/hermes_pr_safety_result.py /app/hermes_pr_safety_result.py
 COPY scripts/hermes-authority.py /app/hermes-authority.py
 COPY scripts/hermes-compose-producer.sh /app/hermes-compose-producer.sh
 COPY bin/hermes-pr-producer /app/hermes-pr-producer
@@ -14,7 +15,7 @@ COPY bin/hermes-pr-safety-producer /app/hermes-pr-safety-producer
 COPY bin/doc-writer-publication /app/doc-writer-publication
 COPY agent-config/hermes/profiles /app/profiles
 COPY agent-config/hermes/native.env /app/native.env
-RUN chmod 0555 /app/hermes-controller.py /app/hermes-authority.py /app/hermes-compose-producer.sh \
+RUN chmod 0555 /app/hermes-controller.py /app/hermes_pr_safety_result.py /app/hermes-authority.py /app/hermes-compose-producer.sh \
     /app/hermes-pr-producer /app/hermes-pr-safety-producer /app/doc-writer-publication
 
 CMD ["python3", "/app/hermes-controller.py"]
