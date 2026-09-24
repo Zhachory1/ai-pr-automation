@@ -302,8 +302,9 @@ Closure receipt contains identity/digests, exact task IDs/models/profiles, termi
 Launchd invokes producer periodically. Each invocation first reconciles nonfinal operations, then discovers/enqueues, then reconciles again.
 
 - admission without graph manifest: reconstruct blocked cards from board/list evidence, finish verification, or quarantine;
-- graph manifest plus open cards: inspect five cards and deadline; release only exact still-blocked cards during staging recovery;
-- all done: validate package and create finalization intent;
+- graph manifest plus open specialists: inspect five cards and deadline; staging recovery releases only exact still-blocked specialists and never synthesis;
+- four specialists done while synthesis remains blocked: require four validated one-run handoffs, exact graph/identity, and positive remaining deadline, then release synthesis once;
+- all five done: validate package and create finalization intent;
 - any released specialist `blocked|failed|cancelled|archived`, synthesis `blocked|failed|cancelled|archived` after its explicit release, post-release graph drift, missing usage, or deadline: create quarantine record; synthesis `blocked` before specialist gate is expected and not failure;
 - finalization intent without receipt: replay exact handoff/human-card targets, archive each exact execution task, verify all five archived and worker-free, then write closure receipt last;
 - closure receipt: exact replay returns receipt; no new board;
