@@ -46,6 +46,18 @@ class LostSubmitHermes(BaseHTTPRequestHandler):
 
 
 class ControllerContractTest(unittest.TestCase):
+    def council_package(self, verdict="clear"):
+        return {"workflow_id":"workflow","artifact_digest":"a"*64,"verdict":verdict,"intent":{},
+                "findings":[],"coverage":{},"documentation":{},"observability":{},
+                "incident":{"candidate":False,"changed_line_cause":False,"concrete_trigger":False,
+                            "severe_impact":False,"high_confidence_chain":False,
+                            "stop_rollback_or_page":False,"evidence":[]},
+                "human_decisions_needed":[],"dissent":[],"residual_risk":[]}
+
+    def safety_payload(self):
+        return {"operation_id":"op","repo":"o/r","pr":1,"head_sha":"h","base_sha":"b",
+                "diff_hash":"d","policy_version":"v1","policy_digest":"p"}
+
     def test_run_status_validation_is_status_specific(self):
         running = {"object":"hermes.run","run_id":"r","status":"running","created_at":1.0,
                    "updated_at":2.0,"last_event":"run.started","session_id":"s","model":"m"}
@@ -174,6 +186,72 @@ class ControllerContractTest(unittest.TestCase):
             self.assertEqual(json.loads(settlement[5])["status"], "incident_candidate")
             instance.postprocess_safety(attempt, incident)
             self.assertEqual(len(list(pathlib.Path(handoffs).iterdir())), 1)
+
+    def test_council_mapping_clean_findings_inconclusive_and_forged_identity(self):
+        payload=self.safety_payload(); nonce="a"*32
+        clean=controller.map_council_safety(self.council_package(),payload,nonce)
+        self.assertEqual(clean["status"],"clear")
+        self.assertTrue(controller.valid_safety(clean,payload,nonce))
+        self.assertEqual(clean["coverage"]["council"]["workflow_id"],"workflow")
+
+        package=self.council_package("changes_requested")
+        package["operation_id"]="forged"; package["repo"]="evil/repo"
+        package["findings"]=[{"role":"security","claim":"breakage","evidence":[],"confidence":"high",
+                              "dissent":[],"residual_risk":[]}]
+        dissent={"source_role":"security","claim":"decide","evidence":[],
+                 "disposition":"unresolved","rationale":"uncertain"}
+        risk={"source_role":"reliability","claim":"bounded risk","evidence":[],
+              "requires_human_decision":True}
+        package["dissent"]=[dissent]; package["residual_risk"]=[risk]
+        findings=controller.map_council_safety(package,payload,nonce)
+        self.assertEqual(findings["status"],"changes_requested")
+        self.assertEqual(findings["operation_id"],"op"); self.assertEqual(findings["repo"],"o/r")
+        self.assertIn(dissent,findings["human_decisions_needed"]); self.assertIn(risk,findings["human_decisions_needed"])
+        self.assertTrue(controller.valid_safety(findings,payload,nonce))
+
+        inconclusive=controller.map_council_safety(self.council_package("inconclusive"),payload,nonce)
+        self.assertEqual(inconclusive["status"],"needs_human_decision")
+        self.assertTrue(controller.valid_safety(inconclusive,payload,nonce))
+
+    def test_council_mapping_requires_all_five_incident_predicates_and_evidence(self):
+        payload=self.safety_payload(); nonce="a"*32; package=self.council_package("incident_candidate")
+        package["incident"]["candidate"]=True
+        package["incident"]["evidence"]=[{"path":"app.py","line":7,"side":"new","quote":"danger()"}]
+        for key in ("changed_line_cause","concrete_trigger","severe_impact","high_confidence_chain",
+                    "stop_rollback_or_page"):
+            package["incident"][key]=True
+        mapped=controller.map_council_safety(package,payload,nonce)
+        self.assertEqual(mapped["status"],"incident_candidate"); self.assertTrue(mapped["incident"]["candidate"])
+        self.assertTrue(controller.valid_safety(mapped,payload,nonce))
+        package["incident"]["severe_impact"]=False
+        with self.assertRaisesRegex(ValueError,"inconsistent"):
+            controller.map_council_safety(package,payload,nonce)
+
+        for evidence in ([], [{"path":"app.py","line":7,"side":"new","quote":""}],
+                         [{"path":"forged"}]):
+            forged=self.council_package("incident_candidate"); forged["incident"]["candidate"]=True
+            for key in ("changed_line_cause","concrete_trigger","severe_impact","high_confidence_chain",
+                        "stop_rollback_or_page"):
+                forged["incident"][key]=True
+            forged["incident"]["evidence"]=evidence
+            with self.assertRaisesRegex(ValueError,"requires evidence"):
+                controller.map_council_safety(forged,payload,nonce)
+        predicate=self.council_package("changes_requested"); predicate["incident"]["severe_impact"]=True
+        with self.assertRaisesRegex(ValueError,"requires evidence"):
+            controller.map_council_safety(predicate,payload,nonce)
+        inconsistent=self.council_package("incident_candidate")
+        with self.assertRaisesRegex(ValueError,"inconsistent"):
+            controller.map_council_safety(inconsistent,payload,nonce)
+
+    def test_safety_handoff_renders_optional_council_context(self):
+        payload=self.safety_payload(); nonce="a"*32
+        value=controller.map_council_safety(self.council_package("needs_human_decision"),payload,nonce)
+        instance=controller.Controller.__new__(controller.Controller)
+        with tempfile.TemporaryDirectory() as handoffs, mock.patch.dict("os.environ",{"HANDOFF_ROOT":handoffs}):
+            path,_=instance.write_safety_handoff({"payload":payload,"nonce":nonce},value)
+            text=pathlib.Path(path).read_text()
+        self.assertIn("## Concrete breakage",text); self.assertIn("## Human decisions",text)
+        self.assertIn("## Council context",text); self.assertIn('"workflow_id":"workflow"',text)
 
     def test_memory_gates_reject_noise_secrets_and_weak_org_evidence(self):
         valid = {"content":"Use one stable operation key to prevent duplicate external effects after uncertain submissions.",

@@ -85,7 +85,7 @@ Modify:
 - Keep fallback empty.
 - Keep memory, plugins, web, terminal, delegation, connections, built-in file tools, and all other MCP off.
 - Add bounded repo-owned stdio MCP with exactly `snapshot_read`, `snapshot_search`, `kanban_show`, `kanban_comment`, `kanban_heartbeat`, `kanban_complete`, and `kanban_block`; define the mode-0440 `.council-tools.json` protocol under the validated `COUNCIL_WORKSPACE` alias interpolated from `HERMES_KANBAN_WORKSPACE`.
-- Keep Kanban task, board, run, and claim lock out of model schemas. MCP config interpolates worker identity, DB, workspace, roots, profile, and interpreter into explicit `COUNCIL_*` aliases so pinned safe-env filtering cannot drop them. Validate aliases; restore only required task, run, claim lock, board, DB, and profile env around exact pinned handlers; remove the delegated-child marker only there because this MCP is the explicitly supervised own-task transport.
+- Keep Kanban task, board, run, claim lock, and session out of model schemas. MCP discovery starts before `AIAgent` creates `HERMES_SESSION_ID`, so do not configure a session alias or restore session identity to handlers. Interpolate and validate only required task, run, claim lock, board, DB, workspace, roots, profile, and interpreter aliases; remove the delegated-child marker only around exact pinned handlers because this MCP is the explicitly supervised own-task transport.
 - Set `platform_toolsets.cli: [council-tools]` and `agent.disabled_toolsets: [delegation, kanban]` so pinned worker auto-tools cannot add create, link, list, unblock, review-routing, attachment, or URL capabilities.
 - Confine logical snapshot/input paths to validated `COUNCIL_SNAPSHOT_ROOT` and `COUNCIL_WORKFLOW_ROOT` aliases interpolated from `PR_SAFETY_SNAPSHOT_ROOT` and `PR_SAFETY_WORKFLOW_ROOT`; reject absolute paths, `..`, symlinks, non-regular files, non-UTF-8 text, paths over 4,096 characters or 32 components, and bound violations.
 - Enforce fixed 256 KiB JSON-RPC request, 1 MiB file, 2,000-file/4,096-entry/32-level/16 MiB search, 100-result, 256-character query, 2,000-character returned-line, and bounded Kanban text/metadata limits.
@@ -137,10 +137,11 @@ Create only if needed:
 - Preserve existing default sanitized canary behavior.
 - Create exact four specialist tasks and one Sonnet synthesis task.
 - Use stable operation-derived workflow/task keys.
-- Generate read-only `identity.json`, `diff.patch`, and `policy.md`.
+- Generate read-only `identity.json`, `diff.patch`, and `policy.md`; create `.council-tools.json` for sanitized local graph acceptance only. PR 3 owns production binding creation.
 - Add exact specialist and synthesis validators.
 - Validate changed-line citations.
 - Union dissent/residual risk deterministically.
+- After task and run workers clear, resolve each role's usage from its profile-scoped state DB through a read-only URI. Require exactly one closed (`ended_at` non-null) `source='kanban'` session with expected model when available and bounded start/end times around trusted run times; require non-negative input/output tokens and include cache tokens when supported. Pinned Kanban leaves `cwd` null, so do not match it. Never use task session ID or `worker_session_id` metadata.
 - Add private pure controller mapping to current safety schema.
 - Add council context to existing handoff rendering.
 
@@ -150,6 +151,8 @@ Create only if needed:
 - Four-parent synthesis fan-in.
 - One attempt each.
 - Exact profiles/models.
+- Unique profile-scoped usage match; zero, multiple, out-of-window, wrong-source/model, or negative usage fails closed; nullable Kanban `cwd` is ignored.
+- Optional `worker_session_id` metadata is stripped and deterministic task session IDs are absent.
 - No attachments, children, fallback, or effect tools.
 - Exact current top-level safety schema.
 - Trusted identity always comes from request.

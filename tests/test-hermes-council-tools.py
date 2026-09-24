@@ -53,7 +53,7 @@ class CouncilToolsTest(unittest.TestCase):
         (package / "kanban_tools.py").write_text('''import json,os
 
 def called(name,args):
- keys=[key for key in os.environ if key.startswith("HERMES_KANBAN_") or key in {"HERMES_PROFILE","HERMES_DELEGATED_CHILD_CONTEXT"}]
+ keys=[key for key in os.environ if key.startswith("HERMES_KANBAN_") or key in {"HERMES_PROFILE","HERMES_SESSION_ID","HERMES_DELEGATED_CHILD_CONTEXT"}]
  with open(os.environ["HANDLER_LOG"],"a") as out: out.write(json.dumps([name,args,{key:os.environ[key] for key in sorted(keys)}],sort_keys=True)+"\\n")
  if name == "_handle_block" and args.get("reason") == "handler-error": return json.dumps({"error":"authoritative rejection"})
  return json.dumps({"ok":True,"handler":name},sort_keys=True)
@@ -80,6 +80,7 @@ def kanban_db_path(board=None): return Path(os.environ["HERMES_KANBAN_DB"])
                "COUNCIL_WORKSPACE":str(workspace),"COUNCIL_SNAPSHOT_ROOT":str(snapshots),
                "COUNCIL_WORKFLOW_ROOT":str(workflows),"COUNCIL_PROFILE":"council-reviewer-v2",
                "COUNCIL_TOOLS_PYTHON":sys.executable,"PYTHONDONTWRITEBYTECODE":"1"}
+        env.pop("HERMES_SESSION_ID", None)
         return env, log
 
     def request_raw(self, env, payload):
@@ -115,7 +116,7 @@ print(json.dumps(_build_safe_env(_interpolate_env_vars(json.loads(sys.argv[1])))
         safe["HERMES_DELEGATED_CHILD_CONTEXT"] = "1"
         return safe
 
-    def test_pinned_safe_env_aliases_survive_and_restore_only_handler_identity(self):
+    def test_pinned_safe_env_aliases_survive_without_session_transport(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td).resolve(); direct, log = self.fake_pinned(root)
             parent = {key:value for key, value in direct.items() if not key.startswith("COUNCIL_")}
@@ -132,7 +133,8 @@ print(json.dumps(_build_safe_env(_interpolate_env_vars(json.loads(sys.argv[1])))
             })
             safe = self.safe_mcp_env(parent)
             for key in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
-                        "HERMES_KANBAN_WORKSPACE", "HERMES_PROFILE", "HERMES_KANBAN_WORKSPACES_ROOT"):
+                        "HERMES_KANBAN_WORKSPACE", "HERMES_PROFILE", "HERMES_SESSION_ID",
+                        "HERMES_KANBAN_WORKSPACES_ROOT"):
                 self.assertNotIn(key, safe)
             self.assertEqual({key:safe[key] for key in CONFIG_ENV}, {
                 alias:parent[source[2:-1]] for alias, source in CONFIG_ENV.items()})
@@ -181,7 +183,8 @@ print(json.dumps(_build_safe_env(_interpolate_env_vars(json.loads(sys.argv[1])))
             env.update({"HERMES_KANBAN_TASK":"foreign-task","HERMES_KANBAN_RUN_ID":"99",
                         "HERMES_KANBAN_CLAIM_LOCK":"foreign-lock","HERMES_KANBAN_BOARD":"foreign-board",
                         "HERMES_KANBAN_DB":str(foreign_db),"HERMES_KANBAN_WORKSPACES_ROOT":"/foreign",
-                        "HERMES_PROFILE":"foreign-profile","HERMES_DELEGATED_CHILD_CONTEXT":"1"})
+                        "HERMES_PROFILE":"foreign-profile","HERMES_SESSION_ID":"ambient-untrusted",
+                        "HERMES_DELEGATED_CHILD_CONTEXT":"1"})
             calls = (
                 ("kanban_show", {}),
                 ("kanban_comment", {"body":"finding"}),
