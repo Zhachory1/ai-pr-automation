@@ -1,6 +1,6 @@
 # PRD: Kanban-Backed PR Safety Analysis
 
-- Status: draft.
+- Status: superseded by `PRD-pr-safety-direct-kanban.md` for new PR-safety work.
 - Owner: fleet operator.
 - User: human safety reviewer.
 - Source: `docs/hermes/grounding-pr-safety-kanban-council.md`.

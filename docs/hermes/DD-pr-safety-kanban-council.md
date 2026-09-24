@@ -1,6 +1,6 @@
 # DD: Kanban-Backed PR Safety Analysis
 
-- Status: draft.
+- Status: superseded by `DD-pr-safety-direct-kanban.md` for new PR-safety work.
 - Owner: fleet operator.
 - PRD: `docs/hermes/PRD-pr-safety-kanban-council.md`.
 - Next gate: implementation plan after approval.
