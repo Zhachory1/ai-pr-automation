@@ -17,7 +17,11 @@ TMP="$(mktemp -d)"
 cleanup() { docker rm -f "$CID" >/dev/null 2>&1 || true; chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"; }
 trap cleanup EXIT
 docker run --rm -d --name "$CID" -e POSTGRES_PASSWORD=t -e POSTGRES_DB=fleet -p "$PORT:5432" postgres:16 >/dev/null
-for _ in $(seq 1 30); do docker exec "$CID" pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
+for _ in $(seq 1 60); do
+  docker exec "$CID" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break
+  sleep 1
+done
+docker exec "$CID" pg_isready -h 127.0.0.1 -U postgres >/dev/null
 for f in docker/initdb/{01-schema,02-agent-server,03-human-review-queue,04-pending-decision-approval,04-pr-safety-review,05-pr-safety-merged-pr-producer,07-hermes-autonomy,09-hermes-yaml-authority,10-hermes-queue-depth,11-hermes-pr-safety,12-hermes-lease-reclaim,13-hermes-api-control-plane}.sql; do
   docker cp "$f" "$CID:/tmp/${f##*/}"
   docker exec "$CID" psql -U postgres -d fleet -q -v ON_ERROR_STOP=1 -f "/tmp/${f##*/}" >/dev/null
@@ -97,6 +101,35 @@ printf '{"number":11,"state":"closed","merge_commit_sha":"%s","base":{"sha":"%s"
 printf '[{"number":11,"repository":{"nameWithOwner":"other/repo"}}]\n' > "$TMP/search.json"
 bin/hermes-pr-safety-producer
 check "ungranted repo is never enqueued" "q \"SELECT count(*) FROM requests WHERE payload->>'repo'='other/repo';\" | grep -qx 0"
+
+# Direct-Kanban mode sends canonical snapshot payload to host enqueue helper and writes no Postgres row.
+cat > "$TMP/fake-kanban-enqueue.py" <<'PY'
+import json, os, pathlib, sys
+payload=json.loads(sys.stdin.read())
+if payload["pr"] == 8: raise SystemExit("fixture enqueue failure")
+pathlib.Path(os.environ["PR_SAFETY_TEST_KANBAN_CAPTURE"]).write_text(json.dumps(payload,sort_keys=True))
+print(json.dumps({"status":"enqueued","board":"pr-safety-test","task_ids":{"review":"t1"}}))
+PY
+cat > "$TMP/bin/hermes" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$TMP/bin/hermes"; touch "$TMP/contract.json" "$TMP/risk.py"
+export PR_SAFETY_QUEUE_ENGINE=kanban PR_SAFETY_TEST_KANBAN_CAPTURE="$TMP/kanban-payload.json"
+export HERMES_PR_SAFETY_KANBAN_ENQUEUE="$TMP/fake-kanban-enqueue.py" HERMES_BIN="$TMP/bin/hermes"
+export HERMES_PYTHON="$(command -v python3)"
+export HERMES_KANBAN_BRIDGE_CONTRACT="$TMP/contract.json" HERMES_KANBAN_RISK_COUNCIL="$TMP/risk.py"
+printf '[{"number":7,"repository":{"nameWithOwner":"owner/repo"}}]\n' > "$TMP/search.json"
+printf '{"number":7,"state":"closed","merge_commit_sha":"%s","base":{"sha":"%s"},"merged_at":"2026-01-02T00:00:00Z"}\n' "$MERGE2" "$BASE" > "$TMP/view.json"
+before_direct="$(q "SELECT count(*) FROM requests WHERE kind='pr-safety-review';")"
+bin/hermes-pr-safety-producer
+check "direct Kanban mode bypasses Postgres enqueue" "[[ \"\$(q \"SELECT count(*) FROM requests WHERE kind='pr-safety-review';\")\" == \"$before_direct\" ]] && jq -e --arg head '$MERGE2' '(.head_sha==\$head) and ((.snapshot_path|length)>0)' '$TMP/kanban-payload.json' >/dev/null"
+printf '{"repo":"owner/repo","number":8,"mergeSha":"%s","baseSha":"%s"}\n' "$MERGE2" "$BASE" > "$TMP/direct-records.jsonl"
+printf '{"repo":"owner/repo","number":9,"mergeSha":"%s","baseSha":"%s"}\n' "$MERGE2" "$BASE" >> "$TMP/direct-records.jsonl"
+if PR_SAFETY_MERGED_PR_INPUT_FILE="$TMP/direct-records.jsonl" bin/hermes-pr-safety-producer; then batchrc=0; else batchrc=$?; fi
+check "failed first graph does not starve later records" "[[ '$batchrc' == 1 ]] && jq -e '.pr == 9' '$TMP/kanban-payload.json' >/dev/null"
+check "direct snapshots remain separate from rollback GC" "jq -e '.snapshot_path | contains(\"/direct-kanban/\")' '$TMP/kanban-payload.json' >/dev/null"
+export PR_SAFETY_QUEUE_ENGINE=postgres
 
 # Settled Kanban requests retain snapshots until bridge archive/effect completion closes hermes_runs.
 gen="$(printf 'a%.0s' {1..64})"; nonce=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

@@ -16,6 +16,10 @@ while true; do
   case "$mode" in
     review|maintain) /app/hermes-pr-producer "$mode" || true ;;
     pr-safety)
+      if [[ "${PR_SAFETY_QUEUE_ENGINE:-postgres}" == kanban ]]; then
+        sleep "$interval"
+        continue
+      fi
       # GH_TOKEN authenticates gh API calls, but git clone/fetch needs gh's credential helper.
       gh auth setup-git >/dev/null 2>&1 || { echo "could not configure git with read token" >&2; exit 2; }
       if [[ -z "${PR_SAFETY_POLICY_DIGEST:-}" ]]; then

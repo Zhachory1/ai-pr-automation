@@ -81,8 +81,10 @@ Assume failure at every interface (APIs, feature-store lookups, model prediction
 
 ## Data classification and approved model provider
 
-- Approved model provider for this pilot is OpenAI (`api.openai.com`) only. No other inference
-  provider is authorized.
+- OpenAI (`api.openai.com`) remains approved for single-agent baseline evaluation.
+- The human-approved fixed Kanban council may send immutable PR snapshots to Anthropic
+  (`api.anthropic.com`): four `claude-haiku-4-5-20251001` specialists and one `claude-sonnet-5`
+  synthesizer. No other council models, providers, or fallback chains are authorized.
 - Never copy secrets, credentials, tokens, customer data, or raw untrusted repository text into
   shared memory, logs, or the handoff beyond the minimum needed to state a finding.
 - A PR that adds a new outbound destination, third-party data processor, or secret-handling path
