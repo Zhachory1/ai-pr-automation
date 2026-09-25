@@ -14,7 +14,14 @@ if [[ "$mode" != memory ]]; then
 fi
 while true; do
   case "$mode" in
-    review|maintain) /app/hermes-pr-producer "$mode" || true ;;
+    review)
+      if [[ "${PR_REVIEW_QUEUE_ENGINE:-postgres}" == kanban ]]; then
+        sleep "$interval"
+        continue
+      fi
+      /app/hermes-pr-producer review || true
+      ;;
+    maintain) /app/hermes-pr-producer maintain || true ;;
     pr-safety)
       if [[ "${PR_SAFETY_QUEUE_ENGINE:-postgres}" == kanban ]]; then
         sleep "$interval"
