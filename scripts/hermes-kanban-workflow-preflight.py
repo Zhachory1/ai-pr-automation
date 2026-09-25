@@ -265,7 +265,15 @@ def council_tools_report(path=COUNCIL_TOOLS_COMMAND, expected_uid=0, trusted_roo
 
 
 def effective_tool_report(home, install, profiles, expected_definitions, council_tools):
-    probe = r'''import json,sys
+    probe = r'''import json,os,sys
+from pathlib import Path
+from dotenv import dotenv_values
+worker_env=dotenv_values(Path(os.environ['HERMES_HOME'])/'.env')
+for key in ('PR_SAFETY_SNAPSHOT_ROOT','PR_SAFETY_WORKFLOW_ROOT','HERMES_COUNCIL_TOOLS_PYTHON'):
+ value=worker_env.get(key)
+ if not isinstance(value,str) or not Path(value).is_absolute():
+  raise RuntimeError('missing profile-local worker runtime setting: '+key)
+ os.environ[key]=value
 from hermes_cli.config import load_config,read_raw_config
 from hermes_cli.tools_config import _get_platform_tools
 from tools.mcp_tool_discovery import discover_mcp_tools
@@ -319,15 +327,12 @@ print(json.dumps({'resolved_toolsets':enabled,'model_tool_names':names,
             runtime = probe_root / f"runtime-{target}"; runtime.mkdir()
             db = runtime / "kanban.db"; db.touch()
             workspace = runtime / "workspace"; workspace.mkdir()
-            snapshots = runtime / "snapshots"; snapshots.mkdir()
-            workflows = runtime / "workflows"; workflows.mkdir()
             env = {"PATH":os.environ.get("PATH", ""),"PYTHONPATH":str(install),"PYTHONUTF8":"1",
                    "PYTHONDONTWRITEBYTECODE":"1","HERMES_HOME":str(profile_home),
                    "HERMES_KANBAN_TASK":"preflight-dummy","HERMES_KANBAN_RUN_ID":"1",
                    "HERMES_KANBAN_CLAIM_LOCK":"preflight-lock","HERMES_KANBAN_BOARD":"preflight-board",
                    "HERMES_KANBAN_DB":str(db),"HERMES_KANBAN_WORKSPACE":str(workspace),
-                   "PR_SAFETY_SNAPSHOT_ROOT":str(snapshots),"PR_SAFETY_WORKFLOW_ROOT":str(workflows),
-                   "HERMES_PROFILE":target,"HERMES_COUNCIL_TOOLS_PYTHON":str(python),
+                   "HERMES_PROFILE":target,
                    "COUNCIL_TOOLS_PROBE_COMMAND":str(council_tools)}
             completed = subprocess.run([python, "-B", "-c", probe,
                                         json.dumps(expected_config, sort_keys=True, separators=(",", ":")),

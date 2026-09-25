@@ -206,6 +206,21 @@ print(json.dumps(_build_safe_env(_interpolate_env_vars(json.loads(sys.argv[1])))
             self.assertNotIn("run_id", forwarded); self.assertNotIn("claim_lock", forwarded)
             self.assertEqual(handler_env, expected_env)
 
+    def test_sdk_request_metadata_is_accepted_but_never_used_for_routing(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.fake_pinned(pathlib.Path(td))
+            for meta in ({}, {"progressToken":"fixture", "task_id":"foreign-task", "board":"foreign-board"}):
+                response = self.request(env, {"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"kanban_show","arguments":{},"_meta":meta}})[0]
+                self.assertNotIn("error", response)
+                self.assertNotIn("isError", response["result"])
+            for row in map(json.loads, log.read_text().splitlines()):
+                self.assertEqual(row[1], {"task_id":"task-own","board":"board-own"})
+            for extra in ({"_meta":None}, {"_meta":[]}, {"task_id":"foreign-task"}):
+                response = self.request(env, {"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"kanban_show","arguments":{},**extra}})[0]
+                self.assertEqual(response["error"]["code"], -32602)
+
     def test_kanban_wrappers_require_all_aliases_and_reject_model_routing(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.fake_pinned(pathlib.Path(td))

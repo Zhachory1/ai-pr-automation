@@ -154,6 +154,23 @@ def atomic_text(path, text, uid, gid):
     os.chown(temporary, uid, gid); os.chmod(temporary, 0o600); os.replace(temporary, path)
 
 
+def configure_worker_env(home, contract, snapshot_root, workflow_root, python, uid, gid):
+    if contract["schema_version"] != 2:
+        fail("worker runtime environment requires v2 profiles")
+    values = {"PR_SAFETY_SNAPSHOT_ROOT":str(snapshot_root),
+              "PR_SAFETY_WORKFLOW_ROOT":str(workflow_root),
+              "HERMES_COUNCIL_TOOLS_PYTHON":str(python)}
+    for name in contract["profiles"]:
+        profile = home / "profiles" / name
+        safe_dir(profile, uid); validate_target(profile)
+        path = profile / ".env"
+        if path.exists() or path.is_symlink(): safe_file(path, uid)
+        lines = path.read_text().splitlines() if path.exists() else []
+        lines = [line for line in lines if line.split("=", 1)[0] not in values]
+        lines.extend(f"{key}={json.dumps(value)}" for key, value in values.items())
+        atomic_text(path, "\n".join(lines) + "\n", uid, gid)
+
+
 def set_state(home, contract, value, uid, gid):
     state = state_path(home, contract)
     if state.parent.exists(): safe_dir(state.parent, uid)
