@@ -9,23 +9,44 @@ class DirectPrJournalTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); base = pathlib.Path(self.temp.name)
         self.root, self.mirror = base / "root", base / "mirror"
         self.journal = journal.Journal(self.root, self.mirror, require_separate_device=False)
-        self.operation = journal.identity("pr-maintain", "owner/repo", 7, "a" * 40)
+        self.operation = journal.identity("pr-review", "owner/repo", 7, "a" * 40)
+        self.maintenance = journal.identity("pr-maintain", "owner/repo", 7, "a" * 40, feedback_digest="1" * 64)
     def tearDown(self): self.temp.cleanup()
     def payload(self, **values): return {"identity": self.operation, **values}
     def bind(self, operation=None):
         operation = operation or self.operation; operation_id = operation["operation_id"]
         admission = self.journal.write("admission", operation_id, {"identity": operation})
         return admission, self.journal.write("binding", operation_id, {"identity": operation}, admission)
+    def operation_for(self, head, feedback="1"):
+        return journal.identity("pr-maintain", "owner/repo", 7, head * 40, feedback_digest=feedback * 64)
+    def admit_maintenance(self, operation, round_number, **values):
+        return self.journal.write("admission", operation["operation_id"],
+                                  {"identity": operation, "round": round_number, **values})
+    def lineage_path(self, name, mirror=False):
+        root = self.mirror if mirror else self.root
+        return root / "lineages" / self.maintenance["lineage_id"] / name
     def test_identity_is_canonical_case_insensitive_and_rejects_unsafe_input(self):
-        raw = b'{"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","kind":"pr-maintain","pr":7,"repo":"owner/repo"}'
-        alias = journal.identity("pr-maintain", "OWNER/Repo", 7, "a" * 40)
-        self.assertEqual(journal.canonical_identity("pr-maintain", "Owner/REPO", 7, "a" * 40), raw)
-        self.assertEqual(alias, self.operation); self.assertEqual(self.operation["operation_id"], "pr-maintain-" + hashlib.sha256(raw).hexdigest())
-        self.assertEqual(self.operation["lineage_id"], "lineage-" + hashlib.sha256(b"owner/repo#7").hexdigest())
+        raw = b'{"feedback_digest":"1111111111111111111111111111111111111111111111111111111111111111","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","kind":"pr-maintain","pr":7,"repo":"owner/repo"}'
+        alias = journal.identity("pr-maintain", "OWNER/Repo", 7, "a" * 40, feedback_digest="1" * 64)
+        self.assertEqual(journal.canonical_identity("pr-maintain", "Owner/REPO", 7, "a" * 40,
+                                                    feedback_digest="1" * 64), raw)
+        self.assertEqual(alias, self.maintenance); self.assertEqual(self.maintenance["operation_id"], "pr-maintain-" + hashlib.sha256(raw).hexdigest())
+        self.assertEqual(set(self.maintenance), {"feedback_digest", "head", "kind", "pr", "repo", "operation_id", "lineage_id"})
+        self.assertEqual(self.maintenance["lineage_id"], "lineage-" + hashlib.sha256(b"owner/repo#7").hexdigest())
+        review = journal.identity("pr-review", "OWNER/Repo", 7, "a" * 40)
+        self.assertEqual(set(review), {"head", "kind", "pr", "repo", "operation_id", "lineage_id"})
+        self.assertTrue(journal._valid_identity(review)); self.assertTrue(journal._valid_identity(self.maintenance))
+        self.assertFalse(journal._valid_identity({**review, "feedback_digest": "1" * 64}))
+        self.assertFalse(journal._valid_identity({key: value for key, value in self.maintenance.items() if key != "feedback_digest"}))
         for args in [("bad", "o/r", 1, "a" * 40), ("pr-review", "../r", 1, "a" * 40),
                      ("pr-review", "o/r", 0, "a" * 40), ("pr-review", "o/r", 1, "A" * 40),
                      ("pr-review", f"o/{'r' * 101}", 1, "a" * 40)]:
             with self.subTest(args=args), self.assertRaises(journal.JournalError): journal.identity(*args)
+        for digest in [None, "A" * 64, "bad"]:
+            with self.subTest(digest=digest), self.assertRaises(journal.JournalError):
+                journal.identity("pr-maintain", "o/r", 1, "a" * 40, feedback_digest=digest)
+        with self.assertRaises(journal.JournalError):
+            journal.identity("pr-review", "o/r", 1, "a" * 40, feedback_digest="1" * 64)
     def test_fixed_record_paths_and_path_rejection(self):
         operation_id = self.operation["operation_id"]
         expected = {"admission": "admission.json", "binding": "binding.json", "intent": "effects/2-intent.json", "receipt": "effects/2-receipt.json", "quarantine": "quarantine.json",
@@ -36,6 +57,118 @@ class DirectPrJournalTest(unittest.TestCase):
                              f"operations/{operation_id}/{suffix}")
         for args in [("unknown", operation_id, None), ("intent", operation_id, 0), ("admission", "../x", None)]:
             with self.assertRaises(journal.JournalError): self.journal.path(*args)
+    def test_lineage_floor_schema_alias_replay_conflict_and_hash_validation(self):
+        provenance = "f" * 64; history = ["0" * 64]
+        digest = self.journal.set_lineage_floor("OWNER/Repo", 7, history, provenance)
+        path = self.lineage_path("floor.json"); value = json.loads(path.read_bytes())
+        payload = {"repo": "owner/repo", "pr": 7, "lineage_id": self.operation["lineage_id"],
+                   "count": 1, "feedback_digests": history, "provenance_digest": provenance}
+        self.assertEqual(value, {"schema_version": 1, "type": "floor", "lineage_id": self.operation["lineage_id"],
+                                 "previous_digest": None, "payload": payload})
+        self.assertEqual(digest, hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(self.journal.set_lineage_floor("owner/repo", 7, tuple(history), provenance), digest)
+        invalid = [(["2" * 64], provenance), (history, "e" * 64), (history, "bad"), (1, provenance),
+                   (["0" * 64] * 2, provenance), (["A" * 64], provenance), (["bad"], provenance), (["0" * 64] * 4, provenance)]
+        for feedback, source in invalid:
+            with self.subTest(feedback=feedback, source=source), self.assertRaises(journal.JournalError):
+                self.journal.set_lineage_floor("owner/repo", 7, feedback, source)
+        value["payload"]["count"] = 0
+        changed = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        for target in (path, self.lineage_path("floor.json", True)): target.write_bytes(changed)
+        with self.assertRaises(journal.JournalError): self.journal.reserve_round(self.maintenance)
+    def test_floor_one_round_reservations_replay_cap_and_generic_parity(self):
+        floor = self.journal.set_lineage_floor("owner/repo", 7, ["1" * 64], "f" * 64)
+        second, third, fourth = self.operation_for("a", "2"), self.operation_for("a", "3"), self.operation_for("a", "4")
+        self.assertNotEqual(second["operation_id"], third["operation_id"]); self.assertEqual(second["lineage_id"], third["lineage_id"])
+        self.assertEqual(self.journal.reserve_round(second), 2)
+        second_path = self.lineage_path(f"rounds/2-{second['operation_id']}.json")
+        second_value = json.loads(second_path.read_bytes())
+        self.assertEqual(second_value["previous_digest"], floor)
+        self.assertEqual(second_value["payload"], {"identity": second, "lineage_id": second["lineage_id"], "round": 2})
+        alias = journal.identity("pr-maintain", "OWNER/REPO", 7, "a" * 40, feedback_digest="2" * 64)
+        self.assertEqual(alias, second); self.assertEqual(self.journal.reserve_round(alias), 2)
+        self.assertEqual(self.journal.reserve_round(third), 3)
+        third_path = self.lineage_path(f"rounds/3-{third['operation_id']}.json")
+        self.assertEqual(json.loads(third_path.read_bytes())["previous_digest"], hashlib.sha256(second_path.read_bytes()).hexdigest())
+        with self.assertRaisesRegex(journal.JournalError, "limit"): self.journal.reserve_round(fourth)
+        review = journal.identity("pr-review", "owner/other", 9, "d" * 40)
+        digest = self.journal.write("admission", review["operation_id"], {"identity": review})
+        self.assertEqual(digest, hashlib.sha256(self.journal.path("admission", review["operation_id"]).read_bytes()).hexdigest())
+    def test_maintenance_admission_requires_matching_reservation(self):
+        self.journal.set_lineage_floor("owner/repo", 7, [], "f" * 64)
+        operation = self.maintenance; operation_id = operation["operation_id"]
+        for payload in [{"identity": operation}, {"identity": operation, "round": True},
+                        {"identity": operation, "round": 0}, {"identity": operation, "round": 4}]:
+            with self.subTest(payload=payload), self.assertRaises(journal.JournalError):
+                self.journal.write("admission", operation_id, payload)
+        with self.assertRaisesRegex(journal.JournalError, "reservation"):
+            self.admit_maintenance(operation, 1)
+        self.assertEqual(self.journal.reserve_round(operation), 1)
+        with self.assertRaisesRegex(journal.JournalError, "reservation"):
+            self.admit_maintenance(operation, 2)
+        digest = self.admit_maintenance(operation, 1, engine="kanban")
+        path = self.journal.path("admission", operation_id); self.assertEqual(digest, hashlib.sha256(path.read_bytes()).hexdigest())
+        value = json.loads(path.read_bytes()); value["payload"]["round"] = 2
+        changed = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        for mirror in (False, True): self.journal.path("admission", operation_id, mirror=mirror).write_bytes(changed)
+        with self.assertRaisesRegex(journal.JournalError, "matching reservation"): self.journal.read("admission", operation_id)
+        other = journal.identity("pr-review", "owner/other", 8, "c" * 40)
+        with self.assertRaisesRegex(journal.JournalError, "matching reservation"):
+            self.journal.write("admission", other["operation_id"], {"identity": other})
+    def test_three_reserved_rounds_cap_and_unreserved_fourth_admission(self):
+        self.journal.set_lineage_floor("owner/repo", 7, [], "f" * 64)
+        operations = [self.operation_for(head, str(index)) for index, head in enumerate("abcd", 1)]
+        for round_number, operation in enumerate(operations[:3], 1):
+            self.assertEqual(self.journal.reserve_round(operation), round_number)
+            self.admit_maintenance(operation, round_number)
+        with self.assertRaisesRegex(journal.JournalError, "limit"):
+            self.journal.reserve_round(operations[3])
+        for round_number in (3, 4):
+            with self.subTest(round=round_number), self.assertRaises(journal.JournalError):
+                self.admit_maintenance(operations[3], round_number)
+        self.assertFalse(self.journal.path("admission", operations[3]["operation_id"]).exists())
+    def test_concurrent_different_heads_get_unique_rounds(self):
+        self.journal.set_lineage_floor("owner/repo", 7, [], "f" * 64)
+        reverse = journal.Journal(self.mirror, self.root, require_separate_device=False)
+        operations = [self.operation_for("a", "1"), self.operation_for("b", "2")]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            rounds = list(pool.map(lambda args: args[0].reserve_round(args[1]), zip((self.journal, reverse), operations)))
+        self.assertEqual(set(rounds), {1, 2})
+        self.assertEqual([self.journal.reserve_round(operation) for operation in operations], rounds)
+    def test_feedback_digest_in_floor_or_round_is_rejected_without_consuming_round(self):
+        self.journal.set_lineage_floor("owner/repo", 7, ["1" * 64], "f" * 64)
+        historical, first = self.operation_for("a", "1"), self.operation_for("a", "2")
+        duplicate, distinct = self.operation_for("b", "2"), self.operation_for("c", "3")
+        with self.assertRaisesRegex(journal.JournalError, "feedback digest already reserved"):
+            self.journal.reserve_round(historical)
+        self.assertEqual(self.journal.reserve_round(first), 2); self.assertEqual(self.journal.reserve_round(first), 2)
+        with self.assertRaisesRegex(journal.JournalError, "feedback digest already reserved"):
+            self.journal.reserve_round(duplicate)
+        self.assertEqual(self.journal.reserve_round(distinct), 3)
+    def test_lineage_target_partial_heal_and_unrelated_missing_block(self):
+        digest = self.journal.set_lineage_floor("owner/repo", 7, [], "f" * 64)
+        first, later = self.operation_for("a", "1"), self.operation_for("b", "2")
+        self.journal.reserve_round(first); self.journal.reserve_round(later)
+        self.lineage_path("floor.json", True).unlink()
+        self.assertEqual(self.journal.set_lineage_floor("OWNER/REPO", 7, (), "f" * 64), digest)
+        relative = f"rounds/1-{first['operation_id']}.json"; self.lineage_path(relative, True).unlink()
+        self.assertEqual(self.journal.reserve_round(first), 1)
+        later_relative = f"rounds/2-{later['operation_id']}.json"; self.lineage_path(later_relative).unlink()
+        with self.assertRaisesRegex(journal.JournalError, "inventory"):
+            self.journal.reserve_round(self.operation_for("c", "3"))
+    def test_terminal_round_deletion_blocks_reads_and_unrelated_write(self):
+        self.journal.set_lineage_floor("owner/repo", 7, [], "f" * 64)
+        first, later = self.operation_for("a", "1"), self.operation_for("b", "2")
+        self.journal.reserve_round(first); self.admit_maintenance(first, 1)
+        self.journal.reserve_round(later); self.admit_maintenance(later, 2)
+        relative = f"rounds/2-{later['operation_id']}.json"
+        self.lineage_path(relative).unlink(); self.lineage_path(relative, True).unlink()
+        with self.assertRaisesRegex(journal.JournalError, "matching reservation"):
+            self.journal.read("admission", first["operation_id"])
+        unrelated = journal.identity("pr-review", "owner/other", 8, "c" * 40)
+        with self.assertRaisesRegex(journal.JournalError, "matching reservation"):
+            self.journal.write("admission", unrelated["operation_id"], {"identity": unrelated})
+        self.assertFalse(self.journal.path("admission", unrelated["operation_id"]).exists())
     def test_write_replay_conflict_roundtrip_and_digest_rules(self):
         operation_id = self.operation["operation_id"]; digest = self.journal.write("admission", operation_id, self.payload())
         value = self.journal.read("admission", operation_id); data = self.journal.path("admission", operation_id).read_bytes()
@@ -66,7 +199,8 @@ class DirectPrJournalTest(unittest.TestCase):
         with self.assertRaisesRegex(journal.JournalError, "predecessor"): self.journal.write("admission", other["operation_id"], {"identity": other})
         self.assertFalse(self.journal.path("admission", other["operation_id"]).exists())
     def test_identity_and_sequence_payload_validation(self):
-        operation_id = self.operation["operation_id"]; other = journal.identity("pr-maintain", "owner/other", 7, "b" * 40)
+        operation_id = self.operation["operation_id"]
+        other = journal.identity("pr-review", "owner/other", 7, "b" * 40)
         for payload in [{}, {"identity": other}, {"identity": {**self.operation, "repo": "OWNER/repo"}}]:
             with self.assertRaises(journal.JournalError): self.journal.write("binding", operation_id, payload, "f" * 64)
         for payload in [self.payload(), self.payload(sequence=1), self.payload(sequence=0), self.payload(sequence=True)]:

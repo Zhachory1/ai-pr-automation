@@ -12,7 +12,7 @@ Move one kind at a time to two persistent boards:
 - `pr-review`;
 - `pr-maintain`.
 
-Each task uses one opaque operation tenant bound to `kind|repo|PR|head`. One root-owned coordinator is the only admission front door for both rollback and Kanban engines. Models only propose a review or make a local maintenance commit through task-scoped tools. They receive no generic host terminal and no GitHub write credential. Root-owned publisher handlers perform exact GitHub writes from immutable packets. Maintain push runs only from a clean publisher-owned bare repository, never model-writable Git state.
+Each review task uses one opaque operation tenant bound to `kind|repo|PR|head`; maintenance also binds the actionable `feedback_digest`. One root-owned coordinator is the only admission front door for both rollback and Kanban engines. Models only propose a review or make a local maintenance commit through task-scoped tools. They receive no generic host terminal and no GitHub write credential. Root-owned publisher handlers perform exact GitHub writes from immutable packets. Maintain push runs only from a clean publisher-owned bare repository, never model-writable Git state.
 
 Reviewer moves first. Maintainer starts only after review retirement passes.
 ## Goals
@@ -57,8 +57,9 @@ What matters:
 - human work never becomes a log-only or separate hidden item.
 ## Requirements
 ### Identity And Admission
-- Canonical identity is kind, repository, PR number, exact head SHA, authority digest, and PR lineage.
-- `operation_id` and tenant are filename-safe digests of canonical identity. Raw identity stays inside validated records.
+- Canonical operation identity is kind, repository, PR number, and exact head SHA, plus `feedback_digest` for maintenance; authority digest and PR lineage remain separate admission fields.
+- `operation_id` and tenant are filename-safe digests of canonical identity. Raw identity stays inside validated records. Maintenance head is a safety fence, not the sole work trigger.
+- Maintenance discovery admits only a changed, non-empty actionable feedback digest. Every admitted snapshot reserves a round; empty snapshots never reach identity construction.
 - One immutable admission names engine owner, mode generation, board, tenant, operation, discovery cycle, and input digest.
 - One immutable card binding names task ID, profile digest, body digest, workspace, and admission digest.
 - Replays adopt one exact card. Missing, duplicate, or mismatched cards quarantine the operation.
@@ -79,13 +80,13 @@ Safe transition is fixed: model blocks and releases its claim; coordinator verif
 - Install one engine-neutral admission front door before cutover. Both Postgres rollback and Kanban paths must consult it before queue mutation.
 - Stop old ingress, drain old Postgres work in place, then open Kanban ingress. Never copy or replay old work.
 - Engine ownership is permanent per admission. Rollback changes default engine only; Kanban admissions stay Kanban-owned and Postgres admissions stay Postgres-owned.
-- Maintain mode records one immutable pre-cutover lineage-round floor from drained Postgres history. Supersede never refunds a started round.
+- Maintain mode records one immutable pre-cutover lineage-round floor with exact historical feedback digests from drained Postgres history. Cutover blocks if those digests are unavailable. Supersede never refunds a started round.
 - Activation requires verified journal backup on a separate failure domain plus restore drill.
 - Remove each kind's Compose producer, controller route, and Postgres functions only after 50 successful live jobs, restart and rollback drills, and the approved rollback window.
 ## Acceptance And Stop Gates
 | Gate | Pass | Stop |
 | --- | --- | --- |
-| Discovery | same bounded GitHub snapshot yields same sorted operations; no gaps/duplicates in crash tests | any missed or duplicate admission |
+| Discovery | same bounded GitHub snapshot yields same sorted operations; maintenance admits only changed non-empty actionable feedback digests | any missed or duplicate admission |
 | Credential isolation | runtime probe proves task-scoped model tools cannot reach host shell, Hermes state, network, or publisher credential | any reachable control state or write credential |
 | Effects | intent precedes every effect; exact readback precedes closure | effect without intent, duplicate effect, false receipt |
 | Human path | all injected human/uncertain cases end on same unassigned `review` card | log-only, assigned, dispatchable, or auto-reopened card |

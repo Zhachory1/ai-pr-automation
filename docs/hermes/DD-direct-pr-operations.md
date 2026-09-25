@@ -43,15 +43,16 @@ Boards are fixed: `pr-review` and `pr-maintain`. Startup refuses missing, duplic
 
 Canonical values:
 ```text
-identity     = canonical(kind, repo, pr, head)
-operation_id = <kind>-<sha256(identity)>
-tenant       = operation_id
-lineage      = <repo>#<pr>
+review_identity   = canonical(kind, repo, pr, head)
+maintain_identity = canonical(kind, repo, pr, head, feedback_digest)
+operation_id      = <kind>-<sha256(identity)>
+tenant            = operation_id
+lineage           = <repo>#<pr>
 ```
 
 Only validated `operation_id` enters paths. Raw identity stays inside each record and is rehashed on read. Opens use fixed parent directories, `O_NOFOLLOW`, owner/mode/link checks, and path confinement.
 
-Maintain admission also stores immutable round `1..3`. Cutover records a one-time lineage-round floor from drained Postgres history. Round count includes every reserved pass across engines and heads. Supersede or pre-admission crash never refunds a round. Round 4 is rejected before task creation.
+Maintain admission also stores immutable round `1..3`. `feedback_digest` is required lowercase SHA-256 of the non-empty actionable snapshot; head remains its safety fence, not its sole trigger. Cutover records a one-time lineage-round floor with the exact historical feedback digests from drained Postgres history and blocks if they are unavailable. Round count includes every admitted snapshot across engines and heads. Supersede or post-reservation crash never refunds a round. Round 4 is rejected before task creation.
 
 Root-owned state, mode `0700`; immutable records, mode `0600`:
 ```text
@@ -79,9 +80,9 @@ One root coordinator is the sole admission front door. `--kind` and mode select 
 
 1. acquire kind lock and capture mode generation, cycle end, and authority digest;
 2. enumerate every allowed repository with paginated GitHub reads, not result-order-dependent search;
-3. apply current kind eligibility;
+3. apply current kind eligibility; for maintenance, admit only a changed non-empty actionable feedback digest;
 4. resolve exact PR head and required metadata;
-5. sort by repository, PR, head;
+5. sort by repository, PR, head, then maintenance feedback digest;
 6. create or verify engine-neutral admission before Postgres or card mutation;
 7. reject any conflicting engine owner or unresolved same-lineage maintenance work;
 8. advance cursor only after every item in closed cycle is admitted, already owned, or deterministically ineligible.

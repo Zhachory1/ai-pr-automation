@@ -10,7 +10,7 @@ Move `pr-review`, then `pr-maintain`, to persistent host-native Kanban boards. P
 
 Do not migrate Postgres work, add boards per operation, expose GitHub write credentials to models, use direct SQLite, or retire shared infrastructure used by other kinds.
 
-First code PR is PR 2. It is inert and behavior-preserving. No code PR may activate a route merely by merge.
+First code PR is PR 2. It is inert and behavior-preserving. Its identity scope includes issue #259: maintenance is triggered by changed non-empty actionable feedback, with head retained as a safety fence. No code PR may activate a route merely by merge.
 ## Order
 ```mermaid
 flowchart TD
@@ -31,7 +31,7 @@ Every arrow is a merge and evidence gate. No parallel activation. Maintainer wor
 - Review trust boundaries, state machine, human queue rule, rollback ownership, and deletion gates.
 - Acceptance: no open architecture blocker; runtime unchanged.
 ## PR 2: Inert Shared Journal And Validators
-- Add filename-safe operation identity, admission/binding/effect/quarantine/disposition/closure schemas under confined per-operation directories.
+- Add filename-safe operation identity—`kind|repo|PR|head` for review and the same plus `feedback_digest` for maintenance—and admission/binding/effect/quarantine/disposition/closure schemas under confined per-operation directories.
 - Add atomic immutable writes, digest chain, root lock, exact-head/authority/lineage validators, round counter, separate-failure-domain mirror/restore checks, and CLI JSON adapter.
 - Add isolated real-CLI probes for assign-none, unblock, request-review, complete, list, show, archived reads, and disabled default auto-assignment.
 - No producer, profile, effect handler, board mutation, route, credential, or service change.
@@ -62,7 +62,7 @@ Every arrow is a merge and evidence gate. No parallel activation. Maintainer wor
 ## PR 7: Inert Maintain Profile And Coordinator
 - Add proposal/local-commit-only profile and persistent `pr-maintain` board contract.
 - Add task-scoped workspace MCP backed by pinned macOS Seatbelt profile. No generic host terminal/file/network. Default-deny child sees bounded read-only toolchain plus one writable worktree; no credentials, service sockets, control state, inherited descriptors, or surviving process tree.
-- Add shadow deterministic discovery, one-time Postgres lineage-round floor, explicit per-lineage floor/round records, per-kind locked cross-engine round reservation, immutable round `1..3`, exact worktree/head/branch binding, one-fix-pass and full-feedback-ledger validators.
+- Add shadow deterministic discovery that admits only changed non-empty actionable feedback digests, one-time Postgres lineage-round floor with exact historical feedback digests (cutover blocks if unavailable), explicit per-lineage floor/round records, per-kind locked cross-engine round reservation, immutable round `1..3` per admitted snapshot, exact worktree/head/branch binding, one-fix-pass and full-feedback-ledger validators.
 - Make coordinator sole admission front door in Postgres mode only after parity/race fixtures pass. Do not enable Kanban cards or effect handler.
 - Acceptance: old/new eligibility parity; concurrent different-head/engine races reserve unique rounds; crash after reservation consumes round; round 4 denied; Seatbelt path/symlink/socket/network/child/grandchild/resource escape probes fail; review path unchanged.
 ## PR 8: Maintain Effect Handler And Finalizer
