@@ -207,8 +207,12 @@ rollback/audit during bake; normal lifecycle cannot start retired workers.
 Install and `sync-support` create all five v2 council profiles only when all five are absent and gateway,
 dashboard, and bridge are stopped. A partial set fails closed. If profiles are missing while gateway is
 running, run `scripts/fleet.sh down`, rerun install or `sync-support`, then run `scripts/fleet.sh up`.
-Existing complete sets are not replaced and must pass live preflight. Gateway launchd exports exact
-snapshot/workflow roots and the 120-second Kanban busy timeout used by profile MCP interpolation.
+Existing complete sets are not replaced and must pass live preflight. Support sync writes only the
+snapshot root, workflow root, and pinned council-tools interpreter into each v2 profile's private `.env`,
+preserving existing entries. Hermes strips root-profile settings when spawning a different profile;
+these worker settings must therefore be profile-local. Preflight requires those local settings rather
+than injecting them into a synthetic worker environment. Gateway launchd also exports the roots and
+120-second Kanban busy timeout.
 Bridge preflight also probes a fresh database through pinned Hermes Python and fails unless linked
 SQLite reports `journal_mode=delete` and `busy_timeout=120000`.
 

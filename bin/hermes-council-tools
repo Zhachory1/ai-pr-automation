@@ -467,7 +467,8 @@ def main():
             elif reply:
                 send({"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}})
         elif method == "tools/call":
-            if not isinstance(params, dict) or set(params) != {"name", "arguments"} \
+            if not isinstance(params, dict) or set(params) - {"name", "arguments", "_meta"} \
+                    or ("_meta" in params and not isinstance(params["_meta"], dict)) \
                     or not isinstance(params.get("name"), str) or not isinstance(params.get("arguments"), dict) \
                     or params["name"] not in TOOL_BY_NAME:
                 if reply:

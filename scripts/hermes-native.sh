@@ -232,6 +232,14 @@ install_native() {
     cmp -s "${pair%%:*}" "${pair#*:}" || { echo "Hermes support install mismatch" >&2; exit 2; }
   done
   provision_v2_profiles
+  python3 - "$PROFILE_CONFIGURATOR" "$HERMES_HOME" "$BRIDGE_CONTRACT" \
+    "$SNAPSHOT_ROOT" "$WORKFLOW_ROOT" "$INSTALL_DIR/venv/bin/python" "$SERVICE_USER" <<'PY'
+import pathlib, pwd, runpy, sys
+module, home, contract, snapshots, workflows, python, user = sys.argv[1:]
+config = runpy.run_path(module); account = pwd.getpwnam(user)
+config["configure_worker_env"](pathlib.Path(home), config["load_contract"](pathlib.Path(contract)),
+    pathlib.Path(snapshots), pathlib.Path(workflows), pathlib.Path(python), account.pw_uid, account.pw_gid)
+PY
   if [[ ! -e "$BRIDGE_KEY_FILE" ]]; then
     python3 - "$BRIDGE_KEY_FILE" "$(id -u "$SERVICE_USER")" "$(id -g "$SERVICE_USER")" <<'PY'
 import json, os, pathlib, secrets, sys

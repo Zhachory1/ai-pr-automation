@@ -100,7 +100,9 @@ source=Path("scripts/hermes-native.sh").read_text()
 install=source[source.index("install_native() {"):source.index("\npreflight() {")]
 assert install.index("prepare_bridge_support_sync") < install.index("install -d")
 assert install.index('configure-hermes-kanban-profiles.py" "$PROFILE_CONFIGURATOR"') < install.index("provision_v2_profiles")
-assert install.index("provision_v2_profiles") < install.index('"$ROOT/scripts/hermes-native.sh" preflight')
+assert install.index("provision_v2_profiles") < install.index('config["configure_worker_env"]')
+assert install.index('config["configure_worker_env"]') < install.index('"$ROOT/scripts/hermes-native.sh" preflight')
+assert '"$SNAPSHOT_ROOT" "$WORKFLOW_ROOT" "$INSTALL_DIR/venv/bin/python" "$SERVICE_USER"' in install
 assert "install) install_native ;;" in source
 assert "sync-support) HERMES_SUPPORT_ONLY=true install_native ;;" in source
 assert "sync-support) need_root; prepare_bridge_support_sync" not in source

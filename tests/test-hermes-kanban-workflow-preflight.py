@@ -120,6 +120,13 @@ def discover_mcp_tools(allowed_mcp_names=None):
             "DEFINITIONS=" + repr(SERVER_DEFINITIONS) + "\n"
             "def get_tool_definitions(**kwargs): return DEFINITIONS\n")
         venv = install / "venv/bin"; venv.mkdir(parents=True); (venv / "python").symlink_to(sys.executable)
+        if contract["schema_version"] == 2:
+            snapshots = root / "snapshots"; snapshots.mkdir()
+            workflows = root / "workflows"; workflows.mkdir()
+            for target in contract["profiles"]:
+                (home / "profiles" / target / ".env").write_text(
+                    f"PR_SAFETY_SNAPSHOT_ROOT={snapshots}\nPR_SAFETY_WORKFLOW_ROOT={workflows}\n"
+                    f"HERMES_COUNCIL_TOOLS_PYTHON={venv / 'python'}\n")
         return home, install
 
     def installed_council_tools(self, root):
@@ -188,6 +195,14 @@ def discover_mcp_tools(allowed_mcp_names=None):
                 preflight.validate_installed_council_tools(server, os.getuid(), support)
             finally:
                 preflight.__file__ = original
+
+    def test_v2_missing_profile_local_runtime_setting_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve(); home, install = self.fixture(root, V2_CONTRACT)
+            server, trust = self.installed_council_tools(root)
+            (home / "profiles/council-reviewer-v2/.env").write_text("OTHER_SETTING=keep\n")
+            with self.assertRaisesRegex(ValueError, "missing profile-local worker runtime setting"):
+                preflight.preflight(home, install, V2_CONTRACT, server, os.getuid(), trust)
 
     def test_v2_profile_tool_and_contract_drift_fail(self):
         with tempfile.TemporaryDirectory() as td:
