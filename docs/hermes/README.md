@@ -163,12 +163,16 @@ producers before synchronizing mode, authors, and allowed orgs, then starts only
 Install merged support files with `sudo scripts/hermes-native.sh sync-support` before activation.
 
 The host producer calls `hermes-pr-safety-kanban-enqueue.py` using Hermes's Python. It validates the snapshot,
-reuses the existing restricted profiles/prompts, creates five blocked cards via CLI, verifies the complete
-graph, then releases synthesis to dependency-gated `todo` and the four specialists to `ready`. Repeated
-polls adopt the same cards, including archived cards; worker/human blocks are never automatically reopened.
-Keep operation boards and inputs: this enqueue-only slice deliberately adds no automated cleanup,
-Postgres settlement, final handoff publication, or human incident queue. Results remain on the Kanban board.
-No new bridge call, fork, journal, controller change, or production activation is part of this slice.
+reuses the existing restricted profiles/prompts, and places every new PR-safety graph on the persistent
+`pr-safety-council` board. Each PR uses its workflow ID as the Hermes tenant and idempotency namespace;
+repository and PR number prefix its five card titles. The producer creates all cards blocked, verifies that
+operation's complete tenant-filtered graph, then releases synthesis to dependency-gated `todo` and the four
+specialists to `ready`. Repeated polls adopt the same cards, including archived cards; worker/human blocks
+are never automatically reopened. Existing per-operation boards and pre-migration workflow inputs remain
+untouched and are never copied, retried, archived, or reopened by shared-board enqueue. This enqueue-only
+slice deliberately adds no automated cleanup, Postgres settlement, final handoff publication, or human
+incident queue. Results remain on their original or shared Kanban board. No new bridge call, fork, journal,
+controller change, or automatic migration is part of this slice.
 
 Before switching engines, stop discovery and drain existing safety requests. Discovery history is not
 migrated between engines; select a bounded, approved pilot to avoid re-reviewing old merges. Provider policy,

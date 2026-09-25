@@ -13,6 +13,7 @@ import sys
 TITLES = {role:f"Council {role} safety review" for role in
           ("review", "security", "reliability", "architecture")}
 SYNTHESIS_TITLE = "Council safety synthesis"
+BOARD = "pr-safety-council"
 LOCK_FD = None
 
 
@@ -40,10 +41,10 @@ def task(command, env, board, task_id):
     return run([*command, "kanban", "--board", board, "show", task_id, "--json"], env, True)
 
 
-def create_task(command, env, board, title, body_path, profile, model, key, workspace, parents=()):
+def create_task(command, env, board, title, body_path, profile, model, key, workspace, parents=(), *, tenant):
     args = [*command, "kanban", "--board", board, "create", title,
             "--body-file", str(body_path), "--assignee", profile, "--workspace", f"dir:{workspace}",
-            "--idempotency-key", key, "--max-runtime", "900", "--max-retries", "1",
+            "--idempotency-key", key, "--tenant", tenant, "--max-runtime", "900", "--max-retries", "1",
             "--model", model, "--provider", "anthropic", "--completion-contract", "local-only",
             "--created-by", "operator", "--initial-status", "blocked", "--json"]
     for parent in parents:
@@ -55,14 +56,14 @@ def create_task(command, env, board, title, body_path, profile, model, key, work
     return task_id
 
 
-def verify_task(value, *, title, body, profile, model, workspace, parents, children):
+def verify_task(value, *, title, body, profile, model, workspace, parents, children, tenant):
     current = value.get("task")
     if not isinstance(current, dict) or current.get("title") != title or current.get("body") != body \
             or current.get("assignee") != profile or current.get("model_override") != model \
             or current.get("provider_override") != "anthropic" or current.get("workspace_kind") != "dir" \
             or current.get("workspace_path") != str(workspace) or current.get("max_runtime_seconds") != 900 \
             or current.get("max_retries") != 1 or current.get("completion_contract") != "local-only" \
-            or current.get("created_by") != "operator" \
+            or current.get("created_by") != "operator" or current.get("tenant") != tenant \
             or sorted(value.get("parents", [])) != sorted(parents) \
             or sorted(value.get("children", [])) != sorted(children):
         raise ValueError("existing Kanban task differs from fixed safety graph")
@@ -94,26 +95,38 @@ def enqueue(args):
     home = pathlib.Path(args.hermes_home)
     ctx = council.v2_context(home, request, contract)
     council.profile_check_v2(home)
-    council.prepare_v2_inputs(ctx)
-    council.verify_v2_inputs(ctx)
-    roles = {role:(council.V2_SPECIALISTS[role], council.V2_MODELS[role], TITLES[role])
+    prefix = f"{request['repo']}#{request['pr']}: "
+    titles = {role:prefix + title for role, title in TITLES.items()}
+    synthesis_title = prefix + SYNTHESIS_TITLE
+    roles = {role:(council.V2_SPECIALISTS[role], council.V2_MODELS[role], titles[role])
              for role in TITLES}
-    synthesis = (council.V2_SYNTHESIS, council.V2_MODELS["synthesis"], SYNTHESIS_TITLE)
-    board = ctx["workflow_id"]
+    synthesis = (council.V2_SYNTHESIS, council.V2_MODELS["synthesis"], synthesis_title)
+    board, tenant = BOARD, ctx["workflow_id"]
     env = {"HOME": str(home.parent), "HERMES_HOME": str(home), "PATH": os.environ.get("PATH", ""),
            "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "HERMES_SAFE_MODE": "1"}
     command = [str(args.hermes_bin)]
 
     boards = run([*command, "kanban", "boards", "list", "--json"], env, True)
+    binding = ctx["root"] / "kanban-board.txt"
+    if any(item.get("slug") == ctx["workflow_id"] for item in boards) or (
+            ctx["root"].exists() and not binding.exists()):
+        return {"status":"legacy", "board":ctx["workflow_id"],
+                "workflow_id":ctx["workflow_id"], "task_ids":{}}
+    council.private_dir(ctx["workflow_root"])
+    council.private_dir(ctx["root"])
+    council.immutable_file(binding, (board + "\n").encode())
+    council.prepare_v2_inputs(ctx)
+    council.verify_v2_inputs(ctx)
     if not any(item.get("slug") == board for item in boards):
         run([*command, "kanban", "boards", "create", board, "--name", "PR Safety Council"], env)
     boards = run([*command, "kanban", "boards", "list", "--json"], env, True)
     if len([item for item in boards if item.get("slug") == board]) != 1:
         raise ValueError("PR-safety board creation could not be verified")
 
-    existing = run([*command, "kanban", "--board", board, "list", "--archived", "--json"], env, True)
+    listing = [*command, "kanban", "--board", board, "list", "--tenant", tenant, "--archived", "--json"]
+    existing = run(listing, env, True)
     by_title = {item["title"]: item for item in existing}
-    if len(by_title) != len(existing) or not set(by_title) <= {*TITLES.values(), SYNTHESIS_TITLE}:
+    if len(by_title) != len(existing) or not set(by_title) <= {*titles.values(), synthesis_title}:
         raise ValueError("PR-safety board contains unexpected or duplicate tasks")
     if len(existing) != 5:
         for item in existing:
@@ -131,16 +144,16 @@ def enqueue(args):
         council.immutable_file(body_path, body.encode())
         tasks[role] = by_title[title]["id"] if title in by_title else create_task(
             command, env, board, title, body_path, profile, model,
-            f"{ctx['workflow_id']}:{role}", ctx["root"])
+            f"{ctx['workflow_id']}:{role}", ctx["root"], tenant=tenant)
     body = council.v2_body(ctx, "synthesis", tasks.values())
     body_values["synthesis"] = body
     body_path = bodies / "synthesis.json"
     council.immutable_file(body_path, body.encode())
-    tasks["synthesis"] = by_title[SYNTHESIS_TITLE]["id"] if SYNTHESIS_TITLE in by_title else create_task(
+    tasks["synthesis"] = by_title[synthesis_title]["id"] if synthesis_title in by_title else create_task(
         command, env, board, synthesis[2], body_path, synthesis[0], synthesis[1],
-        f"{ctx['workflow_id']}:synthesis", ctx["root"], tasks.values())
+        f"{ctx['workflow_id']}:synthesis", ctx["root"], tasks.values(), tenant=tenant)
 
-    listed = run([*command, "kanban", "--board", board, "list", "--archived", "--json"], env, True)
+    listed = run(listing, env, True)
     if len(listed) != 5 or {item.get("id") for item in listed} != set(tasks.values()):
         raise ValueError("PR-safety board does not contain exact five-task graph")
     for role, (profile, model, title) in {**roles, "synthesis": synthesis}.items():
@@ -148,7 +161,7 @@ def enqueue(args):
         expected_children = [] if role == "synthesis" else [tasks["synthesis"]]
         verify_task(task(command, env, board, tasks[role]), title=title,
                     body=body_values[role], profile=profile, model=model,
-                    workspace=ctx["root"], parents=expected_parents, children=expected_children)
+                    workspace=ctx["root"], parents=expected_parents, children=expected_children, tenant=tenant)
         attachments = run([*command, "kanban", "--board", board, "attachments", tasks[role], "--json"], env, True)
         if attachments != []:
             raise ValueError("PR-safety task has attachments")
