@@ -24,6 +24,19 @@ export PR_SAFETY_POLICY_PATH="${PR_SAFETY_POLICY_PATH:-$PR_SAFETY_POLICY_ROOT/pr
 export PR_SAFETY_POLICY_VERSION="${PR_SAFETY_POLICY_VERSION:-v1}"
 export PR_SAFETY_POLICY_DIGEST="${PR_SAFETY_POLICY_DIGEST:-$(shasum -a 256 "$ROOT/policy/pr-safety-policy-v1.md" | awk '{print $1}')}"
 
+recreate_review_producer() {
+  local engine="$1" container state environment matches
+  PR_REVIEW_QUEUE_ENGINE="$engine" "$ROOT/scripts/compose.sh" up -d --no-deps --force-recreate pr-producer-review
+  container="$("$ROOT/scripts/compose.sh" ps -q pr-producer-review)"
+  [[ -n "$container" && "$container" != *$'\n'* ]] \
+    || { echo "expected one pr-producer-review container" >&2; return 1; }
+  state="$(docker inspect --format '{{.State.Running}}' "$container")"
+  environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container")"
+  matches="$(grep -Fxc "PR_REVIEW_QUEUE_ENGINE=$engine" <<<"$environment" || true)"
+  [[ "$state" == true && "$matches" == 1 ]] \
+    || { echo "pr-producer-review failed $engine environment/running verification" >&2; return 1; }
+}
+
 case "${1:-}" in
   up)
     "$ROOT/scripts/hermes-authority.py" --file "$AUTHORITY_SOURCE" >/dev/null
@@ -56,6 +69,17 @@ case "${1:-}" in
     "$ROOT/scripts/compose.sh" down
     sudo "$ROOT/scripts/hermes-native.sh" down
     ;;
+  review-kanban-up)
+    recreate_review_producer kanban
+    if ! sudo "$ROOT/scripts/hermes-native.sh" review-mode-set-kanban; then
+      sudo "$ROOT/scripts/hermes-native.sh" review-producer-stop || true
+      exit 1
+    fi
+    ;;
+  review-postgres-up)
+    sudo "$ROOT/scripts/hermes-native.sh" review-producer-stop
+    recreate_review_producer postgres
+    ;;
   status)
     echo '=== Compose support services ==='
     "$ROOT/scripts/compose.sh" ps
@@ -68,5 +92,5 @@ case "${1:-}" in
     echo '=== Host-native Hermes ==='
     sudo "$ROOT/scripts/hermes-native.sh" logs
     ;;
-  *) echo "usage: $0 up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 up|down|review-kanban-up|review-postgres-up|status|logs" >&2; exit 2 ;;
 esac

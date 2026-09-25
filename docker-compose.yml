@@ -313,6 +313,7 @@ services:
       HERMES_AUTHORITY_FILE: /config/authority.yaml
       GITHUB_TOKEN_FILE: /run/secrets/github_read_token
       PRODUCER_INTERVAL_SECONDS: ${PR_PRODUCER_INTERVAL_SECONDS:-300}
+      PR_REVIEW_QUEUE_ENGINE: ${PR_REVIEW_QUEUE_ENGINE:-postgres}
     secrets: [github_read_token]
     volumes:
       - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
