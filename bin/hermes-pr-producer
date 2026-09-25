@@ -27,13 +27,29 @@ MAX_UPDATED_AGE_DAYS="${PR_PRODUCER_MAX_UPDATED_AGE_DAYS:-0}"   # 0 disables
 AUTHORITY="${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}"
 AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
+QUEUE_ENGINE="${PR_REVIEW_QUEUE_ENGINE:-postgres}"
+[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban ]] \
+  || { echo "PR_REVIEW_QUEUE_ENGINE must be postgres or kanban" >&2; exit 2; }
+[[ "$MODE" != maintain || "$QUEUE_ENGINE" != kanban ]] \
+  || { echo "PR_REVIEW_QUEUE_ENGINE=kanban is unsupported for maintain" >&2; exit 2; }
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) hermes-pr-producer[$MODE] $*" >&2; }
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
-need gh; need jq; need psql; need python3
+need gh; need jq; need python3
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
+if [[ "$QUEUE_ENGINE" == postgres ]]; then
+  need psql
+else
+  for required in HERMES_BIN HERMES_HOME HERMES_PYTHON HERMES_PR_KANBAN_ENQUEUE HERMES_PR_KANBAN_WORK_ROOT; do
+    [[ -n "${!required:-}" ]] || { echo "$required is required for Kanban review" >&2; exit 2; }
+  done
+  [[ "$HERMES_PR_KANBAN_WORK_ROOT" == /* ]] || { echo "HERMES_PR_KANBAN_WORK_ROOT must be absolute" >&2; exit 2; }
+  [[ -x "$HERMES_BIN" && -x "$HERMES_PYTHON" && -f "$HERMES_PR_KANBAN_ENQUEUE" && -d "$HERMES_HOME" ]] \
+    || { echo "host Hermes Kanban enqueue support is unavailable" >&2; exit 2; }
+  mkdir -p "$HERMES_PR_KANBAN_WORK_ROOT"; chmod 0700 "$HERMES_PR_KANBAN_WORK_ROOT"
+fi
 psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
 
 # Load the granted-repo allowlist once. Empty grant = nothing to do (not an error).
@@ -52,7 +68,7 @@ if (( gh_status != 0 )); then log "WARN: gh search failed (exit $gh_status); enq
 if [[ -z "$prs" ]]; then log "no matching open PRs"; exit 0; fi
 
 now_epoch="$(date +%s)"; cutoff=$(( now_epoch - (MAX_UPDATED_AGE_DAYS * 86400) ))
-enq=0 dedupe=0 skip=0
+enq=0 dedupe=0 skip=0 failed=0
 while IFS=$'\t' read -r repo number url title updated_epoch; do
   [[ -z "$repo" ]] && continue
   if ! repo_granted "$repo"; then skip=$((skip+1)); continue; fi
@@ -61,6 +77,21 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   fi
   sha="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" gh pr view "$number" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   if [[ -z "$sha" ]]; then log "skip $repo#$number: could not resolve head sha"; skip=$((skip+1)); continue; fi
+  if [[ "$QUEUE_ENGINE" == kanban ]]; then
+    if payload="$(PYTHONPATH="$(dirname "$HERMES_PR_KANBAN_ENQUEUE")" "$HERMES_PYTHON" -B -c \
+      'import json,sys; from hermes_direct_pr_journal import identity; repo,number,title,head=sys.argv[1:]; number=int(number); operation=identity("pr-review",repo,number,head)["operation_id"]; print(json.dumps({"operation_id":operation,"repo":repo,"number":number,"url":f"https://github.com/{repo}/pull/{number}","title":title,"head_sha":head},sort_keys=True,separators=(",",":"),ensure_ascii=False,allow_nan=False))' \
+      "$repo" "$number" "$title" "$sha" 2>/dev/null)" &&
+      result="$(printf '%s' "$payload" | "$TIMEOUT_BIN" --kill-after=5s 120s "$HERMES_PYTHON" -B "$HERMES_PR_KANBAN_ENQUEUE" \
+        --kind pr-review --hermes-home "$HERMES_HOME" --hermes-bin "$HERMES_BIN" \
+        --workspace-root "$HERMES_PR_KANBAN_WORK_ROOT" 2>/dev/null | head -c 4096)" &&
+      checked="$(jq -ceS --arg op "$(jq -r .operation_id <<<"$payload")" '. as $r | select(type=="object" and keys==["board","kind","operation_id","status","task_id"] and .kind=="pr-review" and .board=="pr-review" and .operation_id==$op and (.task_id|type=="string" and test("^t_[0-9a-f]{8}$")) and (["active","done","ready","review"]|index($r.status)!=null))' <<<"$result" 2>/dev/null)" &&
+      [[ "$result" == "$checked" ]]; then
+      enq=$((enq+1)); log "admitted pr-review $repo#$number@$sha"
+    else
+      failed=$((failed+1)); log "kanban enqueue failed for $repo#$number@$sha"
+    fi
+    continue
+  fi
   payload="$(jq -cn --arg repo "$repo" --arg pr "$number" --arg url "$url" --arg title "$title" \
     '{repo:$repo, number:($pr|tonumber), url:$url, title:$title}')"
   dedupe_key="${repo}#${number}@${sha}"
@@ -71,4 +102,9 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   if [[ "$inserted" =~ ^[0-9]+$ ]]; then enq=$((enq+1)); log "enqueued $KIND $dedupe_key (#$inserted)"; else dedupe=$((dedupe+1)); fi
 done <<< "$prs"
 
-log "done: enqueued=$enq deduped=$dedupe skipped=$skip"
+if [[ "$QUEUE_ENGINE" == kanban ]]; then
+  log "done: admitted=$enq failed=$failed skipped=$skip"
+  (( failed == 0 )) || exit 1
+else
+  log "done: enqueued=$enq deduped=$dedupe skipped=$skip"
+fi
