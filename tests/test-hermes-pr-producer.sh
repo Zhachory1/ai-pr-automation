@@ -67,4 +67,65 @@ PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_AUTHORITY_FILE="$tmp/authority.ya
   bin/hermes-pr-producer maintain >/dev/null 2>&1
 grep -q 'pr-maintain' "$tmp/psql.log" || { echo 'FAIL: maintain kind not enqueued' >&2; exit 1; }
 
-echo 'PASS: hermes-pr-producer discovers, scopes to grant, resolves head, enqueues per-commit'
+# Direct review mode admits current discoveries only and never touches PostgreSQL or invokes Hermes.
+mkdir -p "$tmp/support" "$tmp/home" "$tmp/work/historical-operation"
+cp scripts/hermes_direct_pr_journal.py "$tmp/support/"
+printf '{"historical":true}\n' > "$tmp/work/historical-operation/request.json"
+chmod 755 "$tmp/work"
+cat > "$tmp/bin/hermes" <<'SH'
+#!/usr/bin/env bash
+touch "$TEST_STATE/model-called"
+exit 99
+SH
+cat > "$tmp/support/enqueue.py" <<'PY'
+import json, os, pathlib, sys
+raw=sys.stdin.read(); request=json.loads(raw); mode=os.environ.get("TEST_MODE", "ok")
+with pathlib.Path(os.environ["TEST_STATE"], "direct.log").open("a") as stream:
+    stream.write(json.dumps({"argv":sys.argv[1:],"raw":raw},separators=(",",":"))+"\n")
+if mode == "fail-first" and request["number"] == 7: raise SystemExit(1)
+if mode == "malformed": print("{}")
+elif mode == "oversize": print("x"*5000)
+else:
+    print(json.dumps({"kind":"pr-review","board":"pr-review","operation_id":request["operation_id"],
+        "task_id":f't_{request["number"]:08x}',"status":"ready"},sort_keys=True,separators=(",",":")))
+PY
+chmod +x "$tmp/bin/hermes"
+direct() {
+  PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" TEST_MODE="${TEST_MODE:-ok}" PR_REVIEW_QUEUE_ENGINE=kanban \
+    HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
+    HERMES_BIN="$tmp/bin/hermes" HERMES_HOME="$tmp/home" HERMES_PYTHON="$(command -v python3)" \
+    HERMES_PR_KANBAN_ENQUEUE="$tmp/support/enqueue.py" HERMES_PR_KANBAN_WORK_ROOT="$tmp/work" \
+    bin/hermes-pr-producer review
+}
+: > "$tmp/psql.log"; rm -f "$tmp/direct.log" "$tmp/model-called"
+direct_out="$(direct 2>&1)"
+[[ ! -s "$tmp/psql.log" && ! -e "$tmp/model-called" ]] || { echo 'FAIL: direct mode called psql or Hermes' >&2; exit 1; }
+[[ "$(wc -l < "$tmp/direct.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: direct mode did not admit exactly two current grants' >&2; exit 1; }
+op7="$(PYTHONPATH=scripts python3 -c 'from hermes_direct_pr_journal import identity; print(identity("pr-review", "Zhachory1/ai-pr-automation", 7, "deadbeef"*5)["operation_id"])')"
+op8="$(PYTHONPATH=scripts python3 -c 'from hermes_direct_pr_journal import identity; print(identity("pr-review", "ROKT/ml", 8, "deadbeef"*5)["operation_id"])')"
+jq -se --arg op7 "$op7" --arg op8 "$op8" --arg home "$tmp/home" --arg bin "$tmp/bin/hermes" --arg root "$tmp/work" '
+  all(.[]; .argv == ["--kind","pr-review","--hermes-home",$home,"--hermes-bin",$bin,"--workspace-root",$root] and .raw == (.raw|fromjson|tojson)) and
+  (map(.raw|fromjson) == [
+    {head_sha:("deadbeef"*5),number:7,operation_id:$op7,repo:"Zhachory1/ai-pr-automation",title:"Granted PR",url:"https://github.com/Zhachory1/ai-pr-automation/pull/7"},
+    {head_sha:("deadbeef"*5),number:8,operation_id:$op8,repo:"ROKT/ml",title:"Organization PR",url:"https://github.com/ROKT/ml/pull/8"}
+  ])' "$tmp/direct.log" >/dev/null || { echo 'FAIL: direct request or argv differs' >&2; cat "$tmp/direct.log" >&2; exit 1; }
+echo "$direct_out" | grep -q 'admitted=2 failed=0 skipped=1' || { echo "FAIL: direct summary wrong: $direct_out" >&2; exit 1; }
+[[ "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$tmp/work")" == 0o700 ]] || { echo 'FAIL: direct work root mode' >&2; exit 1; }
+
+# Per-item failures continue through the batch; malformed and oversized results fail closed.
+rm -f "$tmp/direct.log"
+if TEST_MODE=fail-first fail_out="$(direct 2>&1)"; then fail_rc=0; else fail_rc=$?; fi
+[[ "$fail_rc" == 1 && "$(wc -l < "$tmp/direct.log" | tr -d ' ')" == 2 ]] \
+  || { echo 'FAIL: first direct failure starved later PR' >&2; exit 1; }
+echo "$fail_out" | grep -q 'admitted=1 failed=1 skipped=1' || { echo "FAIL: failed direct summary wrong: $fail_out" >&2; exit 1; }
+for bad in malformed oversize; do
+  rm -f "$tmp/direct.log"
+  if TEST_MODE="$bad" direct >/dev/null 2>&1; then echo "FAIL: $bad direct result accepted" >&2; exit 1; fi
+done
+
+if PR_REVIEW_QUEUE_ENGINE=kanban bin/hermes-pr-producer maintain >/dev/null 2>"$tmp/maintain.err"; then
+  echo 'FAIL: Kanban maintain accepted' >&2; exit 1
+fi
+grep -q 'unsupported for maintain' "$tmp/maintain.err" || { echo 'FAIL: Kanban maintain was not loud' >&2; exit 1; }
+
+echo 'PASS: hermes-pr-producer postgres and direct review modes'
