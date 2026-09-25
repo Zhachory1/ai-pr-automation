@@ -4,7 +4,7 @@ import contextlib, fcntl, hashlib, json, os, pathlib, re, stat
 KINDS = {"pr-review", "pr-maintain"}; RECORDS = {"admission", "binding", "intent", "receipt", "quarantine", "disposition", "closure"}
 SEQUENCED = {"intent", "receipt", "disposition"}
 HEX40 = re.compile(r"[0-9a-f]{40}\Z"); HEX64 = re.compile(r"[0-9a-f]{64}\Z")
-OPERATION = re.compile(r"(pr-review|pr-maintain)-[0-9a-f]{64}\Z"); PART = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
+OPERATION = re.compile(r"(pr-review|pr-maintain)-[0-9a-f]{64}\Z"); LINEAGE = re.compile(r"lineage-[0-9a-f]{64}\Z"); PART = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
 TEMP = re.compile(r"\.tmp-[0-9]+-[0-9a-f]{16}\Z")
 MAX_RECORD = 1024 * 1024
 class JournalError(ValueError): pass
@@ -19,21 +19,32 @@ def _repo_pr(repo, pr):
     if type(pr) is not int or pr <= 0:
         raise JournalError("invalid PR number")
     return repo.lower()
-def canonical_identity(kind, repo, pr, head):
+def _lineage_id(repo, pr):
+    repo = _repo_pr(repo, pr)
+    return "lineage-" + hashlib.sha256(f"{repo}#{pr}".encode()).hexdigest()
+def canonical_identity(kind, repo, pr, head, feedback_digest=None):
     if kind not in KINDS: raise JournalError("invalid operation kind")
     repo = _repo_pr(repo, pr)
     if not isinstance(head, str) or not HEX40.fullmatch(head): raise JournalError("invalid head SHA")
-    return _canonical({"head": head, "kind": kind, "pr": pr, "repo": repo})[:-1]
-def identity(kind, repo, pr, head):
-    raw = canonical_identity(kind, repo, pr, head); value = json.loads(raw)
+    value = {"head": head, "kind": kind, "pr": pr, "repo": repo}
+    if kind == "pr-maintain":
+        if not isinstance(feedback_digest, str) or not HEX64.fullmatch(feedback_digest): raise JournalError("invalid feedback digest")
+        value["feedback_digest"] = feedback_digest
+    elif feedback_digest is not None: raise JournalError("review identity cannot include feedback digest")
+    return _canonical(value)[:-1]
+def identity(kind, repo, pr, head, feedback_digest=None):
+    raw = canonical_identity(kind, repo, pr, head, feedback_digest=feedback_digest); value = json.loads(raw)
     value["operation_id"] = f"{kind}-{hashlib.sha256(raw).hexdigest()}"
-    value["lineage_id"] = "lineage-" + hashlib.sha256(f"{value['repo']}#{pr}".encode()).hexdigest()
+    value["lineage_id"] = _lineage_id(value["repo"], pr)
     return value
 def _valid_identity(value):
     try:
-        return (isinstance(value, dict) and set(value) == {"kind", "repo", "pr", "head", "operation_id", "lineage_id"}
-                and value == identity(value["kind"], value["repo"], value["pr"], value["head"]))
-    except (JournalError, KeyError, TypeError): return False
+        fields = {"kind", "repo", "pr", "head", "operation_id", "lineage_id"}
+        if value.get("kind") == "pr-maintain": fields.add("feedback_digest")
+        return (isinstance(value, dict) and set(value) == fields
+                and value == identity(value["kind"], value["repo"], value["pr"], value["head"],
+                                      feedback_digest=value.get("feedback_digest")))
+    except (AttributeError, JournalError, KeyError, TypeError): return False
 class Journal:
     def __init__(self, root, mirror, expected_uid=None, require_separate_device=True):
         self.uid = os.geteuid() if expected_uid is None else expected_uid
@@ -119,6 +130,25 @@ class Journal:
         else: raise JournalError("invalid record path")
         if self._relative(record_type, operation_id, sequence) != relative: raise JournalError("invalid record path")
         return record_type, operation_id, sequence
+    def _lineage_relative(self, lineage_id, round_number=None, operation_id=None):
+        if not isinstance(lineage_id, str) or not LINEAGE.fullmatch(lineage_id): raise JournalError("invalid lineage path")
+        base = pathlib.Path("lineages") / lineage_id
+        if round_number is None and operation_id is None: return base / "floor.json"
+        if (type(round_number) is not int or round_number not in range(1, 4)
+                or not isinstance(operation_id, str) or not OPERATION.fullmatch(operation_id)
+                or not operation_id.startswith("pr-maintain-")): raise JournalError("invalid lineage path")
+        return base / "rounds" / f"{round_number}-{operation_id}.json"
+    def _from_lineage_relative(self, relative):
+        parts = relative.parts
+        if len(parts) == 3 and parts[0] == "lineages" and parts[2] == "floor.json":
+            result = ("floor", parts[1], None, None)
+        elif len(parts) == 4 and parts[0] == "lineages" and parts[2] == "rounds":
+            match = re.fullmatch(r"([1-3])-(pr-maintain-[0-9a-f]{64})\.json", parts[3])
+            if not match: raise JournalError("invalid lineage path")
+            result = ("round", parts[1], int(match.group(1)), match.group(2))
+        else: raise JournalError("invalid lineage path")
+        if self._lineage_relative(result[1], result[2], result[3]) != relative: raise JournalError("invalid lineage path")
+        return result
     def path(self, record_type, operation_id, sequence=None, mirror=False):
         return (self.mirror if mirror else self.root) / self._relative(record_type, operation_id, sequence)
     def _read_file(self, path):
@@ -140,6 +170,9 @@ class Journal:
                 or (record_type in SEQUENCED and (type(payload.get("sequence")) is not int
                                                    or payload["sequence"] != sequence))):
             raise JournalError("invalid record envelope")
+        if (record_type == "admission" and payload["identity"]["kind"] == "pr-maintain"
+                and (type(payload.get("round")) is not int or payload["round"] not in range(1, 4))):
+            raise JournalError("maintenance admission requires round 1..3")
         return {"operation_id": operation_id, "payload": payload, "previous_digest": previous_digest,
                 "record_type": record_type, "schema_version": 1}
     def _decode(self, data, record_type, operation_id, sequence=None):
@@ -151,12 +184,42 @@ class Journal:
             raise JournalError("invalid journal envelope") from exc
         if value != expected or data != _canonical(value): raise JournalError("invalid journal envelope")
         return value
+    def _decode_lineage(self, data, kind, lineage_id, round_number=None, operation_id=None):
+        try:
+            value = json.loads(data); payload = value.get("payload")
+            if kind == "floor":
+                repo = _repo_pr(payload.get("repo"), payload.get("pr")); feedback = payload.get("feedback_digests")
+                if (set(payload) != {"repo", "pr", "lineage_id", "count", "feedback_digests", "provenance_digest"}
+                        or repo != payload["repo"] or _lineage_id(repo, payload["pr"]) != lineage_id
+                        or payload["lineage_id"] != lineage_id or type(payload["count"]) is not int
+                        or not isinstance(feedback, list) or payload["count"] != len(feedback) or len(feedback) not in range(4)
+                        or len(set(feedback)) != len(feedback) or any(not isinstance(item, str) or not HEX64.fullmatch(item) for item in feedback)
+                        or not isinstance(payload["provenance_digest"], str)
+                        or not HEX64.fullmatch(payload["provenance_digest"])): raise JournalError("invalid lineage floor")
+                expected = {"lineage_id": lineage_id, "payload": payload, "previous_digest": None,
+                            "schema_version": 1, "type": "floor"}
+            else:
+                operation = payload.get("identity")
+                if (set(payload) != {"identity", "lineage_id", "round"} or not _valid_identity(operation)
+                        or operation["kind"] != "pr-maintain" or operation["operation_id"] != operation_id
+                        or operation["lineage_id"] != lineage_id or payload["lineage_id"] != lineage_id
+                        or payload["round"] != round_number or not isinstance(value.get("previous_digest"), str)
+                        or not HEX64.fullmatch(value["previous_digest"])): raise JournalError("invalid lineage round")
+                expected = {"operation_id": operation_id, "payload": payload,
+                            "previous_digest": value["previous_digest"], "schema_version": 1, "type": "round"}
+        except (AttributeError, KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, JournalError) as exc:
+            raise JournalError("invalid lineage envelope") from exc
+        if value != expected or data != _canonical(value): raise JournalError("invalid lineage envelope")
+        return value
     def _valid_directory(self, relative):
         parts = relative.parts
-        valid = (not parts or parts == ("operations",)
-                 or (len(parts) == 2 and parts[0] == "operations" and OPERATION.fullmatch(parts[1]))
-                 or (len(parts) == 3 and parts[0] == "operations" and OPERATION.fullmatch(parts[1])
-                     and parts[2] in {"effects", "dispositions"}))
+        valid = (not parts or parts in {("operations",), ("lineages",)}
+                 or (len(parts) == 2 and ((parts[0] == "operations" and OPERATION.fullmatch(parts[1]))
+                                          or (parts[0] == "lineages" and LINEAGE.fullmatch(parts[1]))))
+                 or (len(parts) == 3 and ((parts[0] == "operations" and OPERATION.fullmatch(parts[1])
+                                           and parts[2] in {"effects", "dispositions"})
+                                          or (parts[0] == "lineages" and LINEAGE.fullmatch(parts[1])
+                                              and parts[2] == "rounds"))))
         if not valid: raise JournalError("invalid journal directory")
     def _inventory(self, root):
         records = {}
@@ -170,15 +233,24 @@ class Journal:
                 path = parent / name; relative = path.relative_to(root)
                 if relative == pathlib.Path(".journal.lock"): self._safe(path, False, 0o600); continue
                 if TEMP.fullmatch(name): self._safe(path, False, 0o600); continue
-                record_type, operation_id, sequence = self._from_relative(relative)
-                data = self._read_file(path); self._decode(data, record_type, operation_id, sequence)
+                data = self._read_file(path)
+                if relative.parts[0] == "operations":
+                    record_type, operation_id, sequence = self._from_relative(relative)
+                    self._decode(data, record_type, operation_id, sequence)
+                else:
+                    kind, lineage_id, round_number, operation_id = self._from_lineage_relative(relative)
+                    self._decode_lineage(data, kind, lineage_id, round_number, operation_id)
                 records[relative] = data
         return records
     def _validate_chains(self, records):
-        operations = {}
+        operations, admissions, reservations = {}, [], {}
         for relative, data in records.items():
+            if relative.parts[0] != "operations": continue
             kind, operation, sequence = self._from_relative(relative); value = self._decode(data, kind, operation, sequence)
             operations.setdefault(operation, []).append((kind, sequence, hashlib.sha256(data).hexdigest(), value["previous_digest"]))
+            identity = value["payload"]["identity"]
+            if kind == "admission" and identity["kind"] == "pr-maintain":
+                admissions.append((operation, _canonical(identity), identity["lineage_id"], value["payload"]["round"]))
         for entries in operations.values():
             roots = [index for index, entry in enumerate(entries) if entry[0] == "admission"]
             if len(roots) != 1: raise JournalError("missing or ambiguous journal admission predecessor root")
@@ -206,13 +278,43 @@ class Journal:
             if (len({sequence for _, sequence in receipts}) != len(receipts)
                     or any(sequence not in intent_positions or intent_positions[sequence] >= position for position, sequence in receipts)):
                 raise JournalError("invalid receipt sequence")
-    def _parity(self, allowed_missing=None):
-        first, second = self._inventory(self.root), self._inventory(self.mirror)
-        if (set(first) ^ set(second)) - ({allowed_missing} if allowed_missing else set()):
-            raise JournalError("journal mirror inventory differs")
+        lineages = {}
+        for relative, data in records.items():
+            if relative.parts[0] != "lineages": continue
+            kind, lineage_id, round_number, operation_id = self._from_lineage_relative(relative)
+            value = self._decode_lineage(data, kind, lineage_id, round_number, operation_id)
+            lineages.setdefault(lineage_id, []).append((kind, round_number, operation_id, data, value))
+            if kind == "round":
+                reservation = (operation_id, _canonical(value["payload"]["identity"]), lineage_id, round_number)
+                reservations[reservation] = reservations.get(reservation, 0) + 1
+        for entries in lineages.values():
+            floors = [entry for entry in entries if entry[0] == "floor"]
+            if len(floors) != 1: raise JournalError("missing or ambiguous lineage floor")
+            floor = floors[0]; rounds = sorted((entry for entry in entries if entry[0] == "round"), key=lambda entry: entry[1])
+            count = floor[4]["payload"]["count"]
+            if ([entry[1] for entry in rounds] != list(range(count + 1, count + len(rounds) + 1))
+                    or count + len(rounds) > 3 or len({entry[2] for entry in rounds}) != len(rounds)):
+                raise JournalError("invalid lineage round sequence")
+            previous = hashlib.sha256(floor[3]).hexdigest()
+            for entry in rounds:
+                if entry[4]["previous_digest"] != previous: raise JournalError("invalid lineage predecessor")
+                previous = hashlib.sha256(entry[3]).hexdigest()
+        if any(reservations.get(admission) != 1 for admission in admissions):
+            raise JournalError("maintenance admission requires exactly one matching reservation")
+    def _parity(self, allowed_missing=None, allowed_round=None):
+        first, second = self._inventory(self.root), self._inventory(self.mirror); difference = set(first) ^ set(second)
+        allowed = {allowed_missing} if allowed_missing else set()
+        if allowed_round:
+            for relative in difference:
+                try: kind, lineage_id, _, operation_id = self._from_lineage_relative(relative)
+                except JournalError: continue
+                if (kind == "round" and operation_id == allowed_round["operation_id"]
+                        and lineage_id == allowed_round["lineage_id"]): allowed.add(relative)
+        if difference - allowed or len(difference & allowed) > 1: raise JournalError("journal mirror inventory differs")
         if any(first[path] != second[path] for path in set(first) & set(second)):
             raise JournalError("journal mirrors differ")
-        self._validate_chains(first); self._validate_chains(second)
+        if difference: self._validate_chains({**second, **first})
+        else: self._validate_chains(first); self._validate_chains(second)
         return first, second
     def _cleanup_temps(self, parent):
         for path in parent.iterdir():
@@ -233,21 +335,77 @@ class Journal:
             try: self._safe(temporary, False, 0o600); temporary.unlink()
             except (JournalError, FileNotFoundError): pass
             raise
+    def _commit(self, relative, data, copies):
+        combined = {**copies[1], **copies[0], relative: data}; self._validate_chains(combined)
+        for index, root in enumerate((self.root, self.mirror)):
+            self._dir(root, *relative.parts[:-1]); path = root / relative
+            if relative not in copies[index]: self._publish(path, data)
+        after = self._parity()
+        if after[0].get(relative) != data: raise JournalError("journal commit failed")
     def write(self, record_type, operation_id, payload, previous_digest=None, sequence=None):
         relative = self._relative(record_type, operation_id, sequence)
         data = _canonical(self._envelope(record_type, operation_id, payload, previous_digest, sequence))
         if len(data) > MAX_RECORD: raise JournalError("journal record exceeds 1 MiB")
         with self._locked():
-            copies = self._parity(relative); existing = copies[0].get(relative) or copies[1].get(relative)
+            copies = self._parity(relative)
+            existing = copies[0].get(relative) or copies[1].get(relative)
             if existing is not None and existing != data: raise JournalError("existing journal record differs")
-            combined = {**copies[1], **copies[0], relative: data}
-            self._validate_chains(combined)
-            for index, root in enumerate((self.root, self.mirror)):
-                self._dir(root, *relative.parts[:-1]); path = root / relative
-                if relative not in copies[index]: self._publish(path, data)
-            after = self._parity()
-            if after[0].get(relative) != data: raise JournalError("journal commit failed")
+            self._commit(relative, data, copies)
         return hashlib.sha256(data).hexdigest()
+    def set_lineage_floor(self, repo, pr, feedback_digests, provenance_digest):
+        repo = _repo_pr(repo, pr); lineage_id = _lineage_id(repo, pr)
+        if not isinstance(feedback_digests, (list, tuple)): raise JournalError("invalid historical feedback digests")
+        feedback_digests = list(feedback_digests)
+        payload = {"repo": repo, "pr": pr, "lineage_id": lineage_id, "count": len(feedback_digests),
+                   "feedback_digests": feedback_digests, "provenance_digest": provenance_digest}
+        value = {"lineage_id": lineage_id, "payload": payload, "previous_digest": None,
+                 "schema_version": 1, "type": "floor"}
+        relative = self._lineage_relative(lineage_id); data = _canonical(value)
+        self._decode_lineage(data, "floor", lineage_id)
+        with self._locked():
+            copies = self._parity(relative); existing = copies[0].get(relative) or copies[1].get(relative)
+            if existing is not None and existing != data: raise JournalError("existing lineage floor differs")
+            self._commit(relative, data, copies)
+        return hashlib.sha256(data).hexdigest()
+    def reserve_round(self, operation):
+        if not _valid_identity(operation) or operation["kind"] != "pr-maintain": raise JournalError("invalid maintenance operation")
+        lineage_id, operation_id = operation["lineage_id"], operation["operation_id"]
+        with self._locked():
+            copies = self._parity(allowed_round=operation); records = {**copies[1], **copies[0]}
+            existing = []
+            for relative, data in records.items():
+                if relative.parts[0] != "lineages": continue
+                kind, current_lineage, round_number, current_operation = self._from_lineage_relative(relative)
+                if kind == "round" and current_operation == operation_id:
+                    existing.append((relative, data, current_lineage, round_number))
+            if existing:
+                relative, data, current_lineage, round_number = existing[0]
+                if current_lineage != lineage_id: raise JournalError("maintenance operation lineage differs")
+                self._commit(relative, data, copies); return round_number
+            floor_relative = self._lineage_relative(lineage_id)
+            try: floor_data = records[floor_relative]
+            except KeyError as exc: raise JournalError("missing lineage floor") from exc
+            floor = self._decode_lineage(floor_data, "floor", lineage_id); rounds = []
+            if operation["feedback_digest"] in floor["payload"]["feedback_digests"]:
+                raise JournalError("feedback digest already reserved")
+            for relative, data in records.items():
+                if relative.parts[:2] != ("lineages", lineage_id): continue
+                kind, _, round_number, current_operation = self._from_lineage_relative(relative)
+                if kind != "round": continue
+                reserved = self._decode_lineage(data, kind, lineage_id, round_number, current_operation)
+                if reserved["payload"]["identity"]["feedback_digest"] == operation["feedback_digest"]:
+                    raise JournalError("feedback digest already reserved")
+                rounds.append((round_number, data))
+            round_number = floor["payload"]["count"] + len(rounds) + 1
+            if round_number > 3: raise JournalError("maintenance round limit exceeded")
+            previous = hashlib.sha256(max(rounds)[1] if rounds else floor_data).hexdigest()
+            relative = self._lineage_relative(lineage_id, round_number, operation_id)
+            value = {"operation_id": operation_id,
+                     "payload": {"identity": operation, "lineage_id": lineage_id, "round": round_number},
+                     "previous_digest": previous, "schema_version": 1, "type": "round"}
+            data = _canonical(value); self._decode_lineage(data, "round", lineage_id, round_number, operation_id)
+            self._commit(relative, data, copies)
+        return round_number
     def read(self, record_type, operation_id, sequence=None):
         relative = self._relative(record_type, operation_id, sequence)
         with self._locked():
