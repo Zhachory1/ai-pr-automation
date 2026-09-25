@@ -69,7 +69,9 @@ assert mode.index("printf 'kanban\\n'") < mode.index('chmod 0444') < mode.index(
 assert 'review-producer-stop' in mode
 start = source[source.index("  review-producer-start)"):source.index("  review-producer-stop)")]
 assert "stat -f '%u:%Lp'" in start and 'cmp -s "$REVIEW_MODE_MARKER"' in start
-assert start.index('"$DIRECT_PR_PREFLIGHT"') < start.index('install -m 0644') < start.index('launchctl bootstrap system "$REVIEW_PRODUCER_PLIST"')
+assert "preflight" not in start
+assert '"$DIRECT_PR_PREFLIGHT"' not in start
+assert start.index('install -m 0644') < start.index('launchctl bootstrap system "$REVIEW_PRODUCER_PLIST"')
 stop = source[source.index("  review-producer-stop)"):source.index("  bridge-start)")]
 assert stop.index('wait_unloaded "$REVIEW_PRODUCER_LABEL"') < stop.index('rm -f "$REVIEW_MODE_MARKER" "$REVIEW_PRODUCER_PLIST"')
 up = source[source.index("  up)"):source.index("  down)")]

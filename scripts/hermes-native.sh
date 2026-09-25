@@ -461,10 +461,6 @@ case "${1:-}" in
       && "$(stat -f '%u:%Lp' "$REVIEW_MODE_MARKER")" == 0:444 ]] \
       && cmp -s "$REVIEW_MODE_MARKER" <(printf 'kanban\n') \
       || { echo "review producer requires root-owned mode 0444 kanban marker" >&2; exit 2; }
-    preflight
-    sudo -u "$SERVICE_USER" env -i HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
-      "$INSTALL_DIR/venv/bin/python" -B "$DIRECT_PR_PREFLIGHT" --hermes-bin "$LAUNCHER" \
-      --config "$HERMES_HOME/config.yaml" --managed-dir "$HERMES_HOME/managed" >/dev/null
     install -m 0644 -o root -g wheel "$REVIEW_PRODUCER_STAGED_PLIST" "$REVIEW_PRODUCER_PLIST"
     launchctl bootstrap system "$REVIEW_PRODUCER_PLIST" 2>/dev/null \
       || launchctl kickstart -k "system/$REVIEW_PRODUCER_LABEL"
