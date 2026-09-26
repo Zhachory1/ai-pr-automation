@@ -19,8 +19,10 @@ for text in (
     '--script "${MEMORY_CRON_SCRIPT##*/}" --no-agent --deliver local --failure-deliver local',
     "--paused --paused-reason 'Installed paused; operator activation required.'",
     'hermes_memory_cron resume "$MEMORY_CRON_NAME"',
+    'memory_state_owner "$SERVICE_USER" "$(id -gn "$SERVICE_USER")"',
     'hermes_memory_cron run "$MEMORY_CRON_NAME"',
     'hermes_memory_cron pause "$MEMORY_CRON_NAME"',
+    'memory_state_owner "$SUDO_UID" "$SUDO_GID"',
 ): assert text in cron, text
 for forbidden in ("profile show", "preflight", "PROFILE_CONFIGURATOR", "config.yaml"):
     assert forbidden not in cron, forbidden
@@ -89,7 +91,9 @@ source = Path("scripts/hermes-native.sh").read_text()
 print(source[source.index("hermes_memory_cron() {"):source.index("\nrequire_v2_services_unloaded()")])
 PY
 )"
-SERVICE_USER=hermes-agent SERVICE_HOME="$tmp/home" HERMES_HOME="$tmp/home/.hermes"
+SERVICE_USER="$(id -un)" SERVICE_HOME="$tmp/home" HERMES_HOME="$tmp/home/.hermes"
+SHARED_RUNTIME="$tmp/shared"; mkdir -p "$SHARED_RUNTIME"
+MEMORY_CURATOR_STATE_DIR="$SHARED_RUNTIME/memory-curator"
 LAUNCHER="$tmp/home/.local/bin/hermes" MEMORY_CRON_NAME=memory-curate-direct
 MEMORY_CRON_SCRIPT="$HERMES_HOME/profiles/memory-curate-v1/scripts/memory-curate-direct.sh"
 memory_cron_install
