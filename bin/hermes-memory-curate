@@ -37,7 +37,21 @@ LOOKBACK_HOURS="${MEMORY_CURATOR_LOOKBACK_HOURS:-24}"
 PROMPT_MAX_BYTES="${MEMORY_CURATOR_PROMPT_MAX_BYTES:-96000}"
 PER_DOC_BYTES="${MEMORY_CURATOR_PER_DOC_BYTES:-8000}"
 lease="${HERMES_QUEUE_LEASE_SECONDS:-1200}"
-nonce="$(openssl rand -hex 16)"; run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$nonce"
+mode=consume
+if (( $# > 1 )); then
+  echo "usage: hermes-memory-curate [--enqueue|--enqueue-only|--direct]" >&2; exit 2
+elif (( $# == 1 )); then
+  case "$1" in
+    --enqueue) mode=enqueue ;;
+    --enqueue-only) mode=enqueue-only ;;
+    --direct) mode=direct ;;
+    *) echo "usage: hermes-memory-curate [--enqueue|--enqueue-only|--direct]" >&2; exit 2 ;;
+  esac
+fi
+direct=0; [[ "$mode" == direct ]] && direct=1
+if (( ! direct )); then
+  nonce="$(openssl rand -hex 16)"; run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$nonce"
+fi
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
 need jq; need curl; need find; need python3
@@ -46,31 +60,55 @@ psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_P
 mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || { log "WARN: cannot stat $1; epoch 0"; echo 0; }; }
 mkdir -p "$STATE_DIR"
 
+if (( direct )) && [[ "${HERMES_MEMORY_DIRECT_LOCKED:-}" != 1 ]]; then
+  python3 -c 'import fcntl,os,sys
+try:
+ f=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o600); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except OSError:
+ print("status=reconcile"); sys.exit(1)
+os.set_inheritable(f,True); os.environ["HERMES_MEMORY_DIRECT_LOCKED"]="1"
+os.execve(sys.argv[2],sys.argv[2:],os.environ)' "$STATE_DIR/direct.lock" "$0" "$@"
+  exit $?
+fi
+
 # memory-curate is a scheduled sweep with no event source. The producer timer enqueues only; the
 # continuous dispatcher observes depth and starts the consumer under its per-kind cap. `--enqueue`
 # remains enqueue+consume for manual compatibility; `--enqueue-only` preserves producer/consumer
 # separation for standing operation. Hourly dedupe prevents pile-up if a timer is retriggered.
-if [[ "${1:-}" == --enqueue || "${1:-}" == --enqueue-only ]]; then
+if [[ "$mode" == enqueue || "$mode" == enqueue-only ]]; then
   psqlq <<<"SELECT hermes_enqueue_request('memory-curate','{}'::jsonb,'memory-curate:'||to_char(now(),'YYYYMMDDHH24'));" >/dev/null || true
-  [[ "${1:-}" != --enqueue-only ]] || exit 0
+  [[ "$mode" != enqueue-only ]] || exit 0
 fi
 
-claim="$(psqlq -c "SELECT hermes_claim_request('memory-curate','$run_id','$nonce',$lease);")"
-[[ -n "$claim" ]] || exit 0
-id="$(jq -r .id <<<"$claim")"
+if (( ! direct )); then
+  claim="$(psqlq -c "SELECT hermes_claim_request('memory-curate','$run_id','$nonce',$lease);")"
+  [[ -n "$claim" ]] || exit 0
+  id="$(jq -r .id <<<"$claim")"
+fi
 srcdir="$(mktemp -d)"; trap 'rm -rf "$srcdir"' EXIT
+if (( ! direct )); then
+  (
+    while sleep "$((lease / 4))"; do
+      [[ "$(psqlq -c "SELECT hermes_renew_request($id,'$nonce',$lease);")" == t ]] || { kill -TERM "$PPID"; exit 1; }
+    done
+  ) & heartbeat=$!
+  stop_heartbeat() { kill "$heartbeat" 2>/dev/null || true; wait "$heartbeat" 2>/dev/null || true; }
+fi
 
-(
-  while sleep "$((lease / 4))"; do
-    [[ "$(psqlq -c "SELECT hermes_renew_request($id,'$nonce',$lease);")" == t ]] || { kill -TERM "$PPID"; exit 1; }
-  done
-) & heartbeat=$!
-stop_heartbeat() { kill "$heartbeat" 2>/dev/null || true; wait "$heartbeat" 2>/dev/null || true; }
-
-settle() { # $1 status  $2 detail
-  stop_heartbeat
-  psqlq -v detail="$2" <<<"SELECT hermes_settle_request($id,'$nonce','$1',:'detail');" >/dev/null
-  echo "request=$id status=$1"
+finish() { # $1 status  $2 detail
+  if (( direct )); then
+    echo "status=$1"
+  else
+    stop_heartbeat
+    psqlq -v detail="$2" <<<"SELECT hermes_settle_request($id,'$nonce','$1',:'detail');" >/dev/null
+    echo "request=$id status=$1"
+  fi
+}
+direct_fatal() { log "$1; watermark held for retry"; finish reconcile "$1; watermark held for retry"; exit 1; }
+proposal_fatal() {
+  (( direct )) && direct_fatal "$1"
+  finish reconcile "$1; watermark held for retry"
+  exit 0
 }
 
 # --- gather bounded source slice since the watermark ---------------------------------------------
@@ -108,7 +146,7 @@ sort -u "$manifest" -o "$manifest"
 n_src="$(grep -c . "$manifest" 2>/dev/null | head -1 || echo 0)"; [[ "$n_src" =~ ^[0-9]+$ ]] || n_src=0
 if (( n_src == 0 )); then
   echo "$now_epoch" >"$WATERMARK"
-  settle skipped "no new source material since $since_epoch"
+  finish skipped "no new source material since $since_epoch"
   exit 0
 fi
 
@@ -131,18 +169,27 @@ agent_ok=1
 HERMES_WRITE_SAFE_ROOT="$srcdir" "$HERMES_BIN" -p "$profile" chat --query-file "$prompt" --oneshot \
   --toolsets file --max-turns 40 --run-budget 1200 --ignore-rules --yolo --in "$srcdir" >/dev/null 2>&1 || agent_ok=0
 if (( agent_ok == 0 )) || [[ ! -f "$result" ]]; then
-  settle reconcile "curate model run failed; watermark held for retry"
+  (( direct )) && direct_fatal "curate model run failed"
+  finish reconcile "curate model run failed; watermark held for retry"
   exit 0
 fi
-json="$(python3 -c '
+if ! json="$(python3 -c '
 import sys,re,json
 try: s=open(sys.argv[1]).read()
-except OSError: print("{\"memories\":[]}"); sys.exit()
+except OSError: s=""
 m=re.search(r"\{.*\}", s, re.S)
-if not m: print("{\"memories\":[]}"); sys.exit()
-try: print(json.dumps(json.loads(m.group(0))))
-except Exception: print("{\"memories\":[]}")
-' "$result")"
+try: d=json.loads(m.group(0)) if m else None
+except Exception: d=None
+memories=d.get("memories") if isinstance(d,dict) else None
+if not isinstance(memories,list) or len(memories)>int(sys.argv[2]): sys.exit(1)
+for item in memories:
+ if not isinstance(item,dict) or not isinstance(item.get("content"),str): sys.exit(1)
+ if "convention" in item and not isinstance(item["convention"],bool): sys.exit(1)
+ if "sources" in item and (not isinstance(item["sources"],list) or not all(isinstance(source,str) for source in item["sources"])): sys.exit(1)
+print(json.dumps(d))
+' "$result" "$MAX_MEMORIES")"; then
+  proposal_fatal "invalid curate proposal"
+fi
 
 # --- MCP transport (stateless Streamable-HTTP JSON-RPC over curl) ---------------------------------
 # tools/call against a bank URL. Prints the tool result text (from SSE `data:` frames). The model
@@ -154,13 +201,17 @@ mcp_call() { # $1 url  $2 tool  $3 args-json
     | sed -n 's/^data: //p' | tail -1
 }
 mcp_recall_texts() { # $1 url  $2 query -> newline-separated recalled text
-  mcp_call "$1" recall "$(jq -cn --arg q "$2" '{query:$q,max_tokens:600}')" \
-    | python3 -c 'import sys,json
+  local response
+  response="$(mcp_call "$1" recall "$(jq -cn --arg q "$2" '{query:$q,max_tokens:600}')")" || return 2
+  [[ -n "$response" ]] || return 2
+  printf '%s' "$response" | python3 -c 'import sys,json
 try: d=json.load(sys.stdin)
-except Exception: sys.exit()
-c=d.get("result",{}).get("content",[])
+except Exception: sys.exit(2)
+r=d.get("result",{})
+if sys.argv[1]=="1" and ("error" in d or not isinstance(r,dict) or r.get("isError")): sys.exit(2)
+c=r.get("content",[])
 for b in c:
-    if isinstance(b,dict) and b.get("type")=="text": print(b.get("text",""))' 2>/dev/null || true
+    if isinstance(b,dict) and b.get("type")=="text": print(b.get("text",""))' "$direct" 2>/dev/null || return 2
 }
 mcp_retain_ok() { # $1 url  $2 content  $3 tagsjson  -> "ok" on success
   mcp_call "$1" retain "$(jq -cn --arg c "$2" --argjson tags "$3" --arg ver "$CURATOR_VERSION" \
@@ -169,7 +220,8 @@ mcp_retain_ok() { # $1 url  $2 content  $3 tagsjson  -> "ok" on success
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(1)
 r=d.get("result",{})
-sys.exit(0 if not r.get("isError") else 1)' && echo ok
+if sys.argv[1]=="1" and ("error" in d or not isinstance(r,dict)): sys.exit(1)
+sys.exit(0 if not r.get("isError") else 1)' "$direct" && echo ok
 }
 
 # --- deterministic gates (the model output is never trusted verbatim) -----------------------------
@@ -190,7 +242,8 @@ org_gate_pass() { # stricter Tier-2 gate for the org bank. $1 content  $2 n_sour
   return 0
 }
 dedup_hit() { # $1 url  $2 content -> 0 if a >=0.6 Jaccard near-dup already exists in that bank
-  local hits; hits="$(mcp_recall_texts "$1" "$2")"
+  local hits rc
+  hits="$(mcp_recall_texts "$1" "$2")" || { rc=$?; (( direct )) && return "$rc"; return 1; }
   [[ -n "$hits" ]] || return 1
   printf '%s' "$hits" | python3 -c '
 import sys
@@ -203,30 +256,55 @@ sys.exit(1)
 }
 
 written=0; org_written=0; rejected=0; deduped=0
-count="$(printf '%s' "$json" | jq '.memories | length' 2>/dev/null || echo 0)"
-[[ "$count" =~ ^[0-9]+$ ]] || count=0
+if ! count="$(printf '%s' "$json" | jq -r '.memories | length' 2>/dev/null)" || [[ ! "$count" =~ ^[0-9]+$ ]]; then
+  proposal_fatal "invalid curate proposal"
+fi
 for (( i=0; i<count; i++ )); do
   (( written >= MAX_MEMORIES )) && break
-  item="$(printf '%s' "$json" | jq -c ".memories[$i]" 2>/dev/null)" || continue
-  content="$(printf '%s' "$item" | jq -r '.content // empty')"
+  if ! item="$(printf '%s' "$json" | jq -c ".memories[$i]" 2>/dev/null)" \
+    || ! content="$(printf '%s' "$item" | jq -r '.content' 2>/dev/null)" \
+    || ! is_conv="$(printf '%s' "$item" | jq -r '.convention // false' 2>/dev/null)" \
+    || ! n_sources="$(printf '%s' "$item" | jq -r '(.sources // []) | length' 2>/dev/null)"; then
+    proposal_fatal "invalid curate proposal item"
+  fi
   [[ -n "$content" ]] || continue
-  is_conv="$(printf '%s' "$item" | jq -r '.convention // false')"
-  n_sources="$(printf '%s' "$item" | jq -r '(.sources // []) | length')"
   # base gate
   if [[ "$is_conv" == "true" && "${n_sources:-0}" -lt 2 ]]; then rejected=$((rejected+1)); continue; fi
   if reject_shape "$content"; then rejected=$((rejected+1)); continue; fi
   # Tier 1: team bank (default store). Skip if a near-dup already exists there.
-  if dedup_hit "$TEAM_URL" "$content"; then deduped=$((deduped+1)); continue; fi
-  tags="$(jq -cn --arg ver "$CURATOR_VERSION" '["curator",$ver]')"
-  [[ "$(mcp_retain_ok "$TEAM_URL" "$content" "$tags")" == ok ]] || { log "team retain failed: ${content:0:60}"; continue; }
-  written=$((written+1))
+  team_exists=0
+  if dedup_hit "$TEAM_URL" "$content"; then
+    deduped=$((deduped+1))
+    (( direct )) && team_exists=1 || continue
+  else
+    rc=$?; (( direct && rc == 2 )) && direct_fatal "team recall transport failed"
+  fi
+  if (( ! team_exists )); then
+    tags="$(jq -cn --arg ver "$CURATOR_VERSION" '["curator",$ver]')"
+    retain="$(mcp_retain_ok "$TEAM_URL" "$content" "$tags")" || retain=""
+    if [[ "$retain" != ok ]]; then
+      (( direct )) && direct_fatal "team retain transport failed"
+      log "team retain failed: ${content:0:60}"; continue
+    fi
+    written=$((written+1))
+  fi
   # Tier 2: org bank only if the stricter gate passes and no org near-dup exists.
-  if org_gate_pass "$content" "${n_sources:-0}" && ! dedup_hit "$ORG_URL" "$content"; then
+  if org_gate_pass "$content" "${n_sources:-0}"; then
+    if dedup_hit "$ORG_URL" "$content"; then
+      continue
+    else
+      rc=$?; (( direct && rc == 2 )) && direct_fatal "org recall transport failed"
+    fi
     org_tags="$(jq -cn --arg ver "$CURATOR_VERSION" '["curator",$ver,"org"]')"
-    [[ "$(mcp_retain_ok "$ORG_URL" "$content" "$org_tags")" == ok ]] && org_written=$((org_written+1))
+    retain="$(mcp_retain_ok "$ORG_URL" "$content" "$org_tags")" || retain=""
+    if [[ "$retain" == ok ]]; then
+      org_written=$((org_written+1))
+    elif (( direct )); then
+      direct_fatal "org retain transport failed"
+    fi
   fi
 done
 
 # Watermark advances only because the model actually ran.
 [[ -n "$watermark_cap" ]] && echo "$watermark_cap" >"$WATERMARK"
-settle done "team=$written org=$org_written rejected=$rejected deduped=$deduped from $n_src docs"
+finish done "team=$written org=$org_written rejected=$rejected deduped=$deduped from $n_src docs"
