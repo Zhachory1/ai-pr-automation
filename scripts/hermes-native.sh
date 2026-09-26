@@ -68,6 +68,7 @@ GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation
 MEMORY_CURATE_BIN="$SUPPORT_ROOT/hermes-memory-curate"
 MEMORY_CRON_SCRIPT="$HERMES_HOME/profiles/memory-curate-v1/scripts/memory-curate-direct.sh"
 MEMORY_CRON_NAME=memory-curate-direct
+MEMORY_CURATOR_STATE_DIR="${MEMORY_CURATOR_STATE_DIR:-$SHARED_RUNTIME/memory-curator}"
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
@@ -149,7 +150,16 @@ memory_cron_install() {
     || { echo "Hermes cron missing after install: $MEMORY_CRON_NAME" >&2; return 1; }
 }
 
+memory_state_owner() {
+  local owner="$1" group="$2"
+  [[ "$MEMORY_CURATOR_STATE_DIR" == "$SHARED_RUNTIME/"* && ! -L "$MEMORY_CURATOR_STATE_DIR" ]] \
+    || { echo "unsafe memory curator state directory" >&2; return 1; }
+  install -d -m 0770 -o "$owner" -g "$group" "$MEMORY_CURATOR_STATE_DIR"
+  chown -RhP "$owner:$group" "$MEMORY_CURATOR_STATE_DIR"
+}
+
 memory_cron_start() {
+  memory_state_owner "$SERVICE_USER" "$(id -gn "$SERVICE_USER")"
   memory_cron_install
   hermes_memory_cron resume "$MEMORY_CRON_NAME"
   hermes_memory_cron run "$MEMORY_CRON_NAME"
@@ -158,8 +168,10 @@ memory_cron_start() {
 memory_cron_stop() {
   local listing
   listing="$(hermes_memory_cron list --all)"
-  memory_cron_has_name <<<"$listing" || return 0
-  hermes_memory_cron pause "$MEMORY_CRON_NAME"
+  if memory_cron_has_name <<<"$listing"; then hermes_memory_cron pause "$MEMORY_CRON_NAME"; fi
+  if [[ "${SUDO_UID:-}" =~ ^[0-9]+$ && "${SUDO_GID:-}" =~ ^[0-9]+$ ]]; then
+    memory_state_owner "$SUDO_UID" "$SUDO_GID"
+  fi
 }
 
 require_v2_services_unloaded() {
