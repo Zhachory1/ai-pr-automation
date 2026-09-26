@@ -27,6 +27,10 @@ REVIEW_PRODUCER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-produ
 REVIEW_PRODUCER_STAGED_PLIST="$CONFIG_ROOT/com.example.ai-pr-automation-producer-review.plist"
 REVIEW_PRODUCER_LABEL="com.example.ai-pr-automation-producer-review"
 REVIEW_MODE_MARKER="$CONFIG_ROOT/pr-review-queue-engine"
+MAINTAIN_PRODUCER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-producer-maintain.plist"
+MAINTAIN_PRODUCER_STAGED_PLIST="$CONFIG_ROOT/com.example.ai-pr-automation-producer-maintain.plist"
+MAINTAIN_PRODUCER_LABEL="com.example.ai-pr-automation-producer-maintain"
+MAINTAIN_MODE_MARKER="$CONFIG_ROOT/pr-maintain-queue-engine"
 REVIEW_PRODUCER_BIN="$SUPPORT_ROOT/hermes-pr-producer"
 REVIEW_KANBAN_ENQUEUE="$SUPPORT_ROOT/hermes-pr-kanban-enqueue.py"
 DIRECT_PR_JOURNAL="$SUPPORT_ROOT/hermes_direct_pr_journal.py"
@@ -56,6 +60,7 @@ AUTHORITY_FILE="${HERMES_AUTHORITY_FILE:-$CONFIG_ROOT/authority.yaml}"
 SAFETY_PRODUCER_INTERVAL="${PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}"
 REVIEW_PRODUCER_INTERVAL="${PR_PRODUCER_INTERVAL_SECONDS:-300}"
 REVIEW_WORK_ROOT="${HERMES_PR_KANBAN_WORK_ROOT:-$SERVICE_HOME/.local/share/ai-pr-automation/pr-review}"
+MAINTAIN_WORK_ROOT="${HERMES_PR_MAINTAIN_KANBAN_WORK_ROOT:-$SERVICE_HOME/.local/share/ai-pr-automation/pr-maintain}"
 BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"
 BRIDGE_KEY_PARENT="${BRIDGE_KEY_FILE%/*}"
 HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
@@ -170,23 +175,25 @@ install_native() {
   prepare_bridge_support_sync
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT" "$SHARED_RUNTIME" "$SHARED_RUNTIME/secrets"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$BRIDGE_STATE_ROOT" \
-    "$BRIDGE_STATE_ROOT/workflows" "$WORKFLOW_ROOT" "$REVIEW_WORK_ROOT"
+    "$BRIDGE_STATE_ROOT/workflows" "$WORKFLOW_ROOT" "$REVIEW_WORK_ROOT" "$MAINTAIN_WORK_ROOT"
   if ! service_loaded "$REVIEW_PRODUCER_LABEL"; then
     rm -f "$REVIEW_PRODUCER_PLIST"
+  fi
+  if ! service_loaded "$MAINTAIN_PRODUCER_LABEL"; then
+    rm -f "$MAINTAIN_PRODUCER_PLIST"
   fi
   install -d -m 0750 -o root -g staff "$SNAPSHOT_ROOT"
   install -d -m 0750 -o "$SERVICE_USER" -g staff "$SNAPSHOT_ROOT/direct-kanban"
   install -d -m 0750 -o root -g staff "$BRIDGE_KEY_PARENT"
   install -m 0444 -o root -g wheel "$ROOT/policy/pr-safety-policy-v1.md" "$POLICY_PATH"
-  # Retire old host queue lifecycle. Compose owns maintain and memory producers.
   local legacy
+  # Retire old host jobs; producer-maintain now has marker-gated cleanup above.
   for legacy in com.example.ai-pr-automation-watchdog com.example.ai-pr-automation-dispatcher \
-    com.example.ai-pr-automation-producer-maintain com.example.ai-pr-automation-memory-curate-producer; do
+    com.example.ai-pr-automation-memory-curate-producer; do
     launchctl bootout "system/$legacy" 2>/dev/null || true
   done
   rm -f /Library/LaunchDaemons/com.example.ai-pr-automation-watchdog.plist \
     /Library/LaunchDaemons/com.example.ai-pr-automation-dispatcher.plist \
-    /Library/LaunchDaemons/com.example.ai-pr-automation-producer-maintain.plist \
     /Library/LaunchDaemons/com.example.ai-pr-automation-memory-curate-producer.plist \
     "$SUPPORT_ROOT/hermes-postgres-watchdog" "$SUPPORT_ROOT/hermes-dispatcher" \
     "$SUPPORT_ROOT/hermes-queue-runner" \
@@ -194,7 +201,7 @@ install_native() {
     "$LOG_ROOT/watchdog.out.log" "$LOG_ROOT/watchdog.err.log"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer"
   local logfile
-  for logfile in gateway.out gateway.err dashboard.out dashboard.err bridge.out bridge.err producer-pr-safety.out producer-pr-safety.err producer-review.out producer-review.err; do
+  for logfile in gateway.out gateway.err dashboard.out dashboard.err bridge.out bridge.err producer-pr-safety.out producer-pr-safety.err producer-review.out producer-review.err producer-maintain.out producer-maintain.err; do
     install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"
   done
   local installer=""
@@ -336,6 +343,22 @@ for name, value in values.items(): text = text.replace(name, value)
 temporary = pathlib.Path(target + ".tmp"); temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
 PY
   plutil -lint "$REVIEW_PRODUCER_STAGED_PLIST" >/dev/null
+  python3 - "$ROOT/launchd/com.example.ai-pr-automation-producer.plist.template" \
+    "$MAINTAIN_PRODUCER_STAGED_PLIST" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" \
+    "$AUTHORITY_FILE" "$REVIEW_PRODUCER_INTERVAL" "$LOG_ROOT" "$LAUNCHER" \
+    "$INSTALL_DIR/venv/bin/python" "$REVIEW_KANBAN_ENQUEUE" "$MAINTAIN_WORK_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, user, home, hermes_home, support, authority, interval, logs, binary, python, enqueue, work = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+values = {"__MODE__":"maintain","__HERMES_USER__":user,"__SERVICE_HOME__":home,
+          "__HERMES_HOME__":hermes_home,"__SUPPORT_ROOT__":support,"__AUTHORITY_FILE__":authority,
+          "__INTERVAL_SECONDS__":interval,"__LOG_ROOT__":logs,"__HERMES_BIN__":binary,
+          "__HERMES_PYTHON__":python,"__HERMES_PR_KANBAN_ENQUEUE__":enqueue,
+          "__HERMES_PR_KANBAN_WORK_ROOT__":work}
+for name, value in values.items(): text = text.replace(name, value)
+temporary = pathlib.Path(target + ".tmp"); temporary.write_text(text); os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "$MAINTAIN_PRODUCER_STAGED_PLIST" >/dev/null
   local policy_digest
   policy_digest="$(shasum -a 256 "$POLICY_PATH" | awk '{print $1}')"
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-hermes-kanban-safety-bridge.plist.template" \
@@ -471,6 +494,34 @@ case "${1:-}" in
     wait_unloaded "$REVIEW_PRODUCER_LABEL"
     rm -f "$REVIEW_MODE_MARKER" "$REVIEW_PRODUCER_PLIST"
     ;;
+  maintain-mode-set-kanban)
+    need_root
+    temporary="$(mktemp "$CONFIG_ROOT/.pr-maintain-queue-engine.XXXXXX")"
+    trap 'rm -f "$temporary"' EXIT
+    printf 'kanban\n' > "$temporary"
+    chown root:wheel "$temporary"; chmod 0444 "$temporary"; mv -f "$temporary" "$MAINTAIN_MODE_MARKER"
+    trap - EXIT
+    if ! "$ROOT/scripts/hermes-native.sh" maintain-producer-start; then
+      "$ROOT/scripts/hermes-native.sh" maintain-producer-stop
+      exit 1
+    fi
+    ;;
+  maintain-producer-start)
+    need_root
+    [[ -f "$MAINTAIN_MODE_MARKER" && ! -L "$MAINTAIN_MODE_MARKER" \
+      && "$(stat -f '%u:%Lp' "$MAINTAIN_MODE_MARKER")" == 0:444 ]] \
+      && cmp -s "$MAINTAIN_MODE_MARKER" <(printf 'kanban\n') \
+      || { echo "maintain producer requires root-owned mode 0444 kanban marker" >&2; exit 2; }
+    install -m 0644 -o root -g wheel "$MAINTAIN_PRODUCER_STAGED_PLIST" "$MAINTAIN_PRODUCER_PLIST"
+    launchctl bootstrap system "$MAINTAIN_PRODUCER_PLIST" 2>/dev/null \
+      || launchctl kickstart -k "system/$MAINTAIN_PRODUCER_LABEL"
+    ;;
+  maintain-producer-stop)
+    need_root
+    launchctl bootout "system/$MAINTAIN_PRODUCER_LABEL" 2>/dev/null || true
+    wait_unloaded "$MAINTAIN_PRODUCER_LABEL"
+    rm -f "$MAINTAIN_MODE_MARKER" "$MAINTAIN_PRODUCER_PLIST"
+    ;;
   bridge-start)
     need_root; preflight
     launchctl bootstrap system "$BRIDGE_PLIST" 2>/dev/null || launchctl kickstart -k "system/$BRIDGE_LABEL"
@@ -517,17 +568,18 @@ case "${1:-}" in
   down)
     need_root
     "$ROOT/scripts/hermes-native.sh" review-producer-stop
+    "$ROOT/scripts/hermes-native.sh" maintain-producer-stop
     "$ROOT/scripts/hermes-native.sh" producer-stop
     "$ROOT/scripts/hermes-native.sh" bridge-stop
     "$ROOT/scripts/hermes-native.sh" dashboard-stop
     "$ROOT/scripts/hermes-native.sh" stop
     ;;
   status)
-    for service in "$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL" "$SAFETY_PRODUCER_LABEL" "$REVIEW_PRODUCER_LABEL"; do
+    for service in "$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL" "$SAFETY_PRODUCER_LABEL" "$REVIEW_PRODUCER_LABEL" "$MAINTAIN_PRODUCER_LABEL"; do
       launchctl print "system/$service" 2>/dev/null | awk -v name="$service" \
         '/^[[:space:]]*state =/{print name ": " $0; found=1; exit} END{if(!found) print name ": not loaded"}'
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac
