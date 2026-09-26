@@ -32,13 +32,17 @@ assert 'install -m 0500 -o "$SERVICE_USER"' in install
 assert '"$ROOT/scripts/hermes-memory-curate-direct.sh" "$MEMORY_CRON_SCRIPT"' in install
 assert '"$ROOT/bin/hermes-memory-curate:$MEMORY_CURATE_BIN"' in install
 assert '"$ROOT/scripts/hermes-memory-curate-direct.sh:$MEMORY_CRON_SCRIPT"' in install
+assert '"$SERVICE_HOME/.local/share/ai-pr-automation/curator"' in install
 legacy = install[install.index("for legacy in"):install.index("local logfile")]
 assert '"$SUPPORT_ROOT/hermes-memory-curate"' not in legacy
 up = native[native.index("  up)"):native.index("  down)")]
 down = native[native.index("  down)"):native.index("  status)")]
 assert "memory-cron-start" not in install and "memory-cron-start" not in up
 assert down.index("memory-cron-stop") < down.index("review-producer-stop")
-assert Path("scripts/hermes-memory-curate-direct.sh").read_text() == "#!/usr/bin/env bash\nset -euo pipefail\nexec /usr/local/libexec/ai-pr-automation/hermes-memory-curate --direct\n"
+wrapper = Path("scripts/hermes-memory-curate-direct.sh").read_text()
+assert 'ROOT_ENV="$HOME/.hermes/.env"' in wrapper
+assert '. "$ROOT_ENV"' in wrapper
+assert wrapper.rstrip().endswith('exec /usr/local/libexec/ai-pr-automation/hermes-memory-curate --direct')
 compose = Path("scripts/hermes-compose-producer.sh").read_text()
 idle = compose[compose.index("while true; do"):compose.index('  case "$mode" in')]
 assert '"$mode" == memory' in idle and '${MEMORY_CURATE_QUEUE_ENGINE:-postgres}' in idle

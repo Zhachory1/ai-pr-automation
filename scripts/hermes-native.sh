@@ -237,7 +237,8 @@ install_native() {
     "$SUPPORT_ROOT/hermes-queue-runner" \
     "$SUPPORT_ROOT/hermes-pr-safety-runner" "$SUPPORT_ROOT/hermes-doc-write-runner" \
     "$LOG_ROOT/watchdog.out.log" "$LOG_ROOT/watchdog.err.log"
-  install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer"
+  install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer" \
+    "$SERVICE_HOME/.local/share/ai-pr-automation/curator"
   local logfile
   for logfile in gateway.out gateway.err dashboard.out dashboard.err bridge.out bridge.err producer-pr-safety.out producer-pr-safety.err producer-review.out producer-review.err producer-maintain.out producer-maintain.err; do
     install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"
