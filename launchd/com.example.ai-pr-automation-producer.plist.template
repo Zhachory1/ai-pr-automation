@@ -9,7 +9,7 @@
   <key>UserName</key><string>__HERMES_USER__</string>
   <key>ProgramArguments</key><array>
     <string>/bin/bash</string><string>-c</string>
-    <string>set -a; . "$HERMES_HOME/.env"; set +a; export PR_REVIEW_QUEUE_ENGINE=kanban; exec __SUPPORT_ROOT__/hermes-pr-producer __MODE__</string>
+    <string>set -a; . "$HERMES_HOME/.env"; set +a; if [[ __MODE__ == review ]]; then export PR_REVIEW_QUEUE_ENGINE=kanban; else export PR_MAINTAIN_QUEUE_ENGINE=kanban; fi; exec __SUPPORT_ROOT__/hermes-pr-producer __MODE__</string>
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>HOME</key><string>__SERVICE_HOME__</string>

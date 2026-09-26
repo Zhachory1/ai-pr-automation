@@ -13,6 +13,10 @@ if [[ "$mode" != memory ]]; then
   export GH_TOKEN
 fi
 while true; do
+  if [[ "$mode" == maintain && "${PR_MAINTAIN_QUEUE_ENGINE:-postgres}" == kanban ]]; then
+    sleep "$interval"
+    continue
+  fi
   case "$mode" in
     review)
       if [[ "${PR_REVIEW_QUEUE_ENGINE:-postgres}" == kanban ]]; then
