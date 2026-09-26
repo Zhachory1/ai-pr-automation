@@ -66,7 +66,7 @@ BRIDGE_KEY_PARENT="${BRIDGE_KEY_FILE%/*}"
 HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token}"
 MEMORY_CURATE_BIN="$SUPPORT_ROOT/hermes-memory-curate"
-MEMORY_CRON_SCRIPT="$HERMES_HOME/scripts/memory-curate-direct.sh"
+MEMORY_CRON_SCRIPT="$HERMES_HOME/profiles/memory-curate-v1/scripts/memory-curate-direct.sh"
 MEMORY_CRON_NAME=memory-curate-direct
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
@@ -261,6 +261,7 @@ install_native() {
     --github-token-file "$GITHUB_READ_TOKEN_FILE" --repo-root "$ROOT"
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
   install -m 0555 -o root -g wheel "$ROOT/bin/hermes-memory-curate" "$MEMORY_CURATE_BIN"
+  install -d -m 0700 -o "$SERVICE_USER" -g "$(id -gn "$SERVICE_USER")" "$(dirname "$MEMORY_CRON_SCRIPT")"
   install -m 0500 -o "$SERVICE_USER" -g "$(id -gn "$SERVICE_USER")" \
     "$ROOT/scripts/hermes-memory-curate-direct.sh" "$MEMORY_CRON_SCRIPT"
   install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
