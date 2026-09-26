@@ -65,6 +65,9 @@ BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-
 BRIDGE_KEY_PARENT="${BRIDGE_KEY_FILE%/*}"
 HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token}"
+MEMORY_CURATE_BIN="$SUPPORT_ROOT/hermes-memory-curate"
+MEMORY_CRON_SCRIPT="$HERMES_HOME/scripts/memory-curate-direct.sh"
+MEMORY_CRON_NAME=memory-curate-direct
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
@@ -124,6 +127,41 @@ service_loaded() {
   launchctl print "system/$1" >/dev/null 2>&1
 }
 
+hermes_memory_cron() {
+  sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+    "$LAUNCHER" -p memory-curate-v1 cron "$@"
+}
+
+memory_cron_has_name() {
+  awk -v name="$MEMORY_CRON_NAME" '$1 == "Name:" {$1=""; sub(/^[[:space:]]+/, ""); if ($0 == name) found=1} END {exit !found}'
+}
+
+memory_cron_install() {
+  local listing
+  listing="$(hermes_memory_cron list --all)"
+  if ! memory_cron_has_name <<<"$listing"; then
+    hermes_memory_cron create 'every 6h' --name "$MEMORY_CRON_NAME" \
+      --script "${MEMORY_CRON_SCRIPT##*/}" --no-agent --deliver local --failure-deliver local \
+      --paused --paused-reason 'Installed paused; operator activation required.'
+  fi
+  listing="$(hermes_memory_cron list --all)"
+  memory_cron_has_name <<<"$listing" \
+    || { echo "Hermes cron missing after install: $MEMORY_CRON_NAME" >&2; return 1; }
+}
+
+memory_cron_start() {
+  memory_cron_install
+  hermes_memory_cron resume "$MEMORY_CRON_NAME"
+  hermes_memory_cron run "$MEMORY_CRON_NAME"
+}
+
+memory_cron_stop() {
+  local listing
+  listing="$(hermes_memory_cron list --all)"
+  memory_cron_has_name <<<"$listing" || return 0
+  hermes_memory_cron pause "$MEMORY_CRON_NAME"
+}
+
 require_v2_services_unloaded() {
   local label
   for label in "$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL" "$SAFETY_PRODUCER_LABEL"; do
@@ -174,8 +212,8 @@ install_native() {
   need_root; need_user
   prepare_bridge_support_sync
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT" "$SHARED_RUNTIME" "$SHARED_RUNTIME/secrets"
-  install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$BRIDGE_STATE_ROOT" \
-    "$BRIDGE_STATE_ROOT/workflows" "$WORKFLOW_ROOT" "$REVIEW_WORK_ROOT" "$MAINTAIN_WORK_ROOT"
+  install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$HERMES_HOME/scripts" \
+    "$BRIDGE_STATE_ROOT" "$BRIDGE_STATE_ROOT/workflows" "$WORKFLOW_ROOT" "$REVIEW_WORK_ROOT" "$MAINTAIN_WORK_ROOT"
   if ! service_loaded "$REVIEW_PRODUCER_LABEL"; then
     rm -f "$REVIEW_PRODUCER_PLIST"
   fi
@@ -197,7 +235,7 @@ install_native() {
     /Library/LaunchDaemons/com.example.ai-pr-automation-memory-curate-producer.plist \
     "$SUPPORT_ROOT/hermes-postgres-watchdog" "$SUPPORT_ROOT/hermes-dispatcher" \
     "$SUPPORT_ROOT/hermes-queue-runner" \
-    "$SUPPORT_ROOT/hermes-pr-safety-runner" "$SUPPORT_ROOT/hermes-memory-curate" "$SUPPORT_ROOT/hermes-doc-write-runner" \
+    "$SUPPORT_ROOT/hermes-pr-safety-runner" "$SUPPORT_ROOT/hermes-doc-write-runner" \
     "$LOG_ROOT/watchdog.out.log" "$LOG_ROOT/watchdog.err.log"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer"
   local logfile
@@ -222,6 +260,9 @@ install_native() {
     --service-user "$SERVICE_USER" --launcher "$LAUNCHER" --keys-file "$HERMES_API_KEYS_FILE" \
     --github-token-file "$GITHUB_READ_TOKEN_FILE" --repo-root "$ROOT"
   install -m 0555 "$ROOT/bin/hermes-native-gateway" "$WRAPPER"
+  install -m 0555 -o root -g wheel "$ROOT/bin/hermes-memory-curate" "$MEMORY_CURATE_BIN"
+  install -m 0500 -o "$SERVICE_USER" -g "$(id -gn "$SERVICE_USER")" \
+    "$ROOT/scripts/hermes-memory-curate-direct.sh" "$MEMORY_CRON_SCRIPT"
   install -m 0555 "$ROOT/scripts/hermes-authority.py" "$SUPPORT_ROOT/hermes-authority.py"
   [[ ! -x "$ROOT/bin/hermes-memory-recall-shim" ]] || install -m 0555 "$ROOT/bin/hermes-memory-recall-shim" "$SUPPORT_ROOT/hermes-memory-recall-shim"
   install -m 0555 -o root -g wheel "$ROOT/bin/hermes-council-tools" "$SUPPORT_ROOT/hermes-council-tools"
@@ -240,7 +281,9 @@ install_native() {
   install -m 0555 -o root -g wheel "$ROOT/scripts/configure-hermes-kanban-profiles.py" "$PROFILE_CONFIGURATOR"
   install -m 0444 -o root -g wheel "$ROOT/agent-config/hermes/workflows/pr-risk-council-kanban-v2.json" "$BRIDGE_CONTRACT"
   install -m 0444 -o root -g wheel "$ROOT/agent-config/hermes/native.env" "$RUNTIME_CONTRACT"
-  for pair in "$ROOT/bin/hermes-council-tools:$SUPPORT_ROOT/hermes-council-tools" \
+  for pair in "$ROOT/bin/hermes-memory-curate:$MEMORY_CURATE_BIN" \
+    "$ROOT/scripts/hermes-memory-curate-direct.sh:$MEMORY_CRON_SCRIPT" \
+    "$ROOT/bin/hermes-council-tools:$SUPPORT_ROOT/hermes-council-tools" \
     "$ROOT/bin/hermes-kanban-safety-bridge:$BRIDGE_BIN" \
     "$ROOT/scripts/hermes-kanban-safety-bridge-reconcile.py:$BRIDGE_RECONCILE" \
     "$ROOT/scripts/hermes-kanban-safety-bridge-preflight.py:$BRIDGE_PREFLIGHT" \
@@ -522,6 +565,9 @@ case "${1:-}" in
     wait_unloaded "$MAINTAIN_PRODUCER_LABEL"
     rm -f "$MAINTAIN_MODE_MARKER" "$MAINTAIN_PRODUCER_PLIST"
     ;;
+  memory-cron-install) need_root; need_user; memory_cron_install ;;
+  memory-cron-start) need_root; need_user; memory_cron_start ;;
+  memory-cron-stop) need_root; need_user; memory_cron_stop ;;
   bridge-start)
     need_root; preflight
     launchctl bootstrap system "$BRIDGE_PLIST" 2>/dev/null || launchctl kickstart -k "system/$BRIDGE_LABEL"
@@ -567,6 +613,7 @@ case "${1:-}" in
     ;;
   down)
     need_root
+    "$ROOT/scripts/hermes-native.sh" memory-cron-stop
     "$ROOT/scripts/hermes-native.sh" review-producer-stop
     "$ROOT/scripts/hermes-native.sh" maintain-producer-stop
     "$ROOT/scripts/hermes-native.sh" producer-stop
@@ -581,5 +628,5 @@ case "${1:-}" in
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

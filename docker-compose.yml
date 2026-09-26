@@ -378,6 +378,7 @@ services:
       REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
       PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
       PRODUCER_INTERVAL_SECONDS: ${HERMES_MEMORY_CURATE_INTERVAL_SECONDS:-21600}
+      MEMORY_CURATE_QUEUE_ENGINE: ${MEMORY_CURATE_QUEUE_ENGINE:-postgres}
     depends_on:
       schema-migrate: {condition: service_completed_successfully}
 
