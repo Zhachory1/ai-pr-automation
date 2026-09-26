@@ -25,7 +25,8 @@ for text in (
 for forbidden in ("profile show", "preflight", "PROFILE_CONFIGURATOR", "config.yaml"):
     assert forbidden not in cron, forbidden
 install = native[native.index("install_native() {"):native.index("\npreflight() {")]
-assert '"$HERMES_HOME/scripts"' in install
+assert '"$(dirname "$MEMORY_CRON_SCRIPT")"' in install
+assert 'profiles/memory-curate-v1/scripts/memory-curate-direct.sh' in native
 assert 'install -m 0555 -o root -g wheel "$ROOT/bin/hermes-memory-curate" "$MEMORY_CURATE_BIN"' in install
 assert 'install -m 0500 -o "$SERVICE_USER"' in install
 assert '"$ROOT/scripts/hermes-memory-curate-direct.sh" "$MEMORY_CRON_SCRIPT"' in install
@@ -86,7 +87,7 @@ PY
 )"
 SERVICE_USER=hermes-agent SERVICE_HOME="$tmp/home" HERMES_HOME="$tmp/home/.hermes"
 LAUNCHER="$tmp/home/.local/bin/hermes" MEMORY_CRON_NAME=memory-curate-direct
-MEMORY_CRON_SCRIPT="$HERMES_HOME/scripts/memory-curate-direct.sh"
+MEMORY_CRON_SCRIPT="$HERMES_HOME/profiles/memory-curate-v1/scripts/memory-curate-direct.sh"
 memory_cron_install
 memory_cron_install
 memory_cron_start
