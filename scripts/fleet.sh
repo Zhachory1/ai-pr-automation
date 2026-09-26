@@ -26,12 +26,12 @@ export PR_SAFETY_POLICY_DIGEST="${PR_SAFETY_POLICY_DIGEST:-$(shasum -a 256 "$ROO
 
 recreate_producer() {
   local mode="$1" service="$2" variable="$3" engine="$4" container state environment matches
-  env "$variable=$engine" "$ROOT/scripts/compose.sh" up -d --no-deps --force-recreate "$service"
-  container="$("$ROOT/scripts/compose.sh" ps -q "$service")"
+  env "$variable=$engine" "$ROOT/scripts/compose.sh" up -d --no-deps --force-recreate "$service" || return
+  container="$("$ROOT/scripts/compose.sh" ps -q "$service")" || return
   [[ -n "$container" && "$container" != *$'\n'* ]] \
     || { echo "expected one $service container" >&2; return 1; }
-  state="$(docker inspect --format '{{.State.Running}}' "$container")"
-  environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container")"
+  state="$(docker inspect --format '{{.State.Running}}' "$container")" || return
+  environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container")" || return
   matches="$(grep -Fxc "$variable=$engine" <<<"$environment" || true)"
   [[ "$state" == true && "$matches" == 1 ]] \
     || { echo "$mode producer failed $engine environment/running verification" >&2; return 1; }
@@ -104,6 +104,17 @@ case "${1:-}" in
     sudo "$ROOT/scripts/hermes-native.sh" maintain-producer-stop
     recreate_producer maintain pr-producer-maintain PR_MAINTAIN_QUEUE_ENGINE postgres
     ;;
+  memory-cron-up)
+    if ! recreate_producer memory memory-curate-producer MEMORY_CURATE_QUEUE_ENGINE cron \
+      || ! sudo "$ROOT/scripts/hermes-native.sh" memory-cron-start; then
+      sudo "$ROOT/scripts/hermes-native.sh" memory-cron-stop || true
+      exit 1
+    fi
+    ;;
+  memory-postgres-up)
+    sudo "$ROOT/scripts/hermes-native.sh" memory-cron-stop
+    recreate_producer memory memory-curate-producer MEMORY_CURATE_QUEUE_ENGINE postgres
+    ;;
   status)
     echo '=== Compose support services ==='
     "$ROOT/scripts/compose.sh" ps
@@ -116,5 +127,5 @@ case "${1:-}" in
     echo '=== Host-native Hermes ==='
     sudo "$ROOT/scripts/hermes-native.sh" logs
     ;;
-  *) echo "usage: $0 up|down|review-kanban-up|review-postgres-up|maintain-kanban-up|maintain-postgres-up|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 up|down|review-kanban-up|review-postgres-up|maintain-kanban-up|maintain-postgres-up|memory-cron-up|memory-postgres-up|status|logs" >&2; exit 2 ;;
 esac
