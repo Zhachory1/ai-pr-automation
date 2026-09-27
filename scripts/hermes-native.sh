@@ -33,6 +33,8 @@ MAINTAIN_PRODUCER_LABEL="com.example.ai-pr-automation-producer-maintain"
 MAINTAIN_MODE_MARKER="$CONFIG_ROOT/pr-maintain-queue-engine"
 REVIEW_PRODUCER_BIN="$SUPPORT_ROOT/hermes-pr-producer"
 REVIEW_KANBAN_ENQUEUE="$SUPPORT_ROOT/hermes-pr-kanban-enqueue.py"
+PRD_KANBAN_ENQUEUE="$SUPPORT_ROOT/hermes-prd-kanban-enqueue.py"
+PRD_KANBAN_ADVANCE="$SUPPORT_ROOT/hermes-prd-kanban-advance.py"
 DIRECT_PR_JOURNAL="$SUPPORT_ROOT/hermes_direct_pr_journal.py"
 DIRECT_PR_PREFLIGHT="$SUPPORT_ROOT/hermes-direct-pr-kanban-preflight.py"
 BRIDGE_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-hermes-kanban-safety-bridge.plist"
@@ -174,6 +176,36 @@ memory_cron_stop() {
   fi
 }
 
+prd_canary_enqueue() {
+  need_root
+  [[ "$#" == 1 && "$1" == /* ]] \
+    || { echo "usage: $0 prd-canary-enqueue <absolute-json-file>" >&2; return 2; }
+  python3 - "$1" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" \
+    "$INSTALL_DIR/venv/bin/python" "$PRD_KANBAN_ENQUEUE" "$LAUNCHER" <<'PY'
+import os, stat, subprocess, sys
+path, user, home, hermes_home, python, enqueue, launcher = sys.argv[1:]
+try: fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+except OSError as error: raise SystemExit(f"invalid PRD intake: {error}")
+with os.fdopen(fd, "rb") as source:
+    status = os.fstat(source.fileno())
+    if not stat.S_ISREG(status.st_mode): raise SystemExit("PRD intake is not a regular file")
+    data = source.read(131073)
+if len(data) > 131072 or len(data) != status.st_size: raise SystemExit("invalid or changed PRD intake")
+command = ["sudo", "-u", user, "env", f"HOME={home}", f"HERMES_HOME={hermes_home}", python,
+           "-B", enqueue, "--hermes-home", hermes_home, "--hermes-bin", launcher]
+raise SystemExit(subprocess.run(command, input=data).returncode)
+PY
+}
+
+prd_canary_advance() {
+  need_root
+  [[ "$#" == 1 && "$1" =~ ^prd-[0-9a-f]{64}$ ]] \
+    || { echo "usage: $0 prd-canary-advance <prd-operation-id>" >&2; return 2; }
+  sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+    "$INSTALL_DIR/venv/bin/python" -B "$PRD_KANBAN_ADVANCE" \
+    --hermes-home "$HERMES_HOME" --hermes-bin "$LAUNCHER" --operation-id "$1"
+}
+
 require_v2_services_unloaded() {
   local label
   for label in "$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL" "$SAFETY_PRODUCER_LABEL"; do
@@ -290,6 +322,8 @@ install_native() {
   install -m 0555 -o root -g wheel "$ROOT/bin/hermes-pr-safety-producer" "$SAFETY_PRODUCER_BIN"
   install -m 0555 -o root -g wheel "$ROOT/bin/hermes-pr-producer" "$REVIEW_PRODUCER_BIN"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-pr-kanban-enqueue.py" "$REVIEW_KANBAN_ENQUEUE"
+  install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-prd-kanban-enqueue.py" "$PRD_KANBAN_ENQUEUE"
+  install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-prd-kanban-advance.py" "$PRD_KANBAN_ADVANCE"
   install -m 0444 -o root -g wheel "$ROOT/scripts/hermes_direct_pr_journal.py" "$DIRECT_PR_JOURNAL"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-direct-pr-kanban-preflight.py" "$DIRECT_PR_PREFLIGHT"
   install -m 0555 -o root -g wheel "$ROOT/scripts/configure-hermes-kanban-profiles.py" "$PROFILE_CONFIGURATOR"
@@ -308,6 +342,8 @@ install_native() {
     "$ROOT/bin/hermes-pr-safety-producer:$SAFETY_PRODUCER_BIN" \
     "$ROOT/bin/hermes-pr-producer:$REVIEW_PRODUCER_BIN" \
     "$ROOT/scripts/hermes-pr-kanban-enqueue.py:$REVIEW_KANBAN_ENQUEUE" \
+    "$ROOT/scripts/hermes-prd-kanban-enqueue.py:$PRD_KANBAN_ENQUEUE" \
+    "$ROOT/scripts/hermes-prd-kanban-advance.py:$PRD_KANBAN_ADVANCE" \
     "$ROOT/scripts/hermes_direct_pr_journal.py:$DIRECT_PR_JOURNAL" \
     "$ROOT/scripts/hermes-direct-pr-kanban-preflight.py:$DIRECT_PR_PREFLIGHT" \
     "$ROOT/scripts/configure-hermes-kanban-profiles.py:$PROFILE_CONFIGURATOR" \
@@ -582,6 +618,8 @@ case "${1:-}" in
   memory-cron-install) need_root; need_user; memory_cron_install ;;
   memory-cron-start) need_root; need_user; memory_cron_start ;;
   memory-cron-stop) need_root; need_user; memory_cron_stop ;;
+  prd-canary-enqueue) shift; prd_canary_enqueue "$@" ;;
+  prd-canary-advance) shift; prd_canary_advance "$@" ;;
   bridge-start)
     need_root; preflight
     launchctl bootstrap system "$BRIDGE_PLIST" 2>/dev/null || launchctl kickstart -k "system/$BRIDGE_LABEL"
@@ -642,5 +680,5 @@ case "${1:-}" in
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|prd-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

@@ -115,6 +115,14 @@ case "${1:-}" in
     sudo "$ROOT/scripts/hermes-native.sh" memory-cron-stop
     recreate_producer memory memory-curate-producer MEMORY_CURATE_QUEUE_ENGINE postgres
     ;;
+  prd-canary-enqueue)
+    [[ "$#" == 2 ]] || { echo "usage: $0 prd-canary-enqueue <absolute-json-file>" >&2; exit 2; }
+    sudo "$ROOT/scripts/hermes-native.sh" prd-canary-enqueue "$2"
+    ;;
+  prd-canary-advance)
+    [[ "$#" == 2 ]] || { echo "usage: $0 prd-canary-advance <prd-operation-id>" >&2; exit 2; }
+    sudo "$ROOT/scripts/hermes-native.sh" prd-canary-advance "$2"
+    ;;
   status)
     echo '=== Compose support services ==='
     "$ROOT/scripts/compose.sh" ps
@@ -127,5 +135,5 @@ case "${1:-}" in
     echo '=== Host-native Hermes ==='
     sudo "$ROOT/scripts/hermes-native.sh" logs
     ;;
-  *) echo "usage: $0 up|down|review-kanban-up|review-postgres-up|maintain-kanban-up|maintain-postgres-up|memory-cron-up|memory-postgres-up|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 up|down|review-kanban-up|review-postgres-up|maintain-kanban-up|maintain-postgres-up|memory-cron-up|memory-postgres-up|prd-canary-enqueue|prd-canary-advance|status|logs" >&2; exit 2 ;;
 esac
