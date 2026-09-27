@@ -50,7 +50,7 @@ def enqueue(args):
     tasks, statuses = {}, {}
     for role in ROLES:
         parents = [] if role in {"root", "writer"} else [tasks["writer"]] if role != "synthesis" else [tasks[name] for name in ROLES[2:5]]
-        create = [*command, "kanban", "--board", BOARD, "create", request["title"] if role == "root" else f"PRD round 0: {role}", "--body", canonical(bodies[role]).decode(), "--idempotency-key", f"{operation}:{operation}:0:{role}", "--tenant", operation, "--max-runtime", "1800", "--max-retries", "1", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--json"]
+        create = [*command, "kanban", "--board", BOARD, "create", request["title"] if role == "root" else f"PRD round 0: {role}", "--body", canonical(bodies[role]).decode(), "--idempotency-key", f"{BOARD}:{operation}:0:{role}", "--tenant", operation, "--max-runtime", "1800", "--max-retries", "1", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--json"]
         if PROFILES[role]: create.extend(("--assignee", PROFILES[role]))
         for parent in parents: create.extend(("--parent", parent))
         created = run(create, env, True); task_id = created.get("id") if isinstance(created, dict) else None; status = created.get("status") if isinstance(created, dict) else None
