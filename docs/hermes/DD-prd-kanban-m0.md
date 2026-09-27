@@ -40,7 +40,7 @@ Use the intake's tenant on every task. Validate exact intake identity before cre
 
 ## Attachments
 
-Use immutable Hermes attachments for accepted intake bytes; draft or revision PRD bytes and digest; reviewer results bound to that digest; synthesis blockers, owners, and resolutions; and final PRD bytes and digest.
+Use Hermes attachments for accepted intake bytes; draft or revision PRD bytes; reviewer results bound to the writer-declared digest; and synthesis blockers, owners, resolutions, and reviewed digest.
 
 The synthesis attachment is the blocker ledger. Do not build another ledger service or state store. All reviewers in a round review the same digest.
 
@@ -51,10 +51,11 @@ Synthesis does not rewrite PRD bytes. The writer produces each changed PRD attac
 ## Completion
 
 After synthesis selects a final PRD:
-1. attach exact final bytes and digest;
-2. leave the same root unassigned in standard Hermes `review`;
-3. let a human download the attachment and copy or publish it outside automation;
-4. let the human mark the root `done` or `denied`.
+1. keep the selected writer attachment as the final artifact;
+2. put its task ID, filename, size, and declared digest in root review summary;
+3. leave the same root unassigned in standard Hermes `review`;
+4. let a human download it, verify SHA-256, and copy or publish it outside automation;
+5. let the human mark the root `done` or `denied`.
 
 M0 does not track publication state or verify the external copy. Root, child tasks, events, runs, and attachments provide the full workflow record.
 

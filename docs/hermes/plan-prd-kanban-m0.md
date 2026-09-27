@@ -46,7 +46,7 @@ Build:
 - final selection or targeted revision;
 - revision writer plus `mvp`, `occams-razor`, open blocker owners, and synthesis;
 - hard cap of two revision rounds;
-- immutable final attachment and raw-byte SHA-256 digest;
+- final writer attachment reference and writer/synthesis-declared SHA-256;
 - transition of the same root to unassigned standard Hermes `review`;
 - human `done` or `denied` disposition after manual download/copy/publication.
 
@@ -55,7 +55,7 @@ Acceptance:
 - duplicate reviewer roles create one task;
 - malformed/conflicting output and blockers after round 2 remain visible in `review`;
 - no round 3 can be created;
-- final attachment and digest identify exact bytes for human download;
+- root review identifies final writer task, attachment, size, and declared digest; human canary review verifies downloaded SHA-256;
 - no automated external effect or publication state exists.
 
 ## PR Group 3: Activation And Five-Canary Readout
@@ -83,7 +83,7 @@ Human chooses pass, approved extension, or stop. No automatic ramp.
 
 Stop new canary intake only for workflow quality failure, lost work, duplicate work, hidden review, revision-round cap breach, or cost breach. Preserve the same Hermes root, tasks, events, runs, and attachments for review. Leave non-canary legacy traffic unchanged.
 
-Focused checks cover graph shape, replay idempotency, attachment digest binding, revision reviewer selection, round cap, final handoff, route isolation, and human-review visibility.
+Focused checks cover graph shape, replay idempotency, declared digest propagation, revision reviewer selection, round cap, final handoff reference, route isolation, and human-review visibility. Canary evidence verifies downloaded bytes.
 
 ## Council Outcome
 
