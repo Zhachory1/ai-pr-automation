@@ -7,7 +7,7 @@
 
 ## Decision
 
-Use Hermes to run one small PRD workflow. Trust official Hermes task statuses, events, runs, attachments, concurrency, and recovery. M0 ends at a final attachment on an unassigned root in `review`.
+Use Hermes to run one small PRD workflow. Trust official Hermes task statuses, events, runs, attachments, concurrency, and recovery. M0 ends with the final writer attachment referenced by an unassigned root in `review`.
 
 A human downloads that attachment and manually copies or publishes it outside this automation. The human then marks the root `done` or `denied`.
 
@@ -32,7 +32,7 @@ flowchart LR
 - Round 0 uses the writer, all three reviewers, and synthesis.
 - A revision uses a writer, `mvp`, `occams-razor`, open blocker owners, and synthesis.
 - Synthesis may store its blocker ledger in its structured result attachment.
-- The final attachment is immutable. Its raw-byte SHA-256 digest identifies the exact handoff.
+- The writer attachment is the final handoff. Writer and synthesis declare its SHA-256; the human verifies downloaded bytes during canary review.
 
 ## Scope
 
