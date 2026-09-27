@@ -102,7 +102,7 @@ def advance(args):
         if any(role not in bodies or body != bodies[role] for role, body in present.items()): fail("revision body conflict")
         return digest, blockers, reviewers, bodies
     def create(round_, role, body, parents):
-        args = [*command, "kanban", "--board", BOARD, "create", f"PRD round {round_}: {role}", "--body", canonical(body), "--assignee", PROFILES[role], "--idempotency-key", f"{operation}:{operation}:{round_}:{role}", "--tenant", operation, "--max-runtime", "1800", "--max-retries", "1", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--json"]
+        args = [*command, "kanban", "--board", BOARD, "create", f"PRD round {round_}: {role}", "--body", canonical(body), "--assignee", PROFILES[role], "--idempotency-key", f"{BOARD}:{operation}:{round_}:{role}", "--tenant", operation, "--max-runtime", "1800", "--max-retries", "1", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--json"]
         for parent in parents: args.extend(("--parent", parent))
         try: value = run(args, env, True); task_id = value.get("id") if isinstance(value, dict) else None
         except ValueError:
