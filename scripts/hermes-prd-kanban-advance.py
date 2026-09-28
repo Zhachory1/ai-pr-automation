@@ -167,8 +167,9 @@ def advance(args):
         attachments = run([*command, "kanban", "--board", BOARD, "attachments", writer_id, "--json"], env, True)
         if not isinstance(attachments, list) or len(attachments) != 1: fail("writer attachment conflict")
         attachment = attachments[0]
+        if not isinstance(attachment, dict): fail("writer attachment mismatch")
         filename, content_type, size = attachment.get("filename"), attachment.get("content_type"), attachment.get("size")
-        if not isinstance(attachment, dict) or not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename \
+        if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename \
                 or not isinstance(content_type, str) or not content_type.startswith("text/") \
                 or type(size) is not int or not 0 < size <= 256 * 1024: fail("writer attachment mismatch")
         result = synthesis_result(synthesis.get("result"))
