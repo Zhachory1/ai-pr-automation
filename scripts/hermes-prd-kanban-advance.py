@@ -7,8 +7,11 @@ ROLES = {"root", "writer", "product-pm", "mvp", "occams-razor", "synthesis"}
 PROFILES = {"writer":"prd-write-v1", "product-pm":"product-pm", "mvp":"mvp", "occams-razor":"occams-razor", "synthesis":"prd-write-v1"}
 OPERATION = re.compile(r"prd-[0-9a-f]{64}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+REFERENCE = re.compile(r"(?:[0-9a-f]{64}|attachment:[1-9][0-9]*)\Z")
+BLOCKER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 def fail(message): raise ValueError(message)
+def normalize(value): return re.sub(r"[_\s]+", "-", value.strip().lower())
 def canonical(value): return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 def unique(pairs):
     value = {}
@@ -42,10 +45,49 @@ def selected(blockers):
     owners = {item["owner"] for item in blockers if item["status"] == "open"}
     return [role for role in ("mvp", "occams-razor", "product-pm") if role in {"mvp", "occams-razor"} | owners]
 
-def synthesis_result(raw):
-    value = decode(raw, "synthesis result")
-    if not isinstance(value, dict) or set(value) != {"verdict", "reviewed_digest", "blockers"} or value.get("verdict") not in {"approve", "revise", "deny", "needs-human"} or not isinstance(value.get("reviewed_digest"), str) or not DIGEST.fullmatch(value["reviewed_digest"]): fail("synthesis result mismatch")
-    validate_blockers(value.get("blockers")); return value
+def synthesis_result(shown, operation, round_, attachment):
+    raw = shown["task"].get("result")
+    if raw is not None:
+        value = decode(raw, "synthesis result")
+        if not isinstance(value, dict) or set(value) != {"verdict", "reviewed_digest", "blockers"} or value.get("verdict") not in {"approve", "revise", "deny", "needs-human"} or not isinstance(value.get("reviewed_digest"), str) or not REFERENCE.fullmatch(value["reviewed_digest"]): fail("synthesis result mismatch")
+        validate_blockers(value.get("blockers")); return value
+    runs = shown.get("runs")
+    completed = [(run["ended_at"], index, run) for index, run in enumerate(runs or [])
+                 if isinstance(run, dict) and run.get("outcome") == "completed" and type(run.get("ended_at")) is int]
+    metadata = max(completed)[2].get("metadata") if completed else None
+    if not isinstance(metadata, dict) or metadata.get("operation_id") != operation or metadata.get("round") != round_ or type(metadata.get("round")) is not int or metadata.get("role") != "synthesis" or not isinstance(metadata.get("verdict"), str): fail("synthesis metadata mismatch")
+    draft_id = metadata.get("draft_attachment_id")
+    if type(draft_id) is not int or draft_id <= 0 or type(attachment.get("id")) is not int or attachment.get("id") != draft_id or metadata.get("draft_filename") != attachment.get("filename") or metadata.get("draft_size") != attachment.get("size"): fail("synthesis metadata attachment mismatch")
+    reference = metadata.get("draft_digest")
+    if not isinstance(reference, str) or not DIGEST.fullmatch(reference): reference = f"attachment:{draft_id}"
+    issues, reviewer_verdicts = metadata.get("blocking_issues"), metadata.get("reviewer_verdicts")
+    if not isinstance(issues, list) or len(issues) > 100 or any(not isinstance(item, str) or not item.strip() for item in issues) or not isinstance(reviewer_verdicts, dict) or not set(reviewer_verdicts) <= {"product-pm", "mvp", "occams-razor"}: fail("synthesis metadata blockers mismatch")
+    normalized = {}
+    for role, reviewer_verdict in reviewer_verdicts.items():
+        if not isinstance(reviewer_verdict, str): fail("synthesis metadata reviewers mismatch")
+        normalized[role] = normalize(reviewer_verdict)
+        if normalized[role] not in {"revise", "needs-revision", "block", "deny", "pass", "approve", "conditional-pass"}: fail("synthesis metadata reviewers mismatch")
+    open_owners = [role for role in ("product-pm", "mvp", "occams-razor") if normalized.get(role) in {"revise", "needs-revision", "block", "deny"}]
+    owner = ("product-pm" if "product-pm" in open_owners else open_owners[0]) if issues and open_owners else None
+    if issues and owner is None: fail("synthesis metadata blocker owner mismatch")
+    blockers, seen = [], set()
+    for index, evidence in enumerate(issues, 1):
+        prefix, separator, _ = evidence.partition(":"); blocker_id = prefix.strip() if separator and BLOCKER_ID.fullmatch(prefix.strip()) and prefix.strip() not in seen else f"{owner}-{index}"
+        while blocker_id in seen: index += 1; blocker_id = f"{owner}-{index}"
+        seen.add(blocker_id); blockers.append({"id":blocker_id, "owner":owner, "status":"open", "evidence":evidence})
+    for role in open_owners:
+        if role == owner: continue
+        index = 1; blocker_id = f"{role}-{index}"
+        while blocker_id in seen: index += 1; blocker_id = f"{role}-{index}"
+        seen.add(blocker_id); blockers.append({"id":blocker_id, "owner":role, "status":"open", "evidence":reviewer_verdicts[role]})
+    validate_blockers(blockers)
+    verdict = normalize(metadata["verdict"])
+    if verdict in {"approve", "pass", "conditional-pass"}:
+        verdict = "approve" if type(metadata.get("must_fix_count")) is int and metadata["must_fix_count"] == 0 and not issues else "needs-human"
+    elif verdict in {"revise", "needs-revision"}: verdict = "revise"
+    elif verdict != "deny": verdict = "needs-human"
+    if verdict == "revise" and not blockers: verdict = "needs-human"
+    return {"verdict":verdict, "reviewed_digest":reference, "blockers":blockers}
 
 def advance(args):
     operation = args.operation_id
@@ -91,11 +133,17 @@ def advance(args):
         current = value.get("parents")
         if task.get("id") != record["id"] or task.get("body") != canonical(body) or not isinstance(current, list) or sorted(current) != sorted(parents): fail("PRD graph edge/body conflict")
         return task
+    def writer_attachment(round_):
+        attachments = run([*command, "kanban", "--board", BOARD, "attachments", records[(round_, "writer")]["id"], "--json"], env, True)
+        if not isinstance(attachments, list) or len(attachments) != 1 or not isinstance(attachments[0], dict): fail("writer attachment conflict")
+        attachment = attachments[0]; filename, content_type, size = attachment.get("filename"), attachment.get("content_type"), attachment.get("size")
+        if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename or not isinstance(content_type, str) or not content_type.startswith("text/") or type(size) is not int or not 0 < size <= 256 * 1024: fail("writer attachment mismatch")
+        return attachment
     def revision(round_):
         present = {role:records[(round_, role)]["body"] for item, role in records if item == round_}
         if not present: fail("empty revision round")
         sample = next(iter(present.values())); digest, blockers = sample.get("prior_digest"), sample.get("blockers")
-        if not isinstance(digest, str) or not DIGEST.fullmatch(digest): fail("revision digest conflict")
+        if not isinstance(digest, str) or not REFERENCE.fullmatch(digest): fail("revision digest conflict")
         validate_blockers(blockers); reviewers = selected(blockers)
         bodies = {role:{"operation_id":operation, "round":round_, "role":role, "prior_digest":digest, "blockers":blockers} for role in ["writer", *reviewers, "synthesis"]}
         bodies["synthesis"]["review_roles"] = reviewers
@@ -141,9 +189,9 @@ def advance(args):
         healed = False
         for round_ in range(1, max(rounds) + 1):
             digest, blockers, reviewers, bodies = revision(round_); roles = ["writer", *reviewers, "synthesis"]
-            parent = show(records[(round_ - 1, "synthesis")]["id"])["task"]
-            prior = synthesis_result(parent.get("result"))
-            if parent.get("status") != "done" or prior["verdict"] != "revise" or prior["reviewed_digest"] != digest or prior["blockers"] != blockers: fail("revision parent conflict")
+            parent = show(records[(round_ - 1, "synthesis")]["id"])
+            prior = synthesis_result(parent, operation, round_ - 1, writer_attachment(round_ - 1))
+            if parent["task"].get("status") != "done" or prior["verdict"] != "revise" or prior["reviewed_digest"] != digest or prior["blockers"] != blockers: fail("revision parent conflict")
             actual = {role for item, role in records if item == round_}
             if actual != set(roles):
                 if round_ != max(rounds) or not actual <= set(roles): fail("revision role conflict")
@@ -160,19 +208,12 @@ def advance(args):
             _, _, reviewers, _ = revision(current); released = release(current, ["writer", *reviewers, "synthesis"])
     except ValueError as error: return route(str(error))
 
-    synthesis = show(records[(current, "synthesis")]["id"])["task"]
-    if synthesis.get("status") != "done": return output("revision" if healed or released else "waiting")
+    synthesis = show(records[(current, "synthesis")]["id"])
+    if synthesis["task"].get("status") != "done": return output("revision" if healed or released else "waiting")
     writer_id = records[(current, "writer")]["id"]
     try:
-        attachments = run([*command, "kanban", "--board", BOARD, "attachments", writer_id, "--json"], env, True)
-        if not isinstance(attachments, list) or len(attachments) != 1: fail("writer attachment conflict")
-        attachment = attachments[0]
-        if not isinstance(attachment, dict): fail("writer attachment mismatch")
-        filename, content_type, size = attachment.get("filename"), attachment.get("content_type"), attachment.get("size")
-        if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename \
-                or not isinstance(content_type, str) or not content_type.startswith("text/") \
-                or type(size) is not int or not 0 < size <= 256 * 1024: fail("writer attachment mismatch")
-        result = synthesis_result(synthesis.get("result"))
+        attachment = writer_attachment(current)
+        result = synthesis_result(synthesis, operation, current, attachment)
     except ValueError as error: return route(str(error))
     verdict, digest, blockers = result["verdict"], result["reviewed_digest"], result["blockers"]
     open_blockers = [item for item in blockers if item["status"] == "open"]

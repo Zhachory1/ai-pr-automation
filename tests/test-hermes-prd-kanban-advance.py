@@ -14,8 +14,8 @@ class FakeCli:
         body = body or {"operation_id":self.operation, "round":round_, "role":role}
         self.tasks[task_id] = {"id":task_id, "title":role, "body":advance.canonical(body), "status":status, "result":result, "assignee":assignee, "tenant":self.operation, "_parents":list(parents), "events":[{"kind":"created"}, {"kind":"blocked", "payload":{"reason":"initial_status", "status":"blocked", "actor":"operator"}}], "runs":[]}
         self.attachments[task_id] = []; return task_id
-    def file(self, task_id, name, size=8, content_type="text/markdown"):
-        self.attachments[task_id].append({"filename":name, "content_type":content_type, "size":size})
+    def file(self, task_id, name, size=8, content_type="text/markdown", attachment_id=2):
+        self.attachments[task_id].append({"id":attachment_id, "filename":name, "content_type":content_type, "size":size})
     def public(self, task): return {key:value for key, value in task.items() if key not in {"_parents", "events", "runs"}}
     def __call__(self, command, env, json_output=False):
         self.commands.append(command); action = command[command.index("--board") + 2]
@@ -64,6 +64,12 @@ class AdvanceTest(unittest.TestCase):
         return args, cli, root, writer, synthesis
     def call(self, args, cli):
         with mock.patch.object(advance, "run", side_effect=cli): return advance.advance(args)
+    def native_metadata(self, operation, **changes):
+        value = {"operation_id":operation, "round":0, "role":"synthesis", "verdict":"needs_revision",
+                 "draft_digest":"PENDING", "draft_attachment_id":2, "draft_filename":"generated-prd.txt",
+                 "draft_size":8, "must_fix_count":1, "blocking_issues":["scope: reduce scope"],
+                 "reviewer_verdicts":{"product-pm":"needs_revision", "mvp":"block", "occams-razor":"conditional_pass"}}
+        value.update(changes); return value
 
     def test_approve_reviews_root_with_writer_attachment_reference(self):
         args, cli, root, writer, synthesis = self.fixture(); result = self.call(args, cli); summary = json.loads(cli.tasks[root]["summary"])
@@ -80,6 +86,36 @@ class AdvanceTest(unittest.TestCase):
             with self.subTest(verdict=verdict):
                 args, cli, root, writer, synthesis = self.fixture(verdict); self.assertEqual(self.call(args, cli)["status"], "review")
                 self.assertEqual(json.loads(cli.tasks[root]["summary"])["verdict"], verdict)
+
+    def test_native_synthesis_metadata_creates_targeted_revision(self):
+        args, cli, root, writer, synthesis = self.fixture(); metadata = self.native_metadata(args.operation_id)
+        cli.tasks[synthesis]["result"] = None
+        cli.tasks[synthesis]["runs"] = [
+            {"id":2, "outcome":"completed", "ended_at":2, "metadata":metadata},
+            {"id":3, "outcome":"failed", "ended_at":3, "metadata":None},
+            {"id":1, "outcome":"completed", "ended_at":1, "metadata":{}},
+        ]
+        result = self.call(args, cli)
+        round_one = {json.loads(task["body"])["role"]:task for task in cli.tasks.values() if json.loads(task["body"])["round"] == 1}
+        self.assertEqual((result["status"], result["digest"], set(round_one)),
+                         ("revision", "attachment:2", {"writer", "mvp", "occams-razor", "product-pm", "synthesis"}))
+        blockers = json.loads(round_one["writer"]["body"])["blockers"]
+        self.assertEqual(blockers, [
+            {"id":"scope", "owner":"product-pm", "status":"open", "evidence":"scope: reduce scope"},
+            {"id":"mvp-1", "owner":"mvp", "status":"open", "evidence":"block"},
+        ])
+        count = len(cli.tasks); self.assertEqual(self.call(args, cli)["status"], "waiting"); self.assertEqual(len(cli.tasks), count)
+
+    def test_native_synthesis_metadata_drift_routes_review(self):
+        for fault in ("mismatch", "missing", "malformed"):
+            with self.subTest(fault=fault):
+                args, cli, root, writer, synthesis = self.fixture(); metadata = self.native_metadata(args.operation_id)
+                cli.tasks[synthesis]["result"] = None
+                if fault == "mismatch": metadata["draft_size"] = 9
+                if fault == "malformed": metadata["blocking_issues"] = [""]
+                cli.tasks[synthesis]["runs"] = [] if fault == "missing" else [{"id":1, "outcome":"completed", "ended_at":1, "metadata":metadata}]
+                self.assertEqual(self.call(args, cli)["status"], "review")
+                self.assertEqual(cli.tasks[root]["status"], "review")
 
     def test_revision_graph_and_replay(self):
         blockers = [{"id":"pm-1", "owner":"product-pm", "status":"open", "evidence":"metric missing"}]
