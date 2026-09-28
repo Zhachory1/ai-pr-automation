@@ -162,12 +162,16 @@ def advance(args):
 
     synthesis = show(records[(current, "synthesis")]["id"])["task"]
     if synthesis.get("status") != "done": return output("revision" if healed or released else "waiting")
-    writer_id = records[(current, "writer")]["id"]; expected_name = "draft.md" if current == 0 else "revision.md"
+    writer_id = records[(current, "writer")]["id"]
     try:
         attachments = run([*command, "kanban", "--board", BOARD, "attachments", writer_id, "--json"], env, True)
         if not isinstance(attachments, list) or len(attachments) != 1: fail("writer attachment conflict")
         attachment = attachments[0]
-        if not isinstance(attachment, dict) or attachment.get("filename") != expected_name or attachment.get("content_type") != "text/markdown" or type(attachment.get("size")) is not int or not 0 < attachment["size"] <= 256 * 1024: fail("writer attachment mismatch")
+        if not isinstance(attachment, dict): fail("writer attachment mismatch")
+        filename, content_type, size = attachment.get("filename"), attachment.get("content_type"), attachment.get("size")
+        if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename \
+                or not isinstance(content_type, str) or not content_type.startswith("text/") \
+                or type(size) is not int or not 0 < size <= 256 * 1024: fail("writer attachment mismatch")
         result = synthesis_result(synthesis.get("result"))
     except ValueError as error: return route(str(error))
     verdict, digest, blockers = result["verdict"], result["reviewed_digest"], result["blockers"]
