@@ -57,7 +57,9 @@ def synthesis_result(shown, operation, round_, attachment):
     metadata = max(completed)[2].get("metadata") if completed else None
     if not isinstance(metadata, dict) or metadata.get("operation_id") != operation or metadata.get("round") != round_ or type(metadata.get("round")) is not int or metadata.get("role") != "synthesis" or not isinstance(metadata.get("verdict"), str): fail("synthesis metadata mismatch")
     draft_id = metadata.get("draft_attachment_id")
-    if type(draft_id) is not int or draft_id <= 0 or type(attachment.get("id")) is not int or attachment.get("id") != draft_id or metadata.get("draft_filename") != attachment.get("filename") or metadata.get("draft_size") != attachment.get("size"): fail("synthesis metadata attachment mismatch")
+    draft_filename = metadata.get("draft_attachment_filename", metadata.get("draft_filename"))
+    draft_size = metadata.get("draft_attachment_size_bytes", metadata.get("draft_size"))
+    if type(draft_id) is not int or draft_id <= 0 or type(attachment.get("id")) is not int or attachment.get("id") != draft_id or draft_filename != attachment.get("filename") or draft_size != attachment.get("size"): fail("synthesis metadata attachment mismatch")
     reference = metadata.get("draft_digest")
     if not isinstance(reference, str) or not DIGEST.fullmatch(reference): reference = f"attachment:{draft_id}"
     issues, reviewer_verdicts = metadata.get("blocking_issues"), metadata.get("reviewer_verdicts")

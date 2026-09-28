@@ -66,8 +66,8 @@ class AdvanceTest(unittest.TestCase):
         with mock.patch.object(advance, "run", side_effect=cli): return advance.advance(args)
     def native_metadata(self, operation, **changes):
         value = {"operation_id":operation, "round":0, "role":"synthesis", "verdict":"needs_revision",
-                 "draft_digest":"PENDING", "draft_attachment_id":2, "draft_filename":"generated-prd.txt",
-                 "draft_size":8, "must_fix_count":1, "blocking_issues":["scope: reduce scope"],
+                 "draft_digest":"PENDING", "draft_attachment_id":2, "draft_attachment_filename":"generated-prd.txt",
+                 "draft_attachment_size_bytes":8, "must_fix_count":1, "blocking_issues":["scope: reduce scope"],
                  "reviewer_verdicts":{"product-pm":"needs_revision", "mvp":"block", "occams-razor":"conditional_pass"}}
         value.update(changes); return value
 
@@ -111,7 +111,7 @@ class AdvanceTest(unittest.TestCase):
             with self.subTest(fault=fault):
                 args, cli, root, writer, synthesis = self.fixture(); metadata = self.native_metadata(args.operation_id)
                 cli.tasks[synthesis]["result"] = None
-                if fault == "mismatch": metadata["draft_size"] = 9
+                if fault == "mismatch": metadata["draft_attachment_size_bytes"] = 9
                 if fault == "malformed": metadata["blocking_issues"] = [""]
                 cli.tasks[synthesis]["runs"] = [] if fault == "missing" else [{"id":1, "outcome":"completed", "ended_at":1, "metadata":metadata}]
                 self.assertEqual(self.call(args, cli)["status"], "review")
