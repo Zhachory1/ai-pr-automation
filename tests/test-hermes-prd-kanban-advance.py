@@ -49,7 +49,7 @@ class AdvanceTest(unittest.TestCase):
         }
     def fixture(self, verdict="approve", blockers=None, round_=0):
         operation = "prd-" + "a" * 64; cli = FakeCli(operation); bodies = self.round_zero_bodies(operation)
-        root = cli.add("root", status="blocked", body=bodies["root"]); writer = cli.add("writer", body=bodies["writer"]); cli.file(writer, "draft.md")
+        root = cli.add("root", status="blocked", body=bodies["root"]); writer = cli.add("writer", body=bodies["writer"]); cli.file(writer, "generated-prd.txt", content_type="text/plain")
         reviewers = {role:cli.add(role, parents=[writer], body=bodies[role]) for role in ("product-pm", "mvp", "occams-razor")}
         result = advance.canonical({"verdict":verdict if round_ == 0 else "revise", "reviewed_digest":self.digest, "blockers":blockers or []})
         synthesis = cli.add("synthesis", result=result, parents=list(reviewers.values()), body=bodies["synthesis"]); prior = synthesis
@@ -68,7 +68,7 @@ class AdvanceTest(unittest.TestCase):
     def test_approve_reviews_root_with_writer_attachment_reference(self):
         args, cli, root, writer, synthesis = self.fixture(); result = self.call(args, cli); summary = json.loads(cli.tasks[root]["summary"])
         self.assertEqual((result["status"], cli.tasks[root]["status"], cli.attachments[root]), ("review", "review", []))
-        self.assertEqual({key:summary[key] for key in ("writer_task_id", "attachment_filename", "attachment_size", "reviewed_digest")}, {"writer_task_id":writer, "attachment_filename":"draft.md", "attachment_size":8, "reviewed_digest":self.digest})
+        self.assertEqual({key:summary[key] for key in ("writer_task_id", "attachment_filename", "attachment_size", "reviewed_digest")}, {"writer_task_id":writer, "attachment_filename":"generated-prd.txt", "attachment_size":8, "reviewed_digest":self.digest})
 
     def test_approve_with_open_blocker_routes_needs_human_without_selection(self):
         blockers = [{"id":"pm-1", "owner":"product-pm", "status":"open", "evidence":"metric missing"}]
