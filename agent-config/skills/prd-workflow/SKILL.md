@@ -37,7 +37,7 @@ Every created task uses this key:
 prd-write:{operation}:{round}:{role}
 ```
 
-Every writer and synthesis task force-loads `prd-workflow` through its `skills` field. Reviewer task bodies carry their complete rubric and do not require this skill.
+Kanban worker tasks do not force-load skills. Every writer, reviewer, and synthesis body carries its complete stage contract. `prd-workflow` guides conversational intake; task bodies are the durable worker interface.
 
 Reuse the same key on retry. Adopt the returned task ID. Never invent a task ID.
 
@@ -56,8 +56,8 @@ When a human asks to create a PRD:
 
 1. Require a clear problem, intended users, desired outcome, and known constraints. Ask one focused question when essential input is missing.
 2. Create only the round-0 writer task with `kanban_create`.
-3. Assign `prd-write-v1`, force-load `prd-workflow`, and use role `writer` in the key.
-4. Put the full human request and operation contract in the task body.
+3. Assign `prd-write-v1` and use role `writer` in the key. Do not set task `skills`.
+4. Put the full human request and complete writer, reviewer, synthesis, revision, and failure contracts in the task body.
 5. Return operation ID and writer task ID. Do not create reviewers or synthesis at intake.
 
 ## Writer Stage
@@ -73,7 +73,7 @@ When a human asks to create a PRD:
    - identifies source filename and declared digest;
    - instructs reviewer to use `read_file` on writer attachment from parent context;
    - requires structured `pass | revise | needs_human | deny` output.
-6. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1` and force-load `prd-workflow`.
+6. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1`, do not set task `skills`, and put the complete synthesis and revision contract in its body.
 7. Complete writer through `kanban_complete` with the absolute Markdown path in `artifacts`. Result must include filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
 
 Do not use `kanban_attach` for generated text. `kanban_complete.artifacts` preserves the verified workspace file as the durable attachment before dependents run.
@@ -120,7 +120,7 @@ Use when blockers are concrete and revision cap remains.
 
 1. Create only one next-round writer task.
 2. Make current synthesis its parent.
-3. Assign `prd-write-v1` and force-load `prd-workflow`.
+3. Assign `prd-write-v1`, do not set task `skills`, and copy the complete writer, reviewer, synthesis, revision, and failure contract into its body.
 4. Include final source attachment identity, blocker ledger, resolved findings, and required reviewer roles in body. The revision writer reads attachment content with `read_file`.
 5. Required roles are `mvp`, `occams-razor`, plus unresolved blocker owners.
 6. Complete current synthesis with new writer ID in exact `created_cards`.

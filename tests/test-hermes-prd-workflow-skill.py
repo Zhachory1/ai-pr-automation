@@ -35,7 +35,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("exact `created_cards` list", writer)
         for role in ("product-pm", "mvp", "occams-razor"):
             self.assertIn(f"`{role}`", writer)
-        self.assertIn("Assign `prd-write-v1` and force-load `prd-workflow`", writer)
+        self.assertIn("Assign `prd-write-v1`, do not set task `skills`", writer)
 
     def test_synthesis_creates_only_next_writer(self):
         synthesis = self.text.split("## Synthesis Stage", 1)[1].split("## Human Decision", 1)[0]
@@ -43,7 +43,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("Next writer creates its own council and synthesis", synthesis)
         self.assertIn("Never create round 3", synthesis)
         self.assertIn("kind=needs_input", synthesis)
-        self.assertIn("Assign `prd-write-v1` and force-load `prd-workflow`", synthesis)
+        self.assertIn("Assign `prd-write-v1`, do not set task `skills`", synthesis)
 
     def test_idempotency_and_revision_contract(self):
         self.assertRegex(self.text, re.escape("prd-write:{operation}:{round}:{role}"))
@@ -55,6 +55,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("Do not unblock or complete a human-blocked synthesis task automatically", self.text)
         self.assertIn("placeholder digest", self.text)
         self.assertIn("unreadable attachment is malformed evidence", self.text)
+        self.assertIn("task bodies are the durable worker interface", self.text)
 
     def test_profile_ownership_boundary(self):
         self.assertIn(

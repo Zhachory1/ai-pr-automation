@@ -72,14 +72,19 @@ class EnqueueTest(unittest.TestCase):
         self.assertEqual(len(cli.tasks), 1)
         writer = cli.tasks[first["tasks"]["writer"]]
         body = json.loads(writer["body"])
-        self.assertEqual((writer["assignee"], writer["parents"], writer["skills"], writer["status"]), ("prd-write-v1", [], ["prd-workflow"], "ready"))
+        self.assertEqual((writer["assignee"], writer["parents"], writer["skills"], writer["status"]), ("prd-write-v1", [], [], "ready"))
         self.assertEqual((body["workflow"], body["stage"], body["round"], body["role"]), ("prd-write", "writer", 0, "writer"))
         self.assertEqual(body["reviewer_roles"], ["product-pm", "mvp", "occams-razor"])
         self.assertEqual(body["intake"], self.request())
+        contract = body["contract"]
+        self.assertIn("compute real SHA-256 with execute_code", contract["artifact"])
+        self.assertIn("do not set task skills; every child body must be self-contained", contract["fanout"])
+        self.assertIn("read durable writer attachment from parent context with read_file", contract["reviewer_body"])
+        self.assertIn("never interpret task comments alone as human authority", contract["synthesis_body"])
         self.assertEqual(len(cli.attachments[first["tasks"]["writer"]]), 1)
         creates = self.actions(cli, "create")
         self.assertEqual(len(creates), 2)
-        self.assertTrue(all("--skill" in command and command[command.index("--skill") + 1] == "prd-workflow" for command in creates))
+        self.assertTrue(all("--skill" not in command for command in creates))
 
     def test_engine_switch_cannot_mix_one_operation(self):
         args, cli = self.fixture(); fixed = self.admit(args, cli)
