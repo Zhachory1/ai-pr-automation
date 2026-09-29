@@ -11,7 +11,14 @@ Create only work required by current evidence. Never prebuild possible revision 
 
 Hermes owns task lifecycle, claims, runs, dependencies, attachments, retries, and profiles. Human owns final approval, denial, publication, credentials, and destructive actions.
 
-Use only native Kanban tools. Do not call a custom workflow MCP. Do not publish the document.
+Use only native Hermes tools. Do not call a custom workflow MCP. Do not publish the document.
+
+Runtime capability contract:
+
+- `prd-write-v1`: Kanban, `write_file`, `read_file`, and `execute_code`;
+- reviewer profiles: Kanban and `read_file`.
+
+If a required capability is unavailable, block with `kind=capability`. Do not inspect profile implementation to preflight this contract.
 
 ## Operation Contract
 
@@ -55,17 +62,21 @@ When a human asks to create a PRD:
 
 ## Writer Stage
 
-1. Read source request and, for revisions, prior attachment plus blocker ledger.
+1. Read source request and, for revisions, prior attachment with `read_file` plus blocker ledger.
 2. Write one complete PRD. Preserve supported requirements. Do not invent business facts.
-3. Save document, then call `kanban_attach` on current task.
-4. Create required reviewer tasks. Each reviewer task:
+3. Use `write_file` to save UTF-8 Markdown at an absolute path inside current scratch workspace. Require `verified=true`.
+4. Use `execute_code` with Python `hashlib.sha256` to hash the exact saved bytes. Never invent or use a placeholder digest.
+5. Create required reviewer tasks. Each reviewer task:
    - names one role and rubric;
    - has current writer task as parent;
    - uses same operation and round;
-   - identifies writer attachment by ID, filename, and declared digest;
+   - identifies source filename and declared digest;
+   - instructs reviewer to use `read_file` on writer attachment from parent context;
    - requires structured `pass | revise | needs_human | deny` output.
-5. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1` and force-load `prd-workflow`.
-6. Complete writer through `kanban_complete`. Result must include attachment ID, filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
+6. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1` and force-load `prd-workflow`.
+7. Complete writer through `kanban_complete` with the absolute Markdown path in `artifacts`. Result must include filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
+
+Do not use `kanban_attach` for generated text. `kanban_complete.artifacts` preserves the verified workspace file as the durable attachment before dependents run.
 
 Required council:
 
@@ -75,7 +86,7 @@ Required council:
 
 ## Reviewer Stage
 
-Review only assigned rubric. Read writer result and attachment. Do not create tasks.
+Review only assigned rubric. Read writer result, then use `read_file` on the durable writer attachment path in parent context. Do not create tasks.
 
 Complete with structured result:
 
@@ -110,7 +121,7 @@ Use when blockers are concrete and revision cap remains.
 1. Create only one next-round writer task.
 2. Make current synthesis its parent.
 3. Assign `prd-write-v1` and force-load `prd-workflow`.
-4. Include final source attachment, blocker ledger, resolved findings, and required reviewer roles in body.
+4. Include final source attachment identity, blocker ledger, resolved findings, and required reviewer roles in body. The revision writer reads attachment content with `read_file`.
 5. Required roles are `mvp`, `occams-razor`, plus unresolved blocker owners.
 6. Complete current synthesis with new writer ID in exact `created_cards`.
 
@@ -141,6 +152,7 @@ Never silently reopen failed, denied, or human-blocked work. Human-needed work r
 - Do not recreate failed children blindly.
 - Do not continue from a missing or malformed result.
 - Do not truncate an oversized source. Block and report exact limit.
+- A missing `verified=true`, missing SHA-256, placeholder digest, or unreadable attachment is malformed evidence. Block instead of continuing.
 - Do not inspect or pin profile files, tools, MCPs, defaults, or digests. Trust profile name selected by Hermes.
 - Add one concise stage comment before blocking for human input.
 

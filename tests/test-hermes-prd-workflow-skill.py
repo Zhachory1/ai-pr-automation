@@ -15,8 +15,9 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
 
     def test_skill_identity_and_native_tools(self):
         self.assertIn("name: prd-workflow", self.text)
-        for tool in ("kanban_create", "kanban_attach", "kanban_complete", "kanban_block"):
+        for tool in ("kanban_create", "kanban_complete", "kanban_block", "write_file", "read_file", "execute_code"):
             self.assertIn(f"`{tool}`", self.text)
+        self.assertIn("Do not use `kanban_attach` for generated text", self.text)
         self.assertIn("Do not call a custom workflow MCP", self.text)
 
     def test_intake_creates_only_writer(self):
@@ -28,6 +29,9 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         writer = self.text.split("## Writer Stage", 1)[1].split("## Reviewer Stage", 1)[0]
         self.assertIn("current writer task as parent", writer)
         self.assertIn("current writer and every reviewer as parents", writer)
+        self.assertIn("Require `verified=true`", writer)
+        self.assertIn("Python `hashlib.sha256`", writer)
+        self.assertIn("absolute Markdown path in `artifacts`", writer)
         self.assertIn("exact `created_cards` list", writer)
         for role in ("product-pm", "mvp", "occams-razor"):
             self.assertIn(f"`{role}`", writer)
@@ -49,6 +53,8 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("A task comment alone is not approval", self.text)
         self.assertIn("Do not interpret comments as human decisions", self.text)
         self.assertIn("Do not unblock or complete a human-blocked synthesis task automatically", self.text)
+        self.assertIn("placeholder digest", self.text)
+        self.assertIn("unreadable attachment is malformed evidence", self.text)
 
     def test_profile_ownership_boundary(self):
         self.assertIn(
