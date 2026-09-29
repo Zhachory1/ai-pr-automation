@@ -12,7 +12,9 @@ class FakeCli:
     def add(self, role, round_=0, status="done", result=None, parents=(), body=None, assignee=None):
         self.seq += 1; task_id = f"t_{self.seq:08x}"
         body = body or {"operation_id":self.operation, "round":round_, "role":role}
-        self.tasks[task_id] = {"id":task_id, "title":role, "body":advance.canonical(body), "status":status, "result":result, "assignee":assignee, "tenant":self.operation, "_parents":list(parents), "events":[{"kind":"created"}, {"kind":"blocked", "payload":{"reason":"initial_status", "status":"blocked", "actor":"operator"}}], "runs":[]}
+        events = [{"kind":"created"}, {"kind":"blocked", "payload":{"reason":"initial_status", "status":"blocked", "actor":"operator"}}]
+        if parents: events.append({"kind":"linked", "payload":{"parents":list(parents)}})
+        self.tasks[task_id] = {"id":task_id, "title":role, "body":advance.canonical(body), "status":status, "result":result, "assignee":assignee, "tenant":self.operation, "_parents":list(parents), "events":events, "runs":[]}
         self.attachments[task_id] = []; return task_id
     def file(self, task_id, name, size=8, content_type="text/markdown", attachment_id=2):
         self.attachments[task_id].append({"id":attachment_id, "filename":name, "content_type":content_type, "size":size})

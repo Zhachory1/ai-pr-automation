@@ -164,7 +164,10 @@ def advance(args):
         released = False
         for role in reversed(roles):
             value = show(records[(round_, role)]["id"]); task, events, runs = value["task"], value.get("events"), value.get("runs")
-            pristine = task.get("status") == "blocked" and runs == [] and isinstance(events, list) and len(events) == 2 and events[0].get("kind") == "created" and events[1].get("kind") == "blocked" and events[1].get("payload") == {"reason":"initial_status", "status":"blocked", "actor":"operator"}
+            blocked_events = [event for event in events or [] if isinstance(event, dict) and event.get("kind") == "blocked"]
+            pristine = task.get("status") == "blocked" and runs == [] and isinstance(events, list) \
+                and any(isinstance(event, dict) and event.get("kind") == "created" for event in events) \
+                and len(blocked_events) == 1 and blocked_events[0].get("payload") == {"reason":"initial_status", "status":"blocked", "actor":"operator"}
             if pristine: run([*command, "kanban", "--board", BOARD, "unblock", task["id"]], env); released = True
         return released
 
