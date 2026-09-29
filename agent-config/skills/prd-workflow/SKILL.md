@@ -57,14 +57,15 @@ When a human asks to create a PRD:
 
 1. Read source request and, for revisions, prior attachment plus blocker ledger.
 2. Write one complete PRD. Preserve supported requirements. Do not invent business facts.
-3. Save document, then call `kanban_attach` on current task.
+3. Save UTF-8 Markdown bytes, compute their SHA-256, then call `kanban_attach` on current task.
 4. Create required reviewer tasks. Each reviewer task:
    - names one role and rubric;
    - has current writer task as parent;
    - uses same operation and round;
    - identifies writer attachment by ID, filename, and declared digest;
+   - embeds the exact attached UTF-8 Markdown as `draft_markdown` in its body;
    - requires structured `pass | revise | needs_human | deny` output.
-5. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1` and force-load `prd-workflow`.
+5. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1`, force-load `prd-workflow`, and embed the same exact `draft_markdown` plus attachment identity in its body.
 6. Complete writer through `kanban_complete`. Result must include attachment ID, filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
 
 Required council:
@@ -75,7 +76,7 @@ Required council:
 
 ## Reviewer Stage
 
-Review only assigned rubric. Read writer result and attachment. Do not create tasks.
+Review only assigned rubric. Read `draft_markdown` from current task body. Treat attachment ID and digest as audit identity; do not require file-read capability. Do not create tasks.
 
 Complete with structured result:
 
@@ -110,7 +111,7 @@ Use when blockers are concrete and revision cap remains.
 1. Create only one next-round writer task.
 2. Make current synthesis its parent.
 3. Assign `prd-write-v1` and force-load `prd-workflow`.
-4. Include final source attachment, blocker ledger, resolved findings, and required reviewer roles in body.
+4. Include final source attachment identity, exact current `draft_markdown`, blocker ledger, resolved findings, and required reviewer roles in body.
 5. Required roles are `mvp`, `occams-razor`, plus unresolved blocker owners.
 6. Complete current synthesis with new writer ID in exact `created_cards`.
 
@@ -140,7 +141,7 @@ Never silently reopen failed, denied, or human-blocked work. Human-needed work r
 - Report every spawned ID through `created_cards` when completing creator task.
 - Do not recreate failed children blindly.
 - Do not continue from a missing or malformed result.
-- Do not truncate an oversized source. Block and report exact limit.
+- Embed source text only when complete writer output and task instructions fit the Kanban task-body limit. Do not truncate an oversized source. Block and report exact limit.
 - Do not inspect or pin profile files, tools, MCPs, defaults, or digests. Trust profile name selected by Hermes.
 - Add one concise stage comment before blocking for human input.
 

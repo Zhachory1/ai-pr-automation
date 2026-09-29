@@ -28,10 +28,12 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         writer = self.text.split("## Writer Stage", 1)[1].split("## Reviewer Stage", 1)[0]
         self.assertIn("current writer task as parent", writer)
         self.assertIn("current writer and every reviewer as parents", writer)
+        self.assertIn("exact attached UTF-8 Markdown as `draft_markdown`", writer)
+        self.assertIn("embed the same exact `draft_markdown`", writer)
         self.assertIn("exact `created_cards` list", writer)
         for role in ("product-pm", "mvp", "occams-razor"):
             self.assertIn(f"`{role}`", writer)
-        self.assertIn("Assign `prd-write-v1` and force-load `prd-workflow`", writer)
+        self.assertIn("Assign `prd-write-v1`, force-load `prd-workflow`", writer)
 
     def test_synthesis_creates_only_next_writer(self):
         synthesis = self.text.split("## Synthesis Stage", 1)[1].split("## Human Decision", 1)[0]
@@ -40,6 +42,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("Never create round 3", synthesis)
         self.assertIn("kind=needs_input", synthesis)
         self.assertIn("Assign `prd-write-v1` and force-load `prd-workflow`", synthesis)
+        self.assertIn("exact current `draft_markdown`", synthesis)
 
     def test_idempotency_and_revision_contract(self):
         self.assertRegex(self.text, re.escape("prd-write:{operation}:{round}:{role}"))
@@ -49,6 +52,8 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("A task comment alone is not approval", self.text)
         self.assertIn("Do not interpret comments as human decisions", self.text)
         self.assertIn("Do not unblock or complete a human-blocked synthesis task automatically", self.text)
+        self.assertIn("do not require file-read capability", self.text)
+        self.assertIn("Do not truncate an oversized source", self.text)
 
     def test_profile_ownership_boundary(self):
         self.assertIn(
