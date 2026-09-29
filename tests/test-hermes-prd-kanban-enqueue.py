@@ -30,7 +30,8 @@ class FakeCli:
             return "attached"
         if action == "unblock": task["status"] = "ready" if not task["parents"] else "todo"; return "unblocked"
         if action == "show":
-            events = ([{"kind":"created"},{"kind":"blocked","payload":{"reason":"initial_status","status":"blocked","actor":"operator"}}]
+            events = ([{"kind":"created"},{"kind":"blocked","payload":{"reason":"initial_status","status":"blocked","actor":"operator"}},
+                       *[{"kind":"attached","payload":{"filename": item["filename"]}} for item in self.attachments[task_id]]]
                       if not task.get("failure") else [{"kind":"created"},{"kind":"blocked","payload":{"reason":"failed"}}])
             runs = [] if not task.get("failure") else [{"id":1,"ended_at":1}]
             return {"task": task, "events": events, "runs": runs}

@@ -76,8 +76,9 @@ def enqueue(args):
         if status == "blocked":
             shown = run([*command, "kanban", "--board", BOARD, "show", task_id, "--json"], env, True)
             events, runs = shown.get("events"), shown.get("runs")
-            initial = isinstance(events, list) and runs == [] and len(events) == 2 and events[0].get("kind") == "created" \
-                and events[1].get("kind") == "blocked" and events[1].get("payload") == {"reason":"initial_status","status":"blocked","actor":"operator"}
+            initial = isinstance(events, list) and runs == [] and len(events) == 3 and events[0].get("kind") == "created" \
+                and events[1].get("kind") == "blocked" and events[1].get("payload") == {"reason":"initial_status","status":"blocked","actor":"operator"} \
+                and events[2].get("kind") == "attached" and events[2].get("payload", {}).get("filename") == "intake.json"
             if initial:
                 run([*command, "kanban", "--board", BOARD, "unblock", task_id], env)
                 if run([*command, "kanban", "--board", BOARD, "show", task_id, "--json"], env, True).get("task", {}).get("status") == "blocked": fail("task remained blocked")
