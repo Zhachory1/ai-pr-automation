@@ -92,8 +92,9 @@ def synthesis_result(shown, operation, round_, attachment, writer_id):
     verdict = normalize(metadata["verdict"])
     if verdict in {"approve", "pass", "conditional-pass"}:
         count = metadata.get("must_fix_count")
+        advance_ok = metadata.get("advance_condition_met", True) is not False
         verdict = "approve" if (count is None or type(count) is int and count == 0) and not issues \
-            and metadata.get("advance_condition_met", True) is not False else "needs-human"
+            and advance_ok else "needs-human"
     elif verdict in {"revise", "needs-revision"}: verdict = "revise"
     elif verdict != "deny": verdict = "needs-human"
     if verdict == "revise" and not blockers: verdict = "needs-human"
