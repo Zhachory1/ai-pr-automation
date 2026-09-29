@@ -13,11 +13,12 @@ class FakeCli:
         if command[1:4] == ["kanban", "boards", "create"]: self.boards[command[4]] = command[6]; return "created"
         action = command[command.index("--board") + 2]
         def flag(name, default=None): return command[command.index(name) + 1] if name in command else default
+        if action == "list": return [task for task in self.tasks.values() if task["tenant"] == flag("--tenant")]
         if action == "create":
             key = flag("--idempotency-key")
             if key in self.keys: return self.tasks[self.keys[key]]
             self.seq += 1; task_id = f"t_{self.seq:08x}"
-            task = {"id": task_id, "body": flag("--body"), "assignee": flag("--assignee"), "status": "blocked", "tenant": flag("--tenant"), "parents": [command[index + 1] for index, item in enumerate(command) if item == "--parent"]}
+            task = {"id": task_id, "body": flag("--body"), "assignee": flag("--assignee"), "status": "blocked", "tenant": flag("--tenant"), "parents": [command[index + 1] for index, item in enumerate(command) if item == "--parent"], "skills": [command[index + 1] for index, item in enumerate(command) if item == "--skill"]}
             self.tasks[task_id] = task; self.keys[key] = task_id; self.attachments[task_id] = []
             if self.lose_create: self.lose_create = False; raise ValueError("lost create response")
             return task
@@ -38,7 +39,7 @@ class FakeCli:
 class EnqueueTest(unittest.TestCase):
     def fixture(self):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup); root = pathlib.Path(temporary.name)
-        return argparse.Namespace(hermes_home=root / "home", hermes_bin=root / "hermes"), FakeCli()
+        return argparse.Namespace(hermes_home=root / "home", hermes_bin=root / "hermes", engine="fixed"), FakeCli()
     def request(self, title="Write launch PRD", requirements="Ship a small canary"):
         core = {"title": title, "requester": "operator", "requirements": requirements}
         return {"operation_id": "prd-" + hashlib.sha256(enqueue.canonical(core)).hexdigest(), **core}
@@ -61,6 +62,49 @@ class EnqueueTest(unittest.TestCase):
         self.assertEqual(len({command[command.index("--idempotency-key") + 1] for command in creates}), 12)
         self.assertEqual(json.loads(tasks["root"]["body"])["intake"], self.request()); self.assertTrue(all("draft_digest" in json.loads(tasks[role]["body"]) for role in reviewers + ("synthesis",)))
         self.assertEqual((len(cli.attachments[ids["root"]]), len(cli.attachments[second["tasks"]["root"]])), (1, 1))
+
+    def test_dynamic_intake_creates_only_one_writer_and_replays(self):
+        args, cli = self.fixture(); args.engine = "dynamic"
+        first = self.admit(args, cli); replay = self.admit(args, cli)
+        self.assertEqual(first, replay)
+        self.assertEqual(list(first["tasks"]), ["writer"])
+        self.assertEqual(len(cli.tasks), 1)
+        writer = cli.tasks[first["tasks"]["writer"]]
+        body = json.loads(writer["body"])
+        self.assertEqual((writer["assignee"], writer["parents"], writer["skills"], writer["status"]), ("prd-write-v1", [], ["prd-workflow"], "ready"))
+        self.assertEqual((body["workflow"], body["stage"], body["round"], body["role"]), ("prd-write", "writer", 0, "writer"))
+        self.assertEqual(body["reviewer_roles"], ["product-pm", "mvp", "occams-razor"])
+        self.assertEqual(body["intake"], self.request())
+        self.assertEqual(len(cli.attachments[first["tasks"]["writer"]]), 1)
+        creates = self.actions(cli, "create")
+        self.assertEqual(len(creates), 2)
+        self.assertTrue(all("--skill" in command and command[command.index("--skill") + 1] == "prd-workflow" for command in creates))
+
+    def test_engine_switch_cannot_mix_one_operation(self):
+        args, cli = self.fixture(); fixed = self.admit(args, cli)
+        args.engine = "dynamic"
+        with self.assertRaisesRegex(ValueError, "operation already belongs"):
+            self.admit(args, cli)
+        self.assertEqual(len(cli.tasks), 6)
+        self.assertNotIn("intake.json", [item["filename"] for item in cli.attachments[fixed["tasks"]["writer"]]])
+
+        args, cli = self.fixture(); args.engine = "dynamic"; self.admit(args, cli)
+        args.engine = "fixed"
+        with self.assertRaisesRegex(ValueError, "operation already belongs"):
+            self.admit(args, cli)
+        self.assertEqual(len(cli.tasks), 1)
+
+    def test_dynamic_lost_responses_are_adopted(self):
+        args, cli = self.fixture(); args.engine = "dynamic"; cli.lose_create = True
+        with self.assertRaisesRegex(ValueError, "lost create"):
+            self.admit(args, cli)
+        result = self.admit(args, cli)
+        self.assertEqual(len(cli.tasks), 1)
+        args, cli = self.fixture(); args.engine = "dynamic"; cli.lose_attach = True
+        with self.assertRaisesRegex(ValueError, "lost attach"):
+            self.admit(args, cli)
+        result = self.admit(args, cli); writer = result["tasks"]["writer"]
+        self.assertEqual((len(cli.tasks), len(cli.attachments[writer])), (1, 1))
 
     def test_lost_create_and_attachment_response_adoption(self):
         args, cli = self.fixture(); cli.lose_create = True

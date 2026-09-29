@@ -3,6 +3,7 @@
 import argparse, hashlib, json, os, pathlib, subprocess, sys, tempfile
 
 BOARD, BOARD_NAME = "prd-write", "PRD Write"
+ENGINES = ("fixed", "dynamic")
 ROLES = ("root", "writer", "product-pm", "mvp", "occams-razor", "synthesis")
 PROFILES = {"root": None, "writer": "prd-write-v1", "product-pm": "product-pm", "mvp": "mvp", "occams-razor": "occams-razor", "synthesis": "prd-write-v1"}
 
@@ -40,6 +41,47 @@ def enqueue(args):
     board = next((item for item in boards if item.get("slug") == BOARD), None)
     if board is None: run([*command, "kanban", "boards", "create", BOARD, "--name", BOARD_NAME], env)
     elif board.get("name") != BOARD_NAME: fail("board name mismatch")
+    existing = run([*command, "kanban", "--board", BOARD, "list", "--tenant", operation, "--json"], env, True)
+    contracts = set()
+    for task in existing:
+        try: body = json.loads(task.get("body", ""))
+        except (AttributeError, json.JSONDecodeError): fail("existing operation has unknown task contract")
+        if body.get("workflow") == BOARD and body.get("operation") == operation: contracts.add("dynamic")
+        elif body.get("operation_id") == operation: contracts.add("fixed")
+        else: fail("existing operation has unknown task contract")
+    if contracts and contracts != {args.engine}: fail("operation already belongs to other workflow engine")
+    if args.engine == "dynamic":
+        body = canonical({
+            "workflow": BOARD,
+            "operation": operation,
+            "stage": "writer",
+            "round": 0,
+            "role": "writer",
+            "intake": request,
+            "reviewer_roles": ["product-pm", "mvp", "occams-razor"],
+            "output": "attach PRD, create required reviewers and synthesis, then complete with exact created_cards",
+        }).decode()
+        create = [*command, "kanban", "--board", BOARD, "create", request["title"], "--body", body, "--idempotency-key", f"{BOARD}:{operation}:0:writer", "--tenant", operation, "--max-runtime", "1800", "--max-retries", "1", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--assignee", "prd-write-v1", "--skill", "prd-workflow", "--json"]
+        created = run(create, env, True)
+        task_id = created.get("id") if isinstance(created, dict) else None
+        status = created.get("status") if isinstance(created, dict) else None
+        if not isinstance(task_id, str) or not task_id or not isinstance(status, str): fail("invalid task create result")
+        if created.get("body") != body or created.get("assignee") != "prd-write-v1" or created.get("tenant") != operation or created.get("parents") not in ([], None) or created.get("skills") != ["prd-workflow"]: fail("dynamic writer task mismatch")
+        attachments = run([*command, "kanban", "--board", BOARD, "attachments", task_id, "--json"], env, True)
+        if not attachments:
+            with tempfile.TemporaryDirectory() as directory:
+                path = pathlib.Path(directory) / "intake.json"; path.write_bytes(intake)
+                run([*command, "kanban", "--board", BOARD, "attach", task_id, str(path), "--name", "intake.json", "--content-type", "application/json", "--author", "operator"], env)
+        elif len(attachments) != 1 or attachments[0].get("filename") != "intake.json" or attachments[0].get("size") != len(intake) or attachments[0].get("content_type") != "application/json": fail("writer attachment mismatch")
+        if status == "blocked":
+            shown = run([*command, "kanban", "--board", BOARD, "show", task_id, "--json"], env, True)
+            events, runs = shown.get("events"), shown.get("runs")
+            initial = isinstance(events, list) and runs == [] and len(events) == 2 and events[0].get("kind") == "created" \
+                and events[1].get("kind") == "blocked" and events[1].get("payload") == {"reason":"initial_status","status":"blocked","actor":"operator"}
+            if initial:
+                run([*command, "kanban", "--board", BOARD, "unblock", task_id], env)
+                if run([*command, "kanban", "--board", BOARD, "show", task_id, "--json"], env, True).get("task", {}).get("status") == "blocked": fail("task remained blocked")
+        return {"board": BOARD, "operation_id": operation, "tasks": {"writer": task_id}}
     full = {"operation_id": operation, "round": 0, "intake": request}; digest = "writer result attachment raw-byte SHA-256"
     bodies = {
         "root": {**full, "role": "root", "output": "remain blocked and unassigned; intake.json attachment is source of record"},
@@ -75,7 +117,7 @@ def enqueue(args):
     return {"board": BOARD, "operation_id": operation, "tasks": tasks}
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--hermes-home", type=pathlib.Path, required=True); parser.add_argument("--hermes-bin", type=pathlib.Path, required=True)
+    parser = argparse.ArgumentParser(); parser.add_argument("--hermes-home", type=pathlib.Path, required=True); parser.add_argument("--hermes-bin", type=pathlib.Path, required=True); parser.add_argument("--engine", choices=ENGINES, default="fixed")
     try: print(json.dumps(enqueue(parser.parse_args()), sort_keys=True, separators=(",", ":")))
     except (OSError, ValueError) as error: raise SystemExit(f"Hermes PRD enqueue failed: {error}")
 if __name__ == "__main__": main()
