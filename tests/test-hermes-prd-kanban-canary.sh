@@ -21,11 +21,12 @@ commands = native[native.index("prd_canary_enqueue() {"):native.index("\nrequire
 for text in (
     'need_root', '"$#" == 1', '"$1" == /*', 'os.O_RDONLY | os.O_NOFOLLOW',
     'stat.S_ISREG(status.st_mode)', 'source.read(131073)', 'len(data) > 131072',
+    'PRD_WORKFLOW_ENGINE:-fixed', '"--engine", engine',
     '["sudo", "-u", user, "env"', 'subprocess.run(command, input=data)',
     '"$INSTALL_DIR/venv/bin/python" "$PRD_KANBAN_ENQUEUE" "$LAUNCHER"',
     '"$1" =~ ^prd-[0-9a-f]{64}$', '"$PRD_KANBAN_ADVANCE"', '--operation-id "$1"',
 ): assert text in commands, text
-for forbidden in ("preflight", "PROFILE", "config.yaml", "cp ", "install "):
+for forbidden in ("preflight", "profiles/", "config.yaml", "cp ", "install "):
     assert forbidden not in commands, forbidden
 install = native[native.index("install_native() {"):native.index("\npreflight() {")]
 preflight = native[native.index("preflight() {"):native.index('\ncase "${1:-}"')]
@@ -34,7 +35,8 @@ down = native[native.index("  down)"):native.index("  status)")]
 for section in (install, preflight, up, down):
     assert "prd_canary_enqueue" not in section and "prd_canary_advance" not in section
 fleet = Path("scripts/fleet.sh").read_text()
-assert 'sudo "$ROOT/scripts/hermes-native.sh" prd-canary-enqueue "$2"' in fleet
+assert 'sudo env PRD_WORKFLOW_ENGINE="${PRD_WORKFLOW_ENGINE:-fixed}"' in fleet
+assert '"$ROOT/scripts/hermes-native.sh" prd-canary-enqueue "$2"' in fleet
 assert 'sudo "$ROOT/scripts/hermes-native.sh" prd-canary-advance "$2"' in fleet
 for section in (fleet[fleet.index("  up)"):fleet.index("  down)")], fleet[fleet.index("  down)"):fleet.index("  review-kanban-up)")]):
     assert "prd-canary" not in section
@@ -43,6 +45,7 @@ for text in (
     '"operation_id":', '"requester":', '"requirements":', '"title":',
     "scripts/fleet.sh prd-canary-enqueue /absolute/path/prd-intake.json",
     "scripts/fleet.sh prd-canary-advance prd-66c7963fc695491f540b081519813d41ea12a4d71af7ce3b33c995568394fd3d",
+    "PRD_WORKFLOW_ENGINE=fixed # fixed|dynamic",
 ): assert text in env, text
 PY
 
@@ -85,8 +88,16 @@ cmp -s "$intake" "$MOCK_STDIN"
 python3 - "$MOCK_ARGV" "$tmp" <<'PY'
 import json, pathlib, sys
 args = json.loads(pathlib.Path(sys.argv[1]).read_text()); root = pathlib.Path(sys.argv[2])
-assert args == ["-u", pathlib.Path.home().owner(), "env", f"HOME={root}/home", f"HERMES_HOME={root}/home/.hermes", f"{root}/install/venv/bin/python", "-B", f"{root}/support/hermes-prd-kanban-enqueue.py", "--hermes-home", f"{root}/home/.hermes", "--hermes-bin", f"{root}/home/.local/bin/hermes"]
+assert args == ["-u", pathlib.Path.home().owner(), "env", f"HOME={root}/home", f"HERMES_HOME={root}/home/.hermes", f"{root}/install/venv/bin/python", "-B", f"{root}/support/hermes-prd-kanban-enqueue.py", "--hermes-home", f"{root}/home/.hermes", "--hermes-bin", f"{root}/home/.local/bin/hermes", "--engine", "fixed"]
 PY
+
+export PRD_WORKFLOW_ENGINE=dynamic
+bash "$tmp/repo/scripts/hermes-native.sh" prd-canary-enqueue "$intake" >/dev/null
+python3 - "$MOCK_ARGV" <<'PY'
+import json, pathlib, sys
+assert json.loads(pathlib.Path(sys.argv[1]).read_text())[-2:] == ["--engine", "dynamic"]
+PY
+unset PRD_WORKFLOW_ENGINE
 
 out="$(bash "$tmp/repo/scripts/hermes-native.sh" prd-canary-advance "$operation")"
 [[ "$out" == '{"status":"mock"}' ]]
@@ -103,6 +114,7 @@ reject() {
   [[ ! -e "$MOCK_ARGV" ]]
 }
 reject prd-canary-enqueue
+PRD_WORKFLOW_ENGINE=other reject prd-canary-enqueue "$intake"
 (cd "$tmp" && reject prd-canary-enqueue intake.json)
 ln -s "$intake" "$tmp/intake-link.json"; reject prd-canary-enqueue "$tmp/intake-link.json"
 python3 - "$tmp/large.json" <<'PY'
@@ -120,7 +132,13 @@ out="$(bash "$tmp/repo/scripts/fleet.sh" prd-canary-enqueue "$intake")"
 python3 - "$MOCK_ARGV" "$tmp" "$intake" <<'PY'
 import json, pathlib, sys
 args = json.loads(pathlib.Path(sys.argv[1]).read_text()); root = pathlib.Path(sys.argv[2])
-assert args == [f"{root}/repo/scripts/hermes-native.sh", "prd-canary-enqueue", sys.argv[3]]
+assert args == ["env", "PRD_WORKFLOW_ENGINE=fixed", f"{root}/repo/scripts/hermes-native.sh", "prd-canary-enqueue", sys.argv[3]]
+PY
+rm -f "$MOCK_ARGV"
+PRD_WORKFLOW_ENGINE=dynamic bash "$tmp/repo/scripts/fleet.sh" prd-canary-enqueue "$intake" >/dev/null
+python3 - "$MOCK_ARGV" <<'PY'
+import json, pathlib, sys
+assert json.loads(pathlib.Path(sys.argv[1]).read_text())[0:2] == ["env", "PRD_WORKFLOW_ENGINE=dynamic"]
 PY
 rm -f "$MOCK_ARGV"
 bash "$tmp/repo/scripts/fleet.sh" prd-canary-advance "$operation" >/dev/null

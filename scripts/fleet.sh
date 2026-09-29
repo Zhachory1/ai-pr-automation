@@ -117,7 +117,8 @@ case "${1:-}" in
     ;;
   prd-canary-enqueue)
     [[ "$#" == 2 ]] || { echo "usage: $0 prd-canary-enqueue <absolute-json-file>" >&2; exit 2; }
-    sudo "$ROOT/scripts/hermes-native.sh" prd-canary-enqueue "$2"
+    sudo env PRD_WORKFLOW_ENGINE="${PRD_WORKFLOW_ENGINE:-fixed}" \
+      "$ROOT/scripts/hermes-native.sh" prd-canary-enqueue "$2"
     ;;
   prd-canary-advance)
     [[ "$#" == 2 ]] || { echo "usage: $0 prd-canary-advance <prd-operation-id>" >&2; exit 2; }
