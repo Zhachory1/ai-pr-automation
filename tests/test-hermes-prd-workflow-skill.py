@@ -31,6 +31,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("exact `created_cards` list", writer)
         for role in ("product-pm", "mvp", "occams-razor"):
             self.assertIn(f"`{role}`", writer)
+        self.assertIn("Assign `prd-write-v1` and force-load `prd-workflow`", writer)
 
     def test_synthesis_creates_only_next_writer(self):
         synthesis = self.text.split("## Synthesis Stage", 1)[1].split("## Human Decision", 1)[0]
@@ -38,16 +39,16 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("Next writer creates its own council and synthesis", synthesis)
         self.assertIn("Never create round 3", synthesis)
         self.assertIn("kind=needs_input", synthesis)
-        self.assertIn("metadata.status=approved", synthesis)
-        self.assertIn("metadata.status=denied", synthesis)
+        self.assertIn("Assign `prd-write-v1` and force-load `prd-workflow`", synthesis)
 
     def test_idempotency_and_revision_contract(self):
         self.assertRegex(self.text, re.escape("prd-write:{operation}:{round}:{role}"))
         self.assertIn("Every review round includes `mvp` and `occams-razor`", self.text)
         self.assertIn("Maximum automatic revision rounds are 1 and 2 after round 0", self.text)
         self.assertIn("Never silently reopen failed, denied, or human-blocked work", self.text)
-        self.assertIn("The main orchestrator never calls `kanban_complete` on another worker's task", self.text)
-        self.assertIn("then call `kanban_unblock`; synthesis completes itself", self.text)
+        self.assertIn("A task comment alone is not approval", self.text)
+        self.assertIn("Do not interpret comments as human decisions", self.text)
+        self.assertIn("Do not unblock or complete a human-blocked synthesis task automatically", self.text)
 
     def test_profile_ownership_boundary(self):
         self.assertIn(

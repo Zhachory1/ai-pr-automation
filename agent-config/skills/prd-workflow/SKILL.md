@@ -30,6 +30,8 @@ Every created task uses this key:
 prd-write:{operation}:{round}:{role}
 ```
 
+Every writer and synthesis task force-loads `prd-workflow` through its `skills` field. Reviewer task bodies carry their complete rubric and do not require this skill.
+
 Reuse the same key on retry. Adopt the returned task ID. Never invent a task ID.
 
 Use these profiles:
@@ -62,7 +64,7 @@ When a human asks to create a PRD:
    - uses same operation and round;
    - identifies writer attachment by ID, filename, and declared digest;
    - requires structured `pass | revise | needs_human | deny` output.
-5. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents.
+5. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1` and force-load `prd-workflow`.
 6. Complete writer through `kanban_complete`. Result must include attachment ID, filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
 
 Required council:
@@ -91,15 +93,9 @@ Do not mark preference as blocker. `deny` requires evidence that document should
 
 ## Synthesis Stage
 
-Read writer result, attachment metadata, all reviewer results, and current task comments. Fail closed when required evidence is missing or malformed.
+Read writer result, attachment metadata, and all reviewer results. Fail closed when required evidence is missing or malformed.
 
-When a current-task comment records a human decision from the main orchestrator:
-
-- `approve`: complete current synthesis with `metadata.status=approved` and final attachment metadata;
-- `revise`: follow the revision branch with the human's exact requested changes;
-- `deny`: complete current synthesis with `metadata.status=denied` and the human's reason.
-
-Without a human-decision comment, build one blocker ledger. Deduplicate equivalent blockers. Record owner role for each unresolved blocker.
+Build one blocker ledger. Deduplicate equivalent blockers. Record owner role for each unresolved blocker.
 
 Choose exactly one branch:
 
@@ -113,9 +109,10 @@ Use when blockers are concrete and revision cap remains.
 
 1. Create only one next-round writer task.
 2. Make current synthesis its parent.
-3. Include final source attachment, blocker ledger, resolved findings, and required reviewer roles in body.
-4. Required roles are `mvp`, `occams-razor`, plus unresolved blocker owners.
-5. Complete current synthesis with new writer ID in exact `created_cards`.
+3. Assign `prd-write-v1` and force-load `prd-workflow`.
+4. Include final source attachment, blocker ledger, resolved findings, and required reviewer roles in body.
+5. Required roles are `mvp`, `occams-razor`, plus unresolved blocker owners.
+6. Complete current synthesis with new writer ID in exact `created_cards`.
 
 Next writer creates its own council and synthesis after producing revised attachment.
 
@@ -129,18 +126,13 @@ Use only when reviewer evidence says workflow should stop rather than revise. Ca
 
 Never create round 3. Maximum automatic revision rounds are 1 and 2 after round 0.
 
-## Human Decision
+## Human Decision Boundary
 
-Main orchestrator finds blocked PRD synthesis tasks by board, tenant, or operation ID.
+This milestone stops at the blocked human gate. A task comment alone is not approval, revision, or denial authority because workers can comment across tasks.
 
-- `approve`: verify exact operation and attachment, add a `human_decision: approve` comment, then call `kanban_unblock`; synthesis completes itself.
-- `revise`: add a `human_decision: revise` comment with exact requested changes, then call `kanban_unblock`; synthesis creates the next writer if the cap permits.
-- `deny`: add a `human_decision: deny` comment with reason, then call `kanban_unblock`; synthesis completes itself.
-- ambiguous operation: ask; do not mutate any task.
+Do not interpret comments as human decisions. Do not unblock or complete a human-blocked synthesis task automatically. Conversational decision handling requires its separately activated main-orchestrator contract.
 
-The main orchestrator never calls `kanban_complete` on another worker's task.
-
-Never silently reopen failed, denied, or human-blocked work. Human-needed work remains visible on same synthesis card until decision.
+Never silently reopen failed, denied, or human-blocked work. Human-needed work remains visible on the same synthesis card until that contract is active or an operator uses the recovery path.
 
 ## Retry and Failure Rules
 
