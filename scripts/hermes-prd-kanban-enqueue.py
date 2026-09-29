@@ -6,6 +6,12 @@ BOARD, BOARD_NAME = "prd-write", "PRD Write"
 ENGINES = ("fixed", "dynamic")
 ROLES = ("root", "writer", "product-pm", "mvp", "occams-razor", "synthesis")
 PROFILES = {"root": None, "writer": "prd-write-v1", "product-pm": "product-pm", "mvp": "mvp", "occams-razor": "occams-razor", "synthesis": "prd-write-v1"}
+DYNAMIC_WRITER_CONTRACT = {
+    "artifact": ["write UTF-8 Markdown with write_file inside scratch workspace", "require verified=true", "compute real SHA-256 with execute_code", "declare absolute path in kanban_complete artifacts", "never use kanban_attach or a placeholder digest"],
+    "fanout": ["create product-pm, mvp, and occams-razor reviewers with current writer as parent", "create one prd-write-v1 synthesis with writer and all reviewers as parents", "use prd-write:{operation}:{round}:{role} idempotency keys", "do not set task skills; every child body must be self-contained", "complete writer with every returned child ID in created_cards"],
+    "reviewer_body": ["include workflow, operation, stage=reviewer, round, role, source filename, digest, and full role rubric", "read durable writer attachment from parent context with read_file", "return pass|revise|needs_human|deny plus blockers, advisories, attachment identity, and digest", "do not create tasks"],
+    "synthesis_body": ["include workflow, operation, stage=synthesis, round, reviewer roles, source filename, digest, and these complete branch rules", "dedupe blockers and record owner role", "approve: block needs_input with final attachment identity", "revise below round 2: create exactly one prd-write-v1 writer with current synthesis as parent and a self-contained copy of this contract", "revision council always includes mvp and occams-razor plus unresolved blocker owners", "missing or malformed evidence, deny recommendation, or requested round 3: block needs_input", "never interpret task comments alone as human authority"],
+}
 
 def fail(message): raise ValueError(message)
 def canonical(value): return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
@@ -59,14 +65,15 @@ def enqueue(args):
             "role": "writer",
             "intake": request,
             "reviewer_roles": ["product-pm", "mvp", "occams-razor"],
-            "output": "attach PRD, create required reviewers and synthesis, then complete with exact created_cards",
+            "contract": DYNAMIC_WRITER_CONTRACT,
+            "output": "write verified PRD artifact, create required reviewers and synthesis, then complete with exact created_cards",
         }).decode()
-        create = [*command, "kanban", "--board", BOARD, "create", request["title"], "--body", body, "--idempotency-key", f"{BOARD}:{operation}:0:writer", "--tenant", operation, "--max-runtime", "1800", "--max-retries", "1", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--assignee", "prd-write-v1", "--skill", "prd-workflow", "--json"]
+        create = [*command, "kanban", "--board", BOARD, "create", request["title"], "--body", body, "--idempotency-key", f"{BOARD}:{operation}:0:writer", "--tenant", operation, "--max-runtime", "1800", "--max-retries", "1", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--assignee", "prd-write-v1", "--json"]
         created = run(create, env, True)
         task_id = created.get("id") if isinstance(created, dict) else None
         status = created.get("status") if isinstance(created, dict) else None
         if not isinstance(task_id, str) or not task_id or not isinstance(status, str): fail("invalid task create result")
-        if created.get("body") != body or created.get("assignee") != "prd-write-v1" or created.get("tenant") != operation or created.get("parents") not in ([], None) or created.get("skills") != ["prd-workflow"]: fail("dynamic writer task mismatch")
+        if created.get("body") != body or created.get("assignee") != "prd-write-v1" or created.get("tenant") != operation or created.get("parents") not in ([], None) or created.get("skills") not in ([], None): fail("dynamic writer task mismatch")
         attachments = run([*command, "kanban", "--board", BOARD, "attachments", task_id, "--json"], env, True)
         if not attachments:
             with tempfile.TemporaryDirectory() as directory:
