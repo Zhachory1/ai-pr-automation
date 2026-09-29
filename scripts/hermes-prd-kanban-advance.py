@@ -45,7 +45,7 @@ def selected(blockers):
     owners = {item["owner"] for item in blockers if item["status"] == "open"}
     return [role for role in ("mvp", "occams-razor", "product-pm") if role in {"mvp", "occams-razor"} | owners]
 
-def synthesis_result(shown, operation, round_, attachment):
+def synthesis_result(shown, operation, round_, attachment, writer_id):
     raw = shown["task"].get("result")
     if raw is not None:
         value = decode(raw, "synthesis result")
@@ -56,10 +56,16 @@ def synthesis_result(shown, operation, round_, attachment):
                  if isinstance(run, dict) and run.get("outcome") == "completed" and type(run.get("ended_at")) is int]
     metadata = max(completed)[2].get("metadata") if completed else None
     if not isinstance(metadata, dict) or metadata.get("operation_id") != operation or metadata.get("round") != round_ or type(metadata.get("round")) is not int or metadata.get("role") != "synthesis" or not isinstance(metadata.get("verdict"), str): fail("synthesis metadata mismatch")
-    draft_id = metadata.get("draft_attachment_id")
-    draft_filename = metadata.get("draft_attachment_filename", metadata.get("draft_filename"))
-    draft_size = metadata.get("draft_attachment_size_bytes", metadata.get("draft_size"))
-    if type(draft_id) is not int or draft_id <= 0 or type(attachment.get("id")) is not int or attachment.get("id") != draft_id or draft_filename != attachment.get("filename") or draft_size != attachment.get("size"): fail("synthesis metadata attachment mismatch")
+    authoritative = metadata.get("authoritative_document")
+    if isinstance(authoritative, dict):
+        draft_id, draft_filename, draft_size = authoritative.get("attachment_id"), authoritative.get("filename"), None
+        if authoritative.get("task_id") != writer_id: fail("synthesis metadata attachment mismatch")
+    else:
+        draft_id = metadata.get("draft_attachment_id")
+        draft_filename = metadata.get("draft_attachment_filename", metadata.get("draft_filename"))
+        draft_size = metadata.get("draft_attachment_size_bytes", metadata.get("draft_size"))
+    if type(draft_id) is not int or draft_id <= 0 or type(attachment.get("id")) is not int or attachment.get("id") != draft_id \
+            or draft_filename != attachment.get("filename") or draft_size is not None and draft_size != attachment.get("size"): fail("synthesis metadata attachment mismatch")
     reference = metadata.get("draft_digest")
     if not isinstance(reference, str) or not DIGEST.fullmatch(reference): reference = f"attachment:{draft_id}"
     issues, reviewer_verdicts = metadata.get("blocking_issues"), metadata.get("reviewer_verdicts")
@@ -68,7 +74,7 @@ def synthesis_result(shown, operation, round_, attachment):
     for role, reviewer_verdict in reviewer_verdicts.items():
         if not isinstance(reviewer_verdict, str): fail("synthesis metadata reviewers mismatch")
         normalized[role] = normalize(reviewer_verdict)
-        if normalized[role] not in {"revise", "needs-revision", "block", "deny", "pass", "approve", "conditional-pass"}: fail("synthesis metadata reviewers mismatch")
+        if normalized[role] not in {"revise", "needs-revision", "block", "deny", "pass", "approve", "approved", "conditional-pass"}: fail("synthesis metadata reviewers mismatch")
     open_owners = [role for role in ("product-pm", "mvp", "occams-razor") if normalized.get(role) in {"revise", "needs-revision", "block", "deny"}]
     owner = ("product-pm" if "product-pm" in open_owners else open_owners[0]) if issues and open_owners else None
     if issues and owner is None: fail("synthesis metadata blocker owner mismatch")
@@ -85,7 +91,9 @@ def synthesis_result(shown, operation, round_, attachment):
     validate_blockers(blockers)
     verdict = normalize(metadata["verdict"])
     if verdict in {"approve", "pass", "conditional-pass"}:
-        verdict = "approve" if type(metadata.get("must_fix_count")) is int and metadata["must_fix_count"] == 0 and not issues else "needs-human"
+        count = metadata.get("must_fix_count")
+        verdict = "approve" if (count is None or type(count) is int and count == 0) and not issues \
+            and metadata.get("advance_condition_met", True) is not False else "needs-human"
     elif verdict in {"revise", "needs-revision"}: verdict = "revise"
     elif verdict != "deny": verdict = "needs-human"
     if verdict == "revise" and not blockers: verdict = "needs-human"
@@ -192,7 +200,7 @@ def advance(args):
         for round_ in range(1, max(rounds) + 1):
             digest, blockers, reviewers, bodies = revision(round_); roles = ["writer", *reviewers, "synthesis"]
             parent = show(records[(round_ - 1, "synthesis")]["id"])
-            prior = synthesis_result(parent, operation, round_ - 1, writer_attachment(round_ - 1))
+            prior = synthesis_result(parent, operation, round_ - 1, writer_attachment(round_ - 1), records[(round_ - 1, "writer")]["id"])
             if parent["task"].get("status") != "done" or prior["verdict"] != "revise" or prior["reviewed_digest"] != digest or prior["blockers"] != blockers: fail("revision parent conflict")
             actual = {role for item, role in records if item == round_}
             if actual != set(roles):
@@ -215,7 +223,7 @@ def advance(args):
     writer_id = records[(current, "writer")]["id"]
     try:
         attachment = writer_attachment(current)
-        result = synthesis_result(synthesis, operation, current, attachment)
+        result = synthesis_result(synthesis, operation, current, attachment, records[(current, "writer")]["id"])
     except ValueError as error: return route(str(error))
     verdict, digest, blockers = result["verdict"], result["reviewed_digest"], result["blockers"]
     open_blockers = [item for item in blockers if item["status"] == "open"]

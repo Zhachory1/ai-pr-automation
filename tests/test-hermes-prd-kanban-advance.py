@@ -106,6 +106,18 @@ class AdvanceTest(unittest.TestCase):
         ])
         count = len(cli.tasks); self.assertEqual(self.call(args, cli)["status"], "waiting"); self.assertEqual(len(cli.tasks), count)
 
+    def test_authoritative_document_metadata_approves_revision(self):
+        args, cli, root, writer, synthesis = self.fixture(); metadata = self.native_metadata(args.operation_id)
+        for key in ("draft_attachment_id", "draft_attachment_filename", "draft_attachment_size_bytes", "draft_digest", "must_fix_count"):
+            metadata.pop(key)
+        metadata.update(verdict="PASS", advance_condition_met=True, blocking_issues=[],
+                        reviewer_verdicts={"product-pm":"PASS", "mvp":"APPROVED", "occams-razor":"PASS"},
+                        authoritative_document={"attachment_id":2, "filename":"generated-prd.txt", "task_id":writer})
+        cli.tasks[synthesis]["result"] = None
+        cli.tasks[synthesis]["runs"] = [{"id":1, "outcome":"completed", "ended_at":1, "metadata":metadata}]
+        result = self.call(args, cli)
+        self.assertEqual((result["status"], result["digest"], cli.tasks[root]["status"]), ("review", "attachment:2", "review"))
+
     def test_legacy_synthesis_attachment_aliases_remain_supported(self):
         args, cli, root, writer, synthesis = self.fixture(); metadata = self.native_metadata(args.operation_id)
         metadata["draft_filename"] = metadata.pop("draft_attachment_filename")
