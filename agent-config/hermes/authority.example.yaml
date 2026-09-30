@@ -12,5 +12,6 @@
 #
 # Local roles (doc-write, memory-curate) are not repo-scoped and need no entry here.
 repos:
-  - Zhachory1/ai-pr-automation
+  - Zhachory1/*
+  - zhach1/*
   - ROKT/*

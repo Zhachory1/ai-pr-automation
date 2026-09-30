@@ -8,7 +8,8 @@ mkdir -p "$tmp/bin"
 
 cat > "$tmp/authority.yaml" <<'EOF'
 repos:
-  - Zhachory1/ai-pr-automation
+  - Zhachory1/*
+  - zhach1/*
   - ROKT/*
 EOF
 
@@ -18,7 +19,11 @@ cat > "$tmp/bin/gh" <<'SH'
 set -euo pipefail
 printf '%s\n' "$*" >> "$TEST_STATE/gh.log"
 if [[ "$1" == search && "$2" == prs ]]; then
-  if [[ "${GH_SCENARIO:-review}" == maintain-batch ]]; then
+  if [[ "$*" == *"--owner zhach1"* ]]; then
+    printf 'zhach1/tool\t10\thttps://x/10\tPersonal owner PR\t1700000000\n'
+  elif [[ "$*" == *"--owner Zhachory1"* ]]; then
+    printf 'Zhachory1/ai-pr-automation\t7\thttps://x/7\tGranted PR\t1700000000\n'
+  elif [[ "${GH_SCENARIO:-review}" == maintain-batch ]]; then
     printf 'Zhachory1/ai-pr-automation\t7\thttps://x/7\tGranted PR\t1700000000\n'
     printf 'ROKT/ml\t8\thttps://x/8\tOrganization PR\t1700000000\n'
   elif [[ "${GH_SCENARIO:-review}" == maintain ]]; then
@@ -88,6 +93,15 @@ grep -q 'dk=Zhachory1/ai-pr-automation#7@deadbeefdeadbeefdeadbeefdeadbeefdeadbee
   || { echo 'FAIL: dedupe key not per-commit' >&2; cat "$tmp/psql.log" >&2; exit 1; }
 grep -q 'other/repo' "$tmp/psql.log" && { echo 'FAIL: ungranted repo enqueued' >&2; exit 1; }
 echo "$out" | grep -q 'enqueued=2' || { echo "FAIL: summary wrong: $out" >&2; exit 1; }
+
+# Personal owner wildcard discovery includes unassigned PRs and deduplicates assigned results.
+: > "$tmp/psql.log"; : > "$tmp/gh.log"
+owner_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_DISCOVER_ALL_OWNERS=Zhachory1,zhach1 \
+  HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
+  REQUESTS_DB_USER=x PGPASSWORD=x bin/hermes-pr-producer review 2>&1)"
+grep -q 'search prs --owner Zhachory1' "$tmp/gh.log"; grep -q 'search prs --owner zhach1' "$tmp/gh.log"
+[[ "$(grep -c 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" | tr -d ' ')" == 3 ]] || { echo "FAIL: owner-wide discovery did not enqueue three unique grants" >&2; exit 1; }
+echo "$owner_out" | grep -q 'enqueued=3' || { echo "FAIL: owner-wide summary wrong: $owner_out" >&2; exit 1; }
 
 # maintain mode uses the author filter and pr-maintain kind.
 : > "$tmp/psql.log"
