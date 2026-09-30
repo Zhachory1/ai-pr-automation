@@ -15,6 +15,7 @@ Use only native Hermes tools. Do not call a custom workflow MCP. Do not publish 
 
 Runtime capability contract:
 
+- main orchestrator `default`: Kanban, `read_file`, and `execute_code`;
 - `prd-write-v1`: Kanban, `write_file`, `read_file`, and `execute_code`;
 - reviewer profiles: Kanban and `read_file`.
 
@@ -54,11 +55,12 @@ Every review round includes `mvp` and `occams-razor`. Round 0 also includes `pro
 
 When a human asks to create a PRD:
 
-1. Require a clear problem, intended users, desired outcome, and known constraints. Ask one focused question when essential input is missing.
-2. Create only the round-0 writer task with `kanban_create`.
-3. Assign `prd-write-v1` and use role `writer` in the key. Do not set task `skills`.
-4. Put the full human request and complete writer, reviewer, synthesis, revision, and failure contracts in the task body.
-5. Return operation ID and writer task ID. Do not create reviewers or synthesis at intake.
+1. Require a clear title, problem, intended users, desired outcome, and known constraints. Ask one focused question when essential input is missing.
+2. Use `execute_code` to canonicalize `{title, requester, requirements}` as sorted compact UTF-8 JSON and compute `operation = "prd-" + sha256(canonical_bytes)`.
+3. Create only the round-0 writer task with `kanban_create` on board `prd-write` and tenant `operation`.
+4. Assign `prd-write-v1`; use idempotency key `prd-write:{operation}:0:writer`; do not set task `skills`.
+5. Put the canonical intake plus complete writer, reviewer, synthesis, revision, human-decision, and failure contracts in the task body.
+6. Return operation ID and writer task ID. Do not create reviewers or synthesis at intake.
 
 ## Writer Stage
 
@@ -104,9 +106,9 @@ Do not mark preference as blocker. `deny` requires evidence that document should
 
 ## Synthesis Stage
 
-Read writer result, attachment metadata, and all reviewer results. Fail closed when required evidence is missing or malformed.
+Read writer result, attachment metadata, all reviewer results, current-task comments, and recent events with `kanban_show`. Fail closed when required evidence is missing or malformed.
 
-Build one blocker ledger. Deduplicate equivalent blockers. Record owner role for each unresolved blocker.
+If this task resumed from a human `needs_input` block, apply the Human Decision Protocol before reviewer synthesis. Otherwise build one blocker ledger. Deduplicate equivalent blockers. Record owner role for each unresolved blocker.
 
 Choose exactly one branch:
 
@@ -137,13 +139,46 @@ Use only when reviewer evidence says workflow should stop rather than revise. Ca
 
 Never create round 3. Maximum automatic revision rounds are 1 and 2 after round 0.
 
-## Human Decision Boundary
+## Conversational Control
 
-This milestone stops at the blocked human gate. A task comment alone is not approval, revision, or denial authority because workers can comment across tasks.
+The main `default` orchestrator supports these intents:
 
-Do not interpret comments as human decisions. Do not unblock or complete a human-blocked synthesis task automatically. Conversational decision handling requires its separately activated main-orchestrator contract.
+- create a PRD through Intake;
+- list PRDs needing review with `kanban_list` filtered to board `prd-write` and human-blocked synthesis tasks;
+- show status with `kanban_show`, including current round, blockers, final attachment ID, filename, digest, and advisories;
+- show final document by reading the durable attachment with `read_file` when requested;
+- approve, revise, or deny through the Human Decision Protocol.
 
-Never silently reopen failed, denied, or human-blocked work. Human-needed work remains visible on the same synthesis card until that contract is active or an operator uses the recovery path.
+Resolve a decision to exactly one operation and blocked synthesis task. If a title matches zero or multiple operations, ask the human; do not mutate any card.
+
+## Human Decision Protocol
+
+`default` is the only conversational decision-author profile. After the human clearly approves, revises, or denies:
+
+1. Verify the exact operation, blocked synthesis task, current final attachment digest, and revision round with `kanban_show`.
+2. Use `kanban_comment` to add one comment to that synthesis task with this exact prefix and compact JSON:
+
+```text
+human_decision_v1 {"operation":"prd-...","action":"approve|revise|deny","attachment_digest":"64-hex","reason":"human text"}
+```
+
+3. Call `kanban_unblock` on the same task. Never call `kanban_complete` on another worker's task.
+
+On its resumed run, synthesis accepts a decision only when all conditions hold:
+
+- newest decision comment author is exactly `default`;
+- comment follows this task's latest `needs_input` block and precedes the latest unblock event;
+- operation and attachment digest match current task evidence;
+- action is `approve`, `revise`, or `deny`;
+- `reason` is non-empty for revise and deny.
+
+Then synthesis acts:
+
+- `approve`: complete itself with `metadata.status=approved`, final attachment identity, revision count, and residual advisories;
+- `revise`: create exactly one next writer with the human reason added to its blocker ledger, subject to round cap, then complete with exact `created_cards`;
+- `deny`: complete itself with `metadata.status=denied` and the human reason.
+
+Invalid, stale, mismatched, or non-`default` comments are not authority. Re-block `needs_input` with the exact validation failure. Never silently reopen failed or denied work. Human-needed work remains visible on the same synthesis card.
 
 ## Retry and Failure Rules
 
