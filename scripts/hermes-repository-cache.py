@@ -70,13 +70,13 @@ def disk_bytes(path):
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
-def inspect(root, repo, duration_ms=0):
+def inspect(root, repo, duration_ms=0, fetched_at=None):
     mirror, manifest, _ = paths(root, repo)
     if mirror.is_symlink() or not mirror.is_dir() or git(mirror, "rev-parse", "--is-bare-repository") != "true": fail("repository mirror is missing or invalid")
     remote = git(mirror, "remote", "get-url", "origin")
     branch_ref = git(mirror, "symbolic-ref", "HEAD")
     if not branch_ref.startswith("refs/heads/"): fail("mirror HEAD is not a branch")
-    value = {"repository": repo, "mirror": str(mirror), "remote": remote, "default_branch": branch_ref.removeprefix("refs/heads/"), "head_sha": git(mirror, "rev-parse", "HEAD"), "fetched_at": int(time.time()), "fetch_duration_ms": duration_ms, "size_bytes": disk_bytes(mirror)}
+    value = {"repository": repo, "mirror": str(mirror), "remote": remote, "default_branch": branch_ref.removeprefix("refs/heads/"), "head_sha": git(mirror, "rev-parse", "HEAD"), "fetched_at": int(time.time()) if fetched_at is None else fetched_at, "fetch_duration_ms": duration_ms, "size_bytes": disk_bytes(mirror)}
     atomic_json(manifest, value)
     return value
 
@@ -107,7 +107,15 @@ def enroll(args):
             os.replace(staged, mirror)
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
-        return inspect(root, repo)
+        return inspect(root, repo, fetched_at=0 if args.seed else None)
+
+
+def remote_default_ref(mirror):
+    output = git(mirror, "ls-remote", "--symref", "origin", "HEAD")
+    first = output.splitlines()[0] if output else ""
+    match = re.fullmatch(r"ref: (refs/heads/[A-Za-z0-9._/-]+)\tHEAD", first)
+    if not match: fail("remote default branch could not be resolved")
+    return match.group(1)
 
 
 def sync(args):
@@ -119,6 +127,7 @@ def sync(args):
         if git(mirror, "remote", "get-url", "origin") != enrolled.get("remote"): fail("mirror remote drift detected")
         started = time.monotonic()
         git(mirror, "remote", "update", "--prune")
+        git(mirror, "symbolic-ref", "HEAD", remote_default_ref(mirror))
         return inspect(root, repo, round((time.monotonic() - started) * 1000))
 
 

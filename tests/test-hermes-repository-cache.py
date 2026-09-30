@@ -19,6 +19,7 @@ class RepositoryCacheTest(unittest.TestCase):
         git("init", "--initial-branch=main", str(seed)); git("config", "user.email", "test@example.com", cwd=seed); git("config", "user.name", "Test", cwd=seed)
         (seed / "README.md").write_text("one\n"); git("add", "README.md", cwd=seed); git("commit", "-m", "one", cwd=seed)
         git("remote", "add", "origin", str(upstream), cwd=seed); git("push", "-u", "origin", "main", cwd=seed)
+        git("checkout", "-b", "feature/local-only", cwd=seed); (seed / "feature.txt").write_text("local\n"); git("add", "feature.txt", cwd=seed); git("commit", "-m", "local feature", cwd=seed)
         return root / "cache", upstream, seed
 
     @staticmethod
@@ -29,11 +30,13 @@ class RepositoryCacheTest(unittest.TestCase):
         root, upstream, seed = self.fixture(); args = self.args(root, remote=str(upstream), seed=seed)
         enrolled = cache.enroll(args)
         mirror = root / "ACME/widget.git"
-        self.assertTrue(mirror.is_dir()); self.assertEqual(enrolled["head_sha"], cache.git(mirror, "rev-parse", "HEAD")); self.assertEqual(enrolled["default_branch"], "main")
+        self.assertTrue(mirror.is_dir()); self.assertEqual(enrolled["head_sha"], cache.git(mirror, "rev-parse", "HEAD")); self.assertEqual(enrolled["default_branch"], "feature/local-only")
+        self.assertEqual(enrolled["fetched_at"], 0); self.assertTrue(cache.status(self.args(root, max_age_seconds=60))["stale"])
         self.assertNotIn("secret", json.dumps(enrolled)); self.assertGreater(enrolled["size_bytes"], 0)
 
-        (seed / "README.md").write_text("two\n"); git("add", "README.md", cwd=seed); git("commit", "-m", "two", cwd=seed); git("push", cwd=seed)
+        git("checkout", "main", cwd=seed); (seed / "README.md").write_text("two\n"); git("add", "README.md", cwd=seed); git("commit", "-m", "two", cwd=seed); git("push", cwd=seed)
         updated = cache.sync(self.args(root)); self.assertNotEqual(updated["head_sha"], enrolled["head_sha"])
+        self.assertEqual(updated["default_branch"], "main"); self.assertGreater(updated["fetched_at"], 0)
         self.assertEqual(cache.git(mirror, "show", f"{updated['head_sha']}:README.md"), "two")
         shown = cache.status(self.args(root, max_age_seconds=60)); self.assertFalse(shown["stale"]); self.assertGreaterEqual(shown["age_seconds"], 0)
         manifest = json.loads((root / "ACME/widget.json").read_text()); self.assertEqual(manifest["head_sha"], updated["head_sha"])
