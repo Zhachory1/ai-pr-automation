@@ -161,6 +161,7 @@ def materialize(args):
                 if process.stdout: process.stdout.close()
                 if process.poll() is None: process.kill(); process.wait()
                 shutil.rmtree(temporary, ignore_errors=True)
+        os.chmod(destination, 0o750)
         value["snapshot"] = str(destination); value["snapshot_sha"] = sha; value["snapshot_size_bytes"] = disk_bytes(destination)
         atomic_json(manifest, value)
         return value
