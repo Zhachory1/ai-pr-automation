@@ -66,6 +66,9 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("task bodies are the durable worker interface", self.text)
         self.assertIn("Reviewers and synthesis remain single-shot", self.text)
         self.assertIn("snapshot_sha == head_sha", self.text)
+        self.assertIn("`ROKT/ads-success-kb` and `ROKT/zhach-private-docs`", self.text)
+        self.assertIn("recall and reflect only, never retain", self.text)
+        self.assertIn("Never invoke create, update, publish, comment, transition, retry, cancel, unblock, deploy, retain", self.text)
         self.assertIn("substitutes assumptions or future discovery for readable repository facts must return `revise`", self.text)
 
     def test_profile_ownership_boundary(self):
