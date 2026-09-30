@@ -17,7 +17,8 @@ Runtime capability contract:
 
 - main orchestrator `default`: Kanban, `read_file`, and `execute_code`;
 - `prd-write-v1`: Kanban, `write_file`, `read_file`, and `execute_code`;
-- reviewer profiles: Kanban and `read_file`.
+- reviewer profiles: Kanban and `read_file`;
+- writer and reviewers: read-only ZBrain/private-docs, `memory-ads-success`, `memory-org`, DocShare, RoktGPT, Atlassian, and Buildkite MCP tools where configured.
 
 If a required capability is unavailable, block with `kind=capability`. Do not inspect profile implementation to preflight this contract.
 
@@ -59,7 +60,7 @@ When a human asks to create a PRD:
 
 1. Require a clear title, problem, intended users, desired outcome, and known constraints. Ask one focused question when essential input is missing.
 2. Resolve every explicitly named `OWNER/REPO` through Repository Evidence before task creation.
-3. Use `execute_code` to canonicalize `{title, requester, requirements, repositories: [{repository, head_sha}]}` as sorted compact UTF-8 JSON and compute `operation = "prd-" + sha256(canonical_bytes)`.
+3. Use `execute_code` to canonicalize `{title, requester, requirements, repositories: [{repository, head_sha}], knowledge_sources: [{repository, head_sha}]}` as sorted compact UTF-8 JSON and compute `operation = "prd-" + sha256(canonical_bytes)`.
 4. Create only the round-0 writer task with `kanban_create` on board `prd-write` and tenant `operation`; set `goal_mode=true`, `goal_max_turns=4`, and `max_runtime_seconds=3600`.
 5. Assign `prd-write-v1`; use idempotency key `prd-write:{operation}:0:writer`; do not set task `skills`.
 6. Put canonical intake, pinned repository evidence, and complete writer, reviewer, synthesis, revision, human-decision, and failure contracts in the task body.
@@ -77,22 +78,40 @@ For every repository explicitly named by the human:
 
 Agents never clone, fetch, or receive credentials. CodeRAG may assist discovery, but snapshot files at pinned SHAs are evidence source of truth.
 
+## Knowledge Evidence
+
+Every PRD also receives pinned local snapshots for `ROKT/ads-success-kb` and `ROKT/zhach-private-docs`. Search them for relevant decisions, designs, plans, incidents, ownership, prior attempts, and rejected approaches.
+
+Use read-only retrieval when relevant:
+
+- ZBrain/private docs: search, get, answer, status;
+- `memory-ads-success` and `memory-org`: recall and reflect only, never retain;
+- DocShare: list, search, and get only;
+- RoktGPT: query only;
+- Atlassian: search/get/fetch only;
+- Buildkite: get/list/read/search/tail only.
+
+Never invoke create, update, publish, comment, transition, retry, cancel, unblock, deploy, retain, or other write tools. Do not copy raw private documents or recalled memory into the PRD. Summarize only evidence needed for the decision.
+
+Cite provenance as applicable: snapshot `OWNER/REPO@SHA:path:line`, private-doc path, DocShare document ID, memory ID/bank, Jira key, Confluence page, Buildkite URL/build, or RoktGPT result reference. When sources conflict, name the conflict and prefer current code/config for implemented behavior, explicit approved decisions for intent, and newer authoritative records over stale summaries. A retrieval failure must be visible; never pretend a source was checked.
+
 ## Writer Stage
 
 1. Read source request and, for revisions, prior attachment with `read_file` plus blocker ledger.
 2. For every pinned repository, use `search_files` for discovery and `read_file` for evidence before drafting. Inspect structure, build/test systems, CI/CD, ownership, dependencies, release configuration, operational configuration, and repository-specific migration risks.
-3. Write one complete PRD. Preserve supported requirements. Do not invent business facts. Cite current-state claims as `OWNER/REPO@SHA:path:line`; use repository-relative line numbers from `read_file`.
-4. Use `write_file` to save UTF-8 Markdown at an absolute path inside current scratch workspace. Require `verified=true`.
-5. Use `execute_code` with Python `hashlib.sha256` to hash the exact saved bytes. Never invent or use a placeholder digest.
-6. Create required reviewer tasks. Assign profiles exactly: `product-pm` role to `product-pm`, `mvp` role to `mvp`, and `occams-razor` role to `occams-razor`. Each reviewer task:
+3. Search pinned knowledge snapshots and relevant read-only MCP sources. Record sources checked, useful evidence, unavailable sources, and conflicts in the PRD.
+4. Write one complete PRD. Preserve supported requirements. Do not invent business facts. Cite current-state claims as `OWNER/REPO@SHA:path:line`; use repository-relative line numbers from `read_file`.
+5. Use `write_file` to save UTF-8 Markdown at an absolute path inside current scratch workspace. Require `verified=true`.
+6. Use `execute_code` with Python `hashlib.sha256` to hash the exact saved bytes. Never invent or use a placeholder digest.
+7. Create required reviewer tasks. Assign profiles exactly: `product-pm` role to `product-pm`, `mvp` role to `mvp`, and `occams-razor` role to `occams-razor`. Each reviewer task:
    - names one role and rubric;
    - has current writer task as parent;
    - uses same operation and round;
    - identifies source filename, declared digest, and all pinned repository snapshots;
    - instructs reviewer to use `read_file` on writer attachment and spot-check repository claims against those snapshots;
    - requires structured `pass | revise | needs_human | deny` output.
-7. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1`, do not set task `skills`, and put the complete synthesis and revision contract in its body.
-8. Complete writer through `kanban_complete` with the absolute Markdown path in `artifacts`. Result must include filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
+8. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1`, do not set task `skills`, and put the complete synthesis and revision contract in its body.
+9. Complete writer through `kanban_complete` with the absolute Markdown path in `artifacts`. Result must include filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
 
 Do not use `kanban_attach` for generated text. `kanban_complete.artifacts` preserves the verified workspace file as the durable attachment before dependents run.
 
@@ -104,7 +123,7 @@ Required council:
 
 ## Reviewer Stage
 
-Review only assigned rubric. Read writer result and durable attachment, then spot-check material repository claims against the same pinned snapshots. Every blocker about repository state needs an `OWNER/REPO@SHA:path:line` citation. A PRD that substitutes assumptions or future discovery for readable repository facts must return `revise`. Do not create tasks.
+Review only assigned rubric. Read writer result and durable attachment, then spot-check material repository claims against the same pinned snapshots and relevant read-only knowledge sources. Every blocker about repository state needs an `OWNER/REPO@SHA:path:line` citation. A PRD that substitutes assumptions or future discovery for readable repository facts must return `revise`. Do not create tasks.
 
 Complete with structured result:
 

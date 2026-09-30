@@ -40,7 +40,7 @@ class FakeCli:
 class EnqueueTest(unittest.TestCase):
     def fixture(self):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup); root = pathlib.Path(temporary.name)
-        return argparse.Namespace(hermes_home=root / "home", hermes_bin=root / "hermes", engine="fixed", repository_cache_root=root / "repositories"), FakeCli()
+        return argparse.Namespace(hermes_home=root / "home", hermes_bin=root / "hermes", engine="fixed", repository_cache_root=root / "repositories", knowledge_repositories=[]), FakeCli()
     def request(self, title="Write launch PRD", requirements="Ship a small canary", repositories=None):
         core = {"title": title, "requester": "operator", "requirements": requirements}
         if repositories is not None: core["repositories"] = repositories
@@ -82,7 +82,7 @@ class EnqueueTest(unittest.TestCase):
         self.assertIn("run every writer in goal mode with goal_max_turns=4 and max_runtime_seconds=3600", contract["writer_execution"])
         self.assertIn("compute real SHA-256 with execute_code", contract["artifact"])
         self.assertIn("assign roles to matching profiles exactly: product-pm to product-pm, mvp to mvp, occams-razor to occams-razor", contract["fanout"])
-        self.assertIn("do not set task skills; every child body must be self-contained", contract["fanout"])
+        self.assertIn("do not set task skills; every child body must be self-contained and carry repository plus knowledge evidence contracts", contract["fanout"])
         self.assertIn("read durable writer attachment from parent context with read_file", contract["reviewer_body"])
         self.assertIn("on a resumed human block, validate and apply human_decision below before reviewer synthesis", contract["synthesis_body"])
         self.assertIn("accept only newest comment prefixed human_decision_v1 whose author is exactly default", contract["human_decision"])
@@ -100,7 +100,10 @@ class EnqueueTest(unittest.TestCase):
         result = self.admit(args, cli, self.request("Move ACME widget", "Use cached evidence", ["ACME/widget"]))
         body = json.loads(cli.tasks[result["tasks"]["writer"]]["body"])
         self.assertEqual(body["repositories"][0]["head_sha"], sha); self.assertEqual(body["repositories"][0]["snapshot"], str(snapshot))
-        self.assertIn("cite current-state claims as OWNER/REPO@SHA:path:line", body["repository_rules"])
+        self.assertIn("cite current-state claims as OWNER/REPO@SHA:path:line", body["repository_rules"]); self.assertEqual(body["knowledge_sources"], [])
+        self.assertIn("recall memory-ads-success and memory-org but never retain", body["knowledge_rules"])
+        knowledge = enqueue.repository_evidence(self.request(), cache_root, ["ACME/widget"])
+        self.assertEqual((knowledge[0]["kind"], knowledge[0]["repository"]), ("knowledge", "ACME/widget"))
 
         args, cli = self.fixture(); args.engine = "dynamic"
         with self.assertRaisesRegex(ValueError, "cache missing"):
