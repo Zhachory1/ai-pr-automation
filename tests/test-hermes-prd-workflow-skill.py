@@ -25,12 +25,15 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("Create only the round-0 writer task", intake)
         self.assertIn("sorted compact UTF-8 JSON", intake)
         self.assertIn('"prd-" + sha256(canonical_bytes)', intake)
+        self.assertIn("Resolve every explicitly named `OWNER/REPO`", intake)
         self.assertIn("Do not create reviewers or synthesis at intake", intake)
 
     def test_writer_creates_required_round_graph(self):
         writer = self.text.split("## Writer Stage", 1)[1].split("## Reviewer Stage", 1)[0]
         self.assertIn("current writer task as parent", writer)
         self.assertIn("current writer and every reviewer as parents", writer)
+        self.assertIn("use `search_files` for discovery and `read_file` for evidence", writer)
+        self.assertIn("OWNER/REPO@SHA:path:line", writer)
         self.assertIn("Require `verified=true`", writer)
         self.assertIn("Python `hashlib.sha256`", writer)
         self.assertIn("absolute Markdown path in `artifacts`", writer)
@@ -60,6 +63,8 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("placeholder digest", self.text)
         self.assertIn("unreadable attachment is malformed evidence", self.text)
         self.assertIn("task bodies are the durable worker interface", self.text)
+        self.assertIn("snapshot_sha == head_sha", self.text)
+        self.assertIn("substitutes assumptions or future discovery for readable repository facts must return `revise`", self.text)
 
     def test_profile_ownership_boundary(self):
         self.assertIn(
