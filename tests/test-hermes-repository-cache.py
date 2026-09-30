@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse, importlib.util, json, pathlib, subprocess, tempfile, time, unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("repo_cache", ROOT / "scripts/hermes-repository-cache.py")
@@ -52,6 +53,14 @@ class RepositoryCacheTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup); base = pathlib.Path(temporary.name)
         actual = base / "actual"; actual.mkdir(); link = base / "link"; link.symlink_to(actual, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "symlink"): cache.safe_root(link)
+
+    def test_reader_group_requires_root_and_sets_effective_group(self):
+        with mock.patch.object(cache.os, "geteuid", return_value=501):
+            with self.assertRaisesRegex(ValueError, "requires root"): cache.configure_permissions("staff")
+        group = argparse.Namespace(gr_gid=20)
+        with mock.patch.object(cache.os, "geteuid", return_value=0), mock.patch.object(cache.grp, "getgrnam", return_value=group), mock.patch.object(cache.os, "setegid") as setegid, mock.patch.object(cache.os, "umask") as umask:
+            cache.configure_permissions("staff")
+        setegid.assert_called_once_with(20); umask.assert_called_once_with(0o027)
 
     def test_stale_status_and_unenrolled_failure(self):
         root, upstream, seed = self.fixture(); cache.enroll(self.args(root, remote=str(upstream), seed=seed))

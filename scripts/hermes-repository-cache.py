@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Enroll, synchronize, and inspect host-managed read-only repository mirrors."""
-import argparse, fcntl, json, os, pathlib, re, shutil, subprocess, tempfile, time, urllib.parse
+import argparse, fcntl, grp, json, os, pathlib, re, shutil, subprocess, tempfile, time, urllib.parse
 
 DEFAULT_ROOT = pathlib.Path("/Users/Shared/ai-pr-automation-runtime/repositories")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -20,6 +20,14 @@ def validate_remote(remote, repo):
     match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", remote)
     if match and f"{match.group(1)}/{match.group(2)}" != repo: fail("remote GitHub identity differs from repository")
     return remote
+
+
+def configure_permissions(group):
+    if not group: return
+    if os.geteuid() != 0: fail("reader group requires root")
+    try: gid = grp.getgrnam(group).gr_gid
+    except KeyError as error: raise ValueError("reader group does not exist") from error
+    os.setegid(gid); os.umask(0o027)
 
 
 def paths(root, repo):
@@ -129,13 +137,15 @@ def status(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--root", type=pathlib.Path, default=DEFAULT_ROOT)
+    parser = argparse.ArgumentParser(); parser.add_argument("--root", type=pathlib.Path, default=DEFAULT_ROOT); parser.add_argument("--reader-group")
     commands = parser.add_subparsers(dest="command", required=True)
     add = commands.add_parser("enroll"); add.add_argument("repository"); add.add_argument("--remote"); add.add_argument("--seed", type=pathlib.Path); add.set_defaults(handler=enroll)
     update = commands.add_parser("sync"); update.add_argument("repository"); update.set_defaults(handler=sync)
     show = commands.add_parser("status"); show.add_argument("repository"); show.add_argument("--max-age-seconds", type=int); show.set_defaults(handler=status)
     args = parser.parse_args()
-    try: print(json.dumps(args.handler(args), sort_keys=True, separators=(",", ":")))
+    try:
+        configure_permissions(args.reader_group)
+        print(json.dumps(args.handler(args), sort_keys=True, separators=(",", ":")))
     except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error: raise SystemExit(f"Hermes repository cache failed: {error}")
 
 
