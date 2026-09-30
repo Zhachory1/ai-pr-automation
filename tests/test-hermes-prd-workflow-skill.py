@@ -23,6 +23,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
     def test_intake_creates_only_writer(self):
         intake = self.text.split("## Intake", 1)[1].split("## Writer Stage", 1)[0]
         self.assertIn("Create only the round-0 writer task", intake)
+        self.assertIn("`goal_mode=true`, `goal_max_turns=4`, and `max_runtime_seconds=3600`", intake)
         self.assertIn("sorted compact UTF-8 JSON", intake)
         self.assertIn('"prd-" + sha256(canonical_bytes)', intake)
         self.assertIn("Resolve every explicitly named `OWNER/REPO`", intake)
@@ -45,7 +46,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
 
     def test_synthesis_creates_only_next_writer(self):
         synthesis = self.text.split("## Synthesis Stage", 1)[1].split("## Human Decision", 1)[0]
-        self.assertIn("Create only one next-round writer task", synthesis)
+        self.assertIn("Create only one next-round writer task with `goal_mode=true`", synthesis)
         self.assertIn("Next writer creates its own council and synthesis", synthesis)
         self.assertIn("Never create round 3", synthesis)
         self.assertIn("kind=needs_input", synthesis)
@@ -63,6 +64,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("placeholder digest", self.text)
         self.assertIn("unreadable attachment is malformed evidence", self.text)
         self.assertIn("task bodies are the durable worker interface", self.text)
+        self.assertIn("Reviewers and synthesis remain single-shot", self.text)
         self.assertIn("snapshot_sha == head_sha", self.text)
         self.assertIn("substitutes assumptions or future discovery for readable repository facts must return `revise`", self.text)
 

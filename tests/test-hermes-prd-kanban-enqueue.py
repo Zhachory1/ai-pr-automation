@@ -18,7 +18,7 @@ class FakeCli:
             key = flag("--idempotency-key")
             if key in self.keys: return self.tasks[self.keys[key]]
             self.seq += 1; task_id = f"t_{self.seq:08x}"
-            task = {"id": task_id, "body": flag("--body"), "assignee": flag("--assignee"), "status": "blocked", "tenant": flag("--tenant"), "parents": [command[index + 1] for index, item in enumerate(command) if item == "--parent"], "skills": [command[index + 1] for index, item in enumerate(command) if item == "--skill"]}
+            task = {"id": task_id, "body": flag("--body"), "assignee": flag("--assignee"), "status": "blocked", "tenant": flag("--tenant"), "parents": [command[index + 1] for index, item in enumerate(command) if item == "--parent"], "skills": [command[index + 1] for index, item in enumerate(command) if item == "--skill"], "goal_mode": "--goal" in command, "goal_max_turns": flag("--goal-max-turns"), "max_runtime": flag("--max-runtime")}
             self.tasks[task_id] = task; self.keys[key] = task_id; self.attachments[task_id] = []
             if self.lose_create: self.lose_create = False; raise ValueError("lost create response")
             return task
@@ -73,11 +73,13 @@ class EnqueueTest(unittest.TestCase):
         self.assertEqual(len(cli.tasks), 1)
         writer = cli.tasks[first["tasks"]["writer"]]
         body = json.loads(writer["body"])
-        self.assertEqual((writer["assignee"], writer["parents"], writer["skills"], writer["status"]), ("prd-write-v1", [], [], "ready"))
+        # goal_max_turns and max_runtime are strings because flag() returns raw CLI token strings, not parsed ints
+        self.assertEqual((writer["assignee"], writer["parents"], writer["skills"], writer["status"], writer["goal_mode"], writer["goal_max_turns"], writer["max_runtime"]), ("prd-write-v1", [], [], "ready", True, "4", "3600"))
         self.assertEqual((body["workflow"], body["stage"], body["round"], body["role"]), ("prd-write", "writer", 0, "writer"))
         self.assertEqual(body["reviewer_roles"], ["product-pm", "mvp", "occams-razor"])
         self.assertEqual(body["intake"], self.request())
         contract = body["contract"]
+        self.assertIn("run every writer in goal mode with goal_max_turns=4 and max_runtime_seconds=3600", contract["writer_execution"])
         self.assertIn("compute real SHA-256 with execute_code", contract["artifact"])
         self.assertIn("assign roles to matching profiles exactly: product-pm to product-pm, mvp to mvp, occams-razor to occams-razor", contract["fanout"])
         self.assertIn("do not set task skills; every child body must be self-contained", contract["fanout"])

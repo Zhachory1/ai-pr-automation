@@ -40,6 +40,8 @@ prd-write:{operation}:{round}:{role}
 
 Kanban worker tasks do not force-load skills. Every writer, reviewer, and synthesis body carries its complete stage contract. `prd-workflow` guides conversational intake; task bodies are the durable worker interface.
 
+Every writer task uses `goal_mode=true`, `goal_max_turns=4`, and `max_runtime_seconds=3600`. Reviewers and synthesis remain single-shot. Goal mode must not create extra revision rounds; it only lets one writer finish its artifact and fan-out contract across bounded turns.
+
 Reuse the same key on retry. Adopt the returned task ID. Never invent a task ID.
 
 Use these profiles:
@@ -58,7 +60,7 @@ When a human asks to create a PRD:
 1. Require a clear title, problem, intended users, desired outcome, and known constraints. Ask one focused question when essential input is missing.
 2. Resolve every explicitly named `OWNER/REPO` through Repository Evidence before task creation.
 3. Use `execute_code` to canonicalize `{title, requester, requirements, repositories: [{repository, head_sha}]}` as sorted compact UTF-8 JSON and compute `operation = "prd-" + sha256(canonical_bytes)`.
-4. Create only the round-0 writer task with `kanban_create` on board `prd-write` and tenant `operation`.
+4. Create only the round-0 writer task with `kanban_create` on board `prd-write` and tenant `operation`; set `goal_mode=true`, `goal_max_turns=4`, and `max_runtime_seconds=3600`.
 5. Assign `prd-write-v1`; use idempotency key `prd-write:{operation}:0:writer`; do not set task `skills`.
 6. Put canonical intake, pinned repository evidence, and complete writer, reviewer, synthesis, revision, human-decision, and failure contracts in the task body.
 7. Return operation ID and writer task ID. Do not create reviewers or synthesis at intake.
@@ -135,7 +137,7 @@ Use when all required reviewers pass and no blocker remains. Call `kanban_block`
 
 Use when blockers are concrete and revision cap remains.
 
-1. Create only one next-round writer task.
+1. Create only one next-round writer task with `goal_mode=true`, `goal_max_turns=4`, and `max_runtime_seconds=3600`.
 2. Make current synthesis its parent.
 3. Assign `prd-write-v1`, do not set task `skills`, and copy the complete writer, reviewer, synthesis, revision, and failure contract into its body.
 4. Include final source attachment identity, blocker ledger, resolved findings, and required reviewer roles in body. The revision writer reads attachment content with `read_file`.
