@@ -21,7 +21,7 @@ commands = native[native.index("prd_canary_enqueue() {"):native.index("\nrequire
 for text in (
     'need_root', '"$#" == 1', '"$1" == /*', 'os.O_RDONLY | os.O_NOFOLLOW',
     'stat.S_ISREG(status.st_mode)', 'source.read(131073)', 'len(data) > 131072',
-    'PRD_WORKFLOW_ENGINE:-fixed', '"--engine", engine',
+    'PRD_WORKFLOW_ENGINE:-fixed', '"--engine", engine', '"--repository-cache-root", repository_cache',
     '["sudo", "-u", user, "env"', 'subprocess.run(command, input=data)',
     '"$INSTALL_DIR/venv/bin/python" "$PRD_KANBAN_ENQUEUE" "$LAUNCHER"',
     '"$1" =~ ^prd-[0-9a-f]{64}$', '"$PRD_KANBAN_ADVANCE"', '--operation-id "$1"',
@@ -77,7 +77,7 @@ chmod +x "$tmp/bin/sudo"
 export PATH="$tmp/bin:$PATH" MOCK_ARGV="$tmp/argv.json" MOCK_STDIN="$tmp/stdin"
 export HERMES_SERVICE_USER="$(id -un)" HERMES_SERVICE_HOME="$tmp/home"
 export HERMES_NATIVE_HOME="$tmp/home/.hermes" HERMES_NATIVE_INSTALL_DIR="$tmp/install"
-export HERMES_NATIVE_SUPPORT_ROOT="$tmp/support"
+export HERMES_NATIVE_SUPPORT_ROOT="$tmp/support" HERMES_REPOSITORY_CACHE_ROOT="$tmp/repositories"
 operation=prd-66c7963fc695491f540b081519813d41ea12a4d71af7ce3b33c995568394fd3d
 intake="$tmp/intake.json"
 printf '%s' '{"operation_id":"prd-66c7963fc695491f540b081519813d41ea12a4d71af7ce3b33c995568394fd3d","requester":"operator@example.com","requirements":"Describe the approved canary scope.","title":"Canary PRD"}' > "$intake"
@@ -88,14 +88,15 @@ cmp -s "$intake" "$MOCK_STDIN"
 python3 - "$MOCK_ARGV" "$tmp" <<'PY'
 import json, pathlib, sys
 args = json.loads(pathlib.Path(sys.argv[1]).read_text()); root = pathlib.Path(sys.argv[2])
-assert args == ["-u", pathlib.Path.home().owner(), "env", f"HOME={root}/home", f"HERMES_HOME={root}/home/.hermes", f"{root}/install/venv/bin/python", "-B", f"{root}/support/hermes-prd-kanban-enqueue.py", "--hermes-home", f"{root}/home/.hermes", "--hermes-bin", f"{root}/home/.local/bin/hermes", "--engine", "fixed"]
+assert args == ["-u", pathlib.Path.home().owner(), "env", f"HOME={root}/home", f"HERMES_HOME={root}/home/.hermes", f"{root}/install/venv/bin/python", "-B", f"{root}/support/hermes-prd-kanban-enqueue.py", "--hermes-home", f"{root}/home/.hermes", "--hermes-bin", f"{root}/home/.local/bin/hermes", "--engine", "fixed", "--repository-cache-root", f"{root}/repositories"]
 PY
 
 export PRD_WORKFLOW_ENGINE=dynamic
 bash "$tmp/repo/scripts/hermes-native.sh" prd-canary-enqueue "$intake" >/dev/null
 python3 - "$MOCK_ARGV" <<'PY'
 import json, pathlib, sys
-assert json.loads(pathlib.Path(sys.argv[1]).read_text())[-2:] == ["--engine", "dynamic"]
+args = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert args[args.index("--engine"):args.index("--engine") + 2] == ["--engine", "dynamic"]
 PY
 unset PRD_WORKFLOW_ENGINE
 

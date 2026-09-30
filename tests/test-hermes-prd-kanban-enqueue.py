@@ -40,9 +40,10 @@ class FakeCli:
 class EnqueueTest(unittest.TestCase):
     def fixture(self):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup); root = pathlib.Path(temporary.name)
-        return argparse.Namespace(hermes_home=root / "home", hermes_bin=root / "hermes", engine="fixed"), FakeCli()
-    def request(self, title="Write launch PRD", requirements="Ship a small canary"):
+        return argparse.Namespace(hermes_home=root / "home", hermes_bin=root / "hermes", engine="fixed", repository_cache_root=root / "repositories"), FakeCli()
+    def request(self, title="Write launch PRD", requirements="Ship a small canary", repositories=None):
         core = {"title": title, "requester": "operator", "requirements": requirements}
+        if repositories is not None: core["repositories"] = repositories
         return {"operation_id": "prd-" + hashlib.sha256(enqueue.canonical(core)).hexdigest(), **core}
     def admit_raw(self, args, cli, raw):
         with mock.patch.object(enqueue, "run", side_effect=cli), mock.patch("sys.stdin", io.StringIO(raw)): return enqueue.enqueue(args)
@@ -88,6 +89,23 @@ class EnqueueTest(unittest.TestCase):
         creates = self.actions(cli, "create")
         self.assertEqual(len(creates), 2)
         self.assertTrue(all("--skill" not in command for command in creates))
+
+    def test_dynamic_repository_evidence_is_pinned_and_fail_closed(self):
+        args, cli = self.fixture(); args.engine = "dynamic"; cache_root = args.repository_cache_root
+        sha = "a" * 40; snapshot = cache_root / "ACME/widget.snapshots" / sha; snapshot.mkdir(parents=True); (snapshot / "README.md").write_text("evidence\n")
+        manifest = {"repository":"ACME/widget","default_branch":"main","head_sha":sha,"snapshot_sha":sha,"snapshot":str(snapshot),"fetched_at":int(enqueue.time.time())}
+        (cache_root / "ACME/widget.json").write_text(json.dumps(manifest))
+        result = self.admit(args, cli, self.request("Move ACME widget", "Use cached evidence", ["ACME/widget"]))
+        body = json.loads(cli.tasks[result["tasks"]["writer"]]["body"])
+        self.assertEqual(body["repositories"][0]["head_sha"], sha); self.assertEqual(body["repositories"][0]["snapshot"], str(snapshot))
+        self.assertIn("cite current-state claims as OWNER/REPO@SHA:path:line", body["repository_rules"])
+
+        args, cli = self.fixture(); args.engine = "dynamic"
+        with self.assertRaisesRegex(ValueError, "cache missing"):
+            self.admit(args, cli, self.request("Missing repo", "Must inspect source", ["ACME/missing"]))
+        manifest["fetched_at"] = 1; cache_root = args.repository_cache_root; snapshot = cache_root / "ACME/widget.snapshots" / sha; snapshot.mkdir(parents=True); (cache_root / "ACME/widget.json").write_text(json.dumps({**manifest,"snapshot":str(snapshot)}))
+        with self.assertRaisesRegex(ValueError, "cache stale"):
+            self.admit(args, cli, self.request("Stale repo", "Must inspect source", ["ACME/widget"]))
 
     def test_engine_switch_cannot_mix_one_operation(self):
         args, cli = self.fixture(); fixed = self.admit(args, cli)

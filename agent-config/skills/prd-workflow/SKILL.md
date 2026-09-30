@@ -56,27 +56,41 @@ Every review round includes `mvp` and `occams-razor`. Round 0 also includes `pro
 When a human asks to create a PRD:
 
 1. Require a clear title, problem, intended users, desired outcome, and known constraints. Ask one focused question when essential input is missing.
-2. Use `execute_code` to canonicalize `{title, requester, requirements}` as sorted compact UTF-8 JSON and compute `operation = "prd-" + sha256(canonical_bytes)`.
-3. Create only the round-0 writer task with `kanban_create` on board `prd-write` and tenant `operation`.
-4. Assign `prd-write-v1`; use idempotency key `prd-write:{operation}:0:writer`; do not set task `skills`.
-5. Put the canonical intake plus complete writer, reviewer, synthesis, revision, human-decision, and failure contracts in the task body.
-6. Return operation ID and writer task ID. Do not create reviewers or synthesis at intake.
+2. Resolve every explicitly named `OWNER/REPO` through Repository Evidence before task creation.
+3. Use `execute_code` to canonicalize `{title, requester, requirements, repositories: [{repository, head_sha}]}` as sorted compact UTF-8 JSON and compute `operation = "prd-" + sha256(canonical_bytes)`.
+4. Create only the round-0 writer task with `kanban_create` on board `prd-write` and tenant `operation`.
+5. Assign `prd-write-v1`; use idempotency key `prd-write:{operation}:0:writer`; do not set task `skills`.
+6. Put canonical intake, pinned repository evidence, and complete writer, reviewer, synthesis, revision, human-decision, and failure contracts in the task body.
+7. Return operation ID and writer task ID. Do not create reviewers or synthesis at intake.
+
+## Repository Evidence
+
+For every repository explicitly named by the human:
+
+1. Read `/Users/Shared/ai-pr-automation-runtime/repositories/OWNER/REPO.json` with `read_file`.
+2. Require `repository` to match, `snapshot_sha == head_sha`, and `snapshot` to equal the versioned path for that SHA.
+3. Use `execute_code` to require `fetched_at` no more than 3600 seconds old.
+4. Require the snapshot directory and named source files to be readable. Block intake if any check fails.
+5. Add repository, default branch, head SHA, snapshot path, fetched time, and age to writer task body.
+
+Agents never clone, fetch, or receive credentials. CodeRAG may assist discovery, but snapshot files at pinned SHAs are evidence source of truth.
 
 ## Writer Stage
 
 1. Read source request and, for revisions, prior attachment with `read_file` plus blocker ledger.
-2. Write one complete PRD. Preserve supported requirements. Do not invent business facts.
-3. Use `write_file` to save UTF-8 Markdown at an absolute path inside current scratch workspace. Require `verified=true`.
-4. Use `execute_code` with Python `hashlib.sha256` to hash the exact saved bytes. Never invent or use a placeholder digest.
-5. Create required reviewer tasks. Assign profiles exactly: `product-pm` role to `product-pm`, `mvp` role to `mvp`, and `occams-razor` role to `occams-razor`. Each reviewer task:
+2. For every pinned repository, use `search_files` for discovery and `read_file` for evidence before drafting. Inspect structure, build/test systems, CI/CD, ownership, dependencies, release configuration, operational configuration, and repository-specific migration risks.
+3. Write one complete PRD. Preserve supported requirements. Do not invent business facts. Cite current-state claims as `OWNER/REPO@SHA:path:line`; use repository-relative line numbers from `read_file`.
+4. Use `write_file` to save UTF-8 Markdown at an absolute path inside current scratch workspace. Require `verified=true`.
+5. Use `execute_code` with Python `hashlib.sha256` to hash the exact saved bytes. Never invent or use a placeholder digest.
+6. Create required reviewer tasks. Assign profiles exactly: `product-pm` role to `product-pm`, `mvp` role to `mvp`, and `occams-razor` role to `occams-razor`. Each reviewer task:
    - names one role and rubric;
    - has current writer task as parent;
    - uses same operation and round;
-   - identifies source filename and declared digest;
-   - instructs reviewer to use `read_file` on writer attachment from parent context;
+   - identifies source filename, declared digest, and all pinned repository snapshots;
+   - instructs reviewer to use `read_file` on writer attachment and spot-check repository claims against those snapshots;
    - requires structured `pass | revise | needs_human | deny` output.
-6. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1`, do not set task `skills`, and put the complete synthesis and revision contract in its body.
-7. Complete writer through `kanban_complete` with the absolute Markdown path in `artifacts`. Result must include filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
+7. Create one synthesis task after reviewer IDs are known. Give it current writer and every reviewer as parents. Assign `prd-write-v1`, do not set task `skills`, and put the complete synthesis and revision contract in its body.
+8. Complete writer through `kanban_complete` with the absolute Markdown path in `artifacts`. Result must include filename, digest, round, reviewer roles, synthesis ID, and exact `created_cards` list.
 
 Do not use `kanban_attach` for generated text. `kanban_complete.artifacts` preserves the verified workspace file as the durable attachment before dependents run.
 
@@ -88,7 +102,7 @@ Required council:
 
 ## Reviewer Stage
 
-Review only assigned rubric. Read writer result, then use `read_file` on the durable writer attachment path in parent context. Do not create tasks.
+Review only assigned rubric. Read writer result and durable attachment, then spot-check material repository claims against the same pinned snapshots. Every blocker about repository state needs an `OWNER/REPO@SHA:path:line` citation. A PRD that substitutes assumptions or future discovery for readable repository facts must return `revise`. Do not create tasks.
 
 Complete with structured result:
 
@@ -98,7 +112,8 @@ Complete with structured result:
   "blockers": [{"id": "stable-id", "claim": "specific defect", "required_change": "testable change"}],
   "advisories": ["non-blocking note"],
   "attachment_id": "source attachment id",
-  "attachment_digest": "declared source digest"
+  "attachment_digest": "declared source digest",
+  "evidence": ["OWNER/REPO@SHA:path:line"]
 }
 ```
 

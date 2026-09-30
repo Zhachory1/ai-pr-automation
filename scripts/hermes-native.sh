@@ -214,9 +214,9 @@ prd_canary_enqueue() {
   [[ "$engine" == fixed || "$engine" == dynamic ]] \
     || { echo "invalid PRD_WORKFLOW_ENGINE: $engine" >&2; return 2; }
   python3 - "$1" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" \
-    "$INSTALL_DIR/venv/bin/python" "$PRD_KANBAN_ENQUEUE" "$LAUNCHER" "$engine" <<'PY'
+    "$INSTALL_DIR/venv/bin/python" "$PRD_KANBAN_ENQUEUE" "$LAUNCHER" "$engine" "$REPOSITORY_CACHE_ROOT" <<'PY'
 import os, stat, subprocess, sys
-path, user, home, hermes_home, python, enqueue, launcher, engine = sys.argv[1:]
+path, user, home, hermes_home, python, enqueue, launcher, engine, repository_cache = sys.argv[1:]
 try: fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
 except OSError as error: raise SystemExit(f"invalid PRD intake: {error}")
 with os.fdopen(fd, "rb") as source:
@@ -225,7 +225,8 @@ with os.fdopen(fd, "rb") as source:
     data = source.read(131073)
 if len(data) > 131072 or len(data) != status.st_size: raise SystemExit("invalid or changed PRD intake")
 command = ["sudo", "-u", user, "env", f"HOME={home}", f"HERMES_HOME={hermes_home}", python,
-           "-B", enqueue, "--hermes-home", hermes_home, "--hermes-bin", launcher, "--engine", engine]
+           "-B", enqueue, "--hermes-home", hermes_home, "--hermes-bin", launcher, "--engine", engine,
+           "--repository-cache-root", repository_cache]
 raise SystemExit(subprocess.run(command, input=data).returncode)
 PY
 }
