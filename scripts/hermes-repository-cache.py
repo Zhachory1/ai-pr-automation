@@ -155,6 +155,7 @@ def materialize(args):
                     with tarfile.open(fileobj=process.stdout, mode="r|") as archive: archive.extractall(temporary, filter="data")
                 except tarfile.TarError as error: raise ValueError("repository archive contains unsafe paths") from error
                 if process.wait(timeout=1800): fail("git archive failed")
+                os.chmod(temporary, 0o750)
                 os.replace(temporary, destination)
             finally:
                 if process.stdout: process.stdout.close()

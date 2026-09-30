@@ -40,6 +40,7 @@ class RepositoryCacheTest(unittest.TestCase):
         self.assertEqual(cache.git(mirror, "show", f"{updated['head_sha']}:README.md"), "two")
         materialized = cache.materialize(self.args(root)); snapshot = pathlib.Path(materialized["snapshot"])
         self.assertEqual((snapshot / "README.md").read_text(), "two\n")
+        self.assertEqual(snapshot.stat().st_mode & 0o777, 0o750)
         self.assertFalse((snapshot / "feature.txt").exists()); self.assertEqual(materialized["snapshot_sha"], updated["head_sha"])
         self.assertEqual(cache.materialize(self.args(root))["snapshot"], str(snapshot))
         shown = cache.status(self.args(root, max_age_seconds=60)); self.assertFalse(shown["stale"]); self.assertTrue(shown["snapshot_ready"]); self.assertGreaterEqual(shown["age_seconds"], 0)
