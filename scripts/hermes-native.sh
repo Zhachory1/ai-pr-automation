@@ -91,7 +91,7 @@ install_repository_cache() {
 repository_cache() {
   need_root; need_user
   [[ "$#" -ge 2 && "$2" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
-    || { echo "usage: $0 repo-cache-enroll|repo-cache-sync|repo-cache-status OWNER/REPO [absolute-seed]" >&2; return 2; }
+    || { echo "usage: $0 repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status OWNER/REPO [absolute-seed]" >&2; return 2; }
   local action="$1" repo="$2" group; shift 2; group="$(id -gn "$SERVICE_USER")"
   local args=(--root "$REPOSITORY_CACHE_ROOT" --reader-group "$group" "$action" "$repo")
   if [[ "$action" == enroll && "$#" == 1 ]]; then
@@ -574,6 +574,7 @@ case "${1:-}" in
   repo-cache-install) install_repository_cache ;;
   repo-cache-enroll) shift; repository_cache enroll "$@" ;;
   repo-cache-sync) shift; repository_cache sync "$@" ;;
+  repo-cache-materialize) shift; repository_cache materialize "$@" ;;
   repo-cache-status) shift; repository_cache status "$@" ;;
   sync-support) HERMES_SUPPORT_ONLY=true install_native ;;
   sync-profiles) need_root; need_user; prepare_bridge_support_sync; sync_profile; preflight ;;
@@ -718,5 +719,5 @@ case "${1:-}" in
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-status|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|prd-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|prd-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

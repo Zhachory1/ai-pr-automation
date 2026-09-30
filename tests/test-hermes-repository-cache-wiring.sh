@@ -16,10 +16,11 @@ for text in (
     'repo-cache-install) install_repository_cache',
     'repo-cache-enroll) shift; repository_cache enroll',
     'repo-cache-sync) shift; repository_cache sync',
+    'repo-cache-materialize) shift; repository_cache materialize',
     'repo-cache-status) shift; repository_cache status',
 ): assert text in native, text
 fleet = Path("scripts/fleet.sh").read_text()
-for text in ('repo-cache-install)', 'repo-cache-enroll)', 'repo-cache-sync|repo-cache-status)', 'sudo "$ROOT/scripts/hermes-native.sh" repo-cache-install'):
+for text in ('repo-cache-install)', 'repo-cache-enroll)', 'repo-cache-sync|repo-cache-materialize|repo-cache-status)', 'sudo "$ROOT/scripts/hermes-native.sh" repo-cache-install'):
     assert text in fleet, text
 PY
 
@@ -55,6 +56,8 @@ assert env == [str(root/'support/hermes-git-read-askpass'),'force',str(root/'tok
 PY
 bash "$tmp/repo/scripts/hermes-native.sh" repo-cache-sync ROKT/cpi
 [[ "$(tail -n2 "$tmp/args" | tr '\n' ' ')" == 'sync ROKT/cpi ' ]]
+bash "$tmp/repo/scripts/hermes-native.sh" repo-cache-materialize ROKT/cpi
+[[ "$(tail -n2 "$tmp/args" | tr '\n' ' ')" == 'materialize ROKT/cpi ' ]]
 bash "$tmp/repo/scripts/hermes-native.sh" repo-cache-status ROKT/cpi
 [[ "$(tail -n2 "$tmp/args" | tr '\n' ' ')" == 'status ROKT/cpi ' ]]
 if bash "$tmp/repo/scripts/hermes-native.sh" repo-cache-enroll bad/repo relative >/dev/null 2>&1; then exit 1; fi

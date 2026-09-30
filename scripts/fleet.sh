@@ -123,7 +123,7 @@ case "${1:-}" in
     [[ "$#" == 2 || "$#" == 3 ]] || { echo "usage: $0 repo-cache-enroll OWNER/REPO [absolute-seed]" >&2; exit 2; }
     sudo "$ROOT/scripts/hermes-native.sh" repo-cache-enroll "${@:2}"
     ;;
-  repo-cache-sync|repo-cache-status)
+  repo-cache-sync|repo-cache-materialize|repo-cache-status)
     [[ "$#" == 2 ]] || { echo "usage: $0 $1 OWNER/REPO" >&2; exit 2; }
     sudo "$ROOT/scripts/hermes-native.sh" "$1" "$2"
     ;;
@@ -148,5 +148,5 @@ case "${1:-}" in
     echo '=== Host-native Hermes ==='
     sudo "$ROOT/scripts/hermes-native.sh" logs
     ;;
-  *) echo "usage: $0 up|down|review-kanban-up|review-postgres-up|maintain-kanban-up|maintain-postgres-up|memory-cron-up|memory-postgres-up|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-status|prd-canary-enqueue|prd-canary-advance|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 up|down|review-kanban-up|review-postgres-up|maintain-kanban-up|maintain-postgres-up|memory-cron-up|memory-postgres-up|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status|prd-canary-enqueue|prd-canary-advance|status|logs" >&2; exit 2 ;;
 esac
