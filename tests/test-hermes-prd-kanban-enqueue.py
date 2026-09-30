@@ -73,6 +73,7 @@ class EnqueueTest(unittest.TestCase):
         self.assertEqual(len(cli.tasks), 1)
         writer = cli.tasks[first["tasks"]["writer"]]
         body = json.loads(writer["body"])
+        # goal_max_turns and max_runtime are strings because flag() returns raw CLI token strings, not parsed ints
         self.assertEqual((writer["assignee"], writer["parents"], writer["skills"], writer["status"], writer["goal_mode"], writer["goal_max_turns"], writer["max_runtime"]), ("prd-write-v1", [], [], "ready", True, "4", "3600"))
         self.assertEqual((body["workflow"], body["stage"], body["round"], body["role"]), ("prd-write", "writer", 0, "writer"))
         self.assertEqual(body["reviewer_roles"], ["product-pm", "mvp", "occams-razor"])
