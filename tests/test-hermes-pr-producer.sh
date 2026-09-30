@@ -8,7 +8,8 @@ mkdir -p "$tmp/bin"
 
 cat > "$tmp/authority.yaml" <<'EOF'
 repos:
-  - Zhachory1/ai-pr-automation
+  - Zhachory1/*
+  - zhach1/*
   - ROKT/*
 EOF
 
@@ -18,7 +19,11 @@ cat > "$tmp/bin/gh" <<'SH'
 set -euo pipefail
 printf '%s\n' "$*" >> "$TEST_STATE/gh.log"
 if [[ "$1" == search && "$2" == prs ]]; then
-  if [[ "${GH_SCENARIO:-review}" == maintain-batch ]]; then
+  if [[ "$*" == *"--owner zhach1"* ]]; then
+    printf 'zhach1/tool\t10\thttps://x/10\tPersonal owner PR\t1700000000\n'
+  elif [[ "$*" == *"--owner Zhachory1"* ]]; then
+    printf 'Zhachory1/ai-pr-automation\t7\thttps://x/7\tGranted PR\t1700000000\n'
+  elif [[ "${GH_SCENARIO:-review}" == maintain-batch ]]; then
     printf 'Zhachory1/ai-pr-automation\t7\thttps://x/7\tGranted PR\t1700000000\n'
     printf 'ROKT/ml\t8\thttps://x/8\tOrganization PR\t1700000000\n'
   elif [[ "${GH_SCENARIO:-review}" == maintain ]]; then
@@ -88,6 +93,15 @@ grep -q 'dk=Zhachory1/ai-pr-automation#7@deadbeefdeadbeefdeadbeefdeadbeefdeadbee
   || { echo 'FAIL: dedupe key not per-commit' >&2; cat "$tmp/psql.log" >&2; exit 1; }
 grep -q 'other/repo' "$tmp/psql.log" && { echo 'FAIL: ungranted repo enqueued' >&2; exit 1; }
 echo "$out" | grep -q 'enqueued=2' || { echo "FAIL: summary wrong: $out" >&2; exit 1; }
+
+# Personal owner wildcard discovery includes unassigned PRs and deduplicates assigned results.
+: > "$tmp/psql.log"; : > "$tmp/gh.log"
+owner_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_DISCOVER_ALL_OWNERS=Zhachory1,zhach1 \
+  HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
+  REQUESTS_DB_USER=x PGPASSWORD=x bin/hermes-pr-producer review 2>&1)"
+grep -q 'search prs --owner Zhachory1' "$tmp/gh.log"; grep -q 'search prs --owner zhach1' "$tmp/gh.log"
+[[ "$(grep -c 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" | tr -d ' ')" == 3 ]] || { echo "FAIL: owner-wide discovery did not enqueue three unique grants" >&2; exit 1; }
+echo "$owner_out" | grep -q 'enqueued=3' || { echo "FAIL: owner-wide summary wrong: $owner_out" >&2; exit 1; }
 
 # maintain mode uses the author filter and pr-maintain kind.
 : > "$tmp/psql.log"
@@ -165,16 +179,23 @@ direct_maintain() {
   PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" TEST_MODE="${TEST_MODE:-ok}" GH_SCENARIO="${GH_SCENARIO:-maintain}" \
     FEEDBACK_VERSION="${FEEDBACK_VERSION:-none}" FEEDBACK_KIND="${FEEDBACK_KIND:-all}" \
     THREAD_STATE="${THREAD_STATE:-active}" HEAD_SHA="${HEAD_SHA:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}" FAIL_API_PR="${FAIL_API_PR:-}" \
-    CHECKS_RC="${CHECKS_RC:-0}" PR_MAINTAIN_QUEUE_ENGINE=kanban \
+    CHECKS_RC="${CHECKS_RC:-0}" PR_MAINTAIN_QUEUE_ENGINE=kanban PR_MAINTAIN_DISCOVER_ALL_OWNERS="${PR_MAINTAIN_DISCOVER_ALL_OWNERS:-}" \
     HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
     HERMES_BIN="$tmp/bin/hermes" HERMES_HOME="$tmp/home" HERMES_PYTHON="$(command -v python3)" \
     HERMES_PR_KANBAN_ENQUEUE="$tmp/support/enqueue.py" HERMES_PR_KANBAN_WORK_ROOT="$tmp/work" \
     bin/hermes-pr-producer maintain
 }
 
+# Owner-wide maintenance discovers unassigned personal PRs but still requires actionable feedback.
+rm -rf "$tmp/work"/pr-maintain-*; rm -f "$tmp/direct.log"; : > "$tmp/gh.log"
+owner_maint_out="$(PR_MAINTAIN_DISCOVER_ALL_OWNERS=Zhachory1,zhach1 FEEDBACK_VERSION=owner direct_maintain 2>&1)"
+grep -q 'search prs --owner Zhachory1' "$tmp/gh.log"; grep -q 'search prs --owner zhach1' "$tmp/gh.log"
+[[ "$(wc -l < "$tmp/direct.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: owner-wide maintenance did not admit two feedback snapshots' >&2; exit 1; }
+echo "$owner_maint_out" | grep -q 'admitted=2 failed=0' || { echo "FAIL: owner-wide maintenance summary: $owner_maint_out" >&2; exit 1; }
+
 # Own feedback and passing checks produce no maintenance round. All feedback reads are paginated,
 # bounded by producer timeout, and the authenticated login is fetched once.
-rm -f "$tmp/direct.log"; : > "$tmp/psql.log"; : > "$tmp/gh.log"
+rm -rf "$tmp/work"/pr-maintain-*; rm -f "$tmp/direct.log" "$tmp/cards.log"; : > "$tmp/psql.log"; : > "$tmp/gh.log"
 none_out="$(FEEDBACK_VERSION=none direct_maintain 2>&1)"
 [[ ! -e "$tmp/direct.log" && ! -s "$tmp/psql.log" ]] || { echo 'FAIL: no-feedback maintain enqueued' >&2; exit 1; }
 echo "$none_out" | grep -q 'admitted=0 failed=0 skipped=1' || { echo "FAIL: no-feedback summary: $none_out" >&2; exit 1; }
