@@ -67,6 +67,9 @@ BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-
 BRIDGE_KEY_PARENT="${BRIDGE_KEY_FILE%/*}"
 HERMES_API_KEYS_FILE="${HERMES_API_KEYS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-api-keys.json}"
 GITHUB_READ_TOKEN_FILE="${GITHUB_READ_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token}"
+REPOSITORY_CACHE_ROOT="${HERMES_REPOSITORY_CACHE_ROOT:-$SHARED_RUNTIME/repositories}"
+REPOSITORY_CACHE_BIN="$SUPPORT_ROOT/hermes-repository-cache"
+GIT_READ_ASKPASS="$SUPPORT_ROOT/hermes-git-read-askpass"
 MEMORY_CURATE_BIN="$SUPPORT_ROOT/hermes-memory-curate"
 MEMORY_CRON_SCRIPT="$HERMES_HOME/profiles/memory-curate-v1/scripts/memory-curate-direct.sh"
 MEMORY_CRON_NAME=memory-curate-direct
@@ -74,6 +77,33 @@ MEMORY_CURATOR_STATE_DIR="${MEMORY_CURATOR_STATE_DIR:-$SHARED_RUNTIME/memory-cur
 
 need_root() { [[ "$EUID" == 0 ]] || { echo "run as root" >&2; exit 2; }; }
 need_user() { id "$SERVICE_USER" >/dev/null 2>&1 || { echo "create $SERVICE_USER before install" >&2; exit 2; }; }
+
+install_repository_cache() {
+  need_root; need_user
+  local group; group="$(id -gn "$SERVICE_USER")"
+  install -d -m 0750 -o root -g "$group" "$SUPPORT_ROOT" "$REPOSITORY_CACHE_ROOT"
+  install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-repository-cache.py" "$REPOSITORY_CACHE_BIN"
+  install -m 0555 -o root -g wheel "$ROOT/bin/hermes-git-read-askpass" "$GIT_READ_ASKPASS"
+  cmp -s "$ROOT/scripts/hermes-repository-cache.py" "$REPOSITORY_CACHE_BIN" || return 1
+  cmp -s "$ROOT/bin/hermes-git-read-askpass" "$GIT_READ_ASKPASS"
+}
+
+repository_cache() {
+  need_root; need_user
+  [[ "$#" -ge 2 && "$2" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+    || { echo "usage: $0 repo-cache-enroll|repo-cache-sync|repo-cache-status OWNER/REPO [absolute-seed]" >&2; return 2; }
+  local action="$1" repo="$2" group; shift 2; group="$(id -gn "$SERVICE_USER")"
+  local args=(--root "$REPOSITORY_CACHE_ROOT" --reader-group "$group" "$action" "$repo")
+  if [[ "$action" == enroll && "$#" == 1 ]]; then
+    [[ "$1" == /* && -d "$1/.git" ]] || { echo "repository seed must be an absolute Git working tree" >&2; return 2; }
+    args+=(--seed "$1")
+  elif [[ "$#" != 0 ]]; then
+    echo "unexpected repository cache arguments" >&2; return 2
+  fi
+  env HOME="$SERVICE_HOME" GIT_ASKPASS="$GIT_READ_ASKPASS" GIT_ASKPASS_REQUIRE=force \
+    GITHUB_READ_TOKEN_FILE="$GITHUB_READ_TOKEN_FILE" "$REPOSITORY_CACHE_BIN" "${args[@]}"
+}
+
 repair_runtime_venv_ownership() {
   local venv="$INSTALL_DIR/venv" path
   [[ "$SERVICE_HOME" == /* && "$(cd "$SERVICE_HOME" && pwd -P)" == "$SERVICE_HOME" ]] \
@@ -327,6 +357,7 @@ install_native() {
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-pr-kanban-enqueue.py" "$REVIEW_KANBAN_ENQUEUE"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-prd-kanban-enqueue.py" "$PRD_KANBAN_ENQUEUE"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-prd-kanban-advance.py" "$PRD_KANBAN_ADVANCE"
+  install_repository_cache
   install -m 0444 -o root -g wheel "$ROOT/scripts/hermes_direct_pr_journal.py" "$DIRECT_PR_JOURNAL"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-direct-pr-kanban-preflight.py" "$DIRECT_PR_PREFLIGHT"
   install -m 0555 -o root -g wheel "$ROOT/scripts/configure-hermes-kanban-profiles.py" "$PROFILE_CONFIGURATOR"
@@ -540,6 +571,10 @@ preflight() {
 
 case "${1:-}" in
   install) install_native ;;
+  repo-cache-install) install_repository_cache ;;
+  repo-cache-enroll) shift; repository_cache enroll "$@" ;;
+  repo-cache-sync) shift; repository_cache sync "$@" ;;
+  repo-cache-status) shift; repository_cache status "$@" ;;
   sync-support) HERMES_SUPPORT_ONLY=true install_native ;;
   sync-profiles) need_root; need_user; prepare_bridge_support_sync; sync_profile; preflight ;;
   preflight) preflight ;;
@@ -683,5 +718,5 @@ case "${1:-}" in
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|prd-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-status|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|prd-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac
