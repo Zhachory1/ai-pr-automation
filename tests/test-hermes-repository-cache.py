@@ -20,6 +20,9 @@ class RepositoryCacheTest(unittest.TestCase):
         (seed / "README.md").write_text("one\n"); git("add", "README.md", cwd=seed); git("commit", "-m", "one", cwd=seed)
         git("remote", "add", "origin", str(upstream), cwd=seed); git("push", "-u", "origin", "main", cwd=seed)
         git("checkout", "-b", "feature/local-only", cwd=seed); (seed / "feature.txt").write_text("local\n"); git("add", "feature.txt", cwd=seed); git("commit", "-m", "local feature", cwd=seed)
+        git("branch", "wip/child", "main", cwd=seed)
+        main_sha = subprocess.run(["git", "rev-parse", "main"], cwd=seed, check=True, capture_output=True, text=True).stdout.strip()
+        git("--git-dir", str(upstream), "update-ref", "refs/heads/wip", main_sha)
         return root / "cache", upstream, seed
 
     @staticmethod
@@ -38,6 +41,7 @@ class RepositoryCacheTest(unittest.TestCase):
         updated = cache.sync(self.args(root)); self.assertNotEqual(updated["head_sha"], enrolled["head_sha"])
         self.assertEqual(updated["default_branch"], "main"); self.assertGreater(updated["fetched_at"], 0)
         self.assertEqual(cache.git(mirror, "show", f"{updated['head_sha']}:README.md"), "two")
+        self.assertTrue(cache.git(mirror, "show-ref", "--verify", "refs/heads/wip")); self.assertNotIn("refs/heads/wip/child", cache.git(mirror, "show-ref")); self.assertNotIn("refs/remotes/", cache.git(mirror, "show-ref"))
         materialized = cache.materialize(self.args(root)); snapshot = pathlib.Path(materialized["snapshot"])
         self.assertEqual((snapshot / "README.md").read_text(), "two\n")
         self.assertEqual(snapshot.stat().st_mode & 0o777, 0o750)

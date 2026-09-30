@@ -116,6 +116,21 @@ def enroll(args):
         return inspect(root, repo, fetched_at=0 if args.seed else None)
 
 
+def remote_source_refs(mirror):
+    output = git(mirror, "ls-remote", "--heads", "--tags", "origin")
+    refs = {line.split("\t", 1)[1] for line in output.splitlines() if "\t" in line and not line.endswith("^{}")}
+    if not refs: fail("remote source refs could not be resolved")
+    return refs
+
+
+def normalize_seed_refs(mirror, remote_refs):
+    local = set(git(mirror, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags", "refs/remotes", "refs/tmp").splitlines())
+    stale = sorted(ref for ref in local if ref.startswith(("refs/remotes/", "refs/tmp/")) or ref not in remote_refs)
+    for ref in stale: git(mirror, "update-ref", "-d", ref)
+    git(mirror, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/heads/*")
+    git(mirror, "config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*")
+
+
 def remote_default_ref(mirror):
     output = git(mirror, "ls-remote", "--symref", "origin", "HEAD")
     first = output.splitlines()[0] if output else ""
@@ -132,6 +147,7 @@ def sync(args):
         enrolled = json.loads(manifest.read_text())
         if git(mirror, "remote", "get-url", "origin") != enrolled.get("remote"): fail("mirror remote drift detected")
         started = time.monotonic()
+        normalize_seed_refs(mirror, remote_source_refs(mirror))
         git(mirror, "remote", "update", "--prune")
         git(mirror, "symbolic-ref", "HEAD", remote_default_ref(mirror))
         return inspect(root, repo, round((time.monotonic() - started) * 1000))
