@@ -12,6 +12,10 @@
 #
 # Local roles (doc-write, memory-curate) are not repo-scoped and need no entry here.
 repos:
+  # Wildcard entries below intentionally grant owner-wide PR discovery so the
+  # fleet picks up unassigned personal PRs via PR_REVIEW_DISCOVER_ALL_OWNERS.
+  # Use a specific repo (e.g. Zhachory1/ai-pr-automation) to limit scope to a
+  # single repository instead.
   - Zhachory1/*
   - zhach1/*
   - ROKT/*
