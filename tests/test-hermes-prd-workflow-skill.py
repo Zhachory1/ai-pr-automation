@@ -35,6 +35,7 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("exact `created_cards` list", writer)
         for role in ("product-pm", "mvp", "occams-razor"):
             self.assertIn(f"`{role}`", writer)
+        self.assertIn("Assign profiles exactly", writer)
         self.assertIn("Assign `prd-write-v1`, do not set task `skills`", writer)
 
     def test_synthesis_creates_only_next_writer(self):

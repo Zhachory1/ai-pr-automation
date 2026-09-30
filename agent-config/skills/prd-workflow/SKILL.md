@@ -66,7 +66,7 @@ When a human asks to create a PRD:
 2. Write one complete PRD. Preserve supported requirements. Do not invent business facts.
 3. Use `write_file` to save UTF-8 Markdown at an absolute path inside current scratch workspace. Require `verified=true`.
 4. Use `execute_code` with Python `hashlib.sha256` to hash the exact saved bytes. Never invent or use a placeholder digest.
-5. Create required reviewer tasks. Each reviewer task:
+5. Create required reviewer tasks. Assign profiles exactly: `product-pm` role to `product-pm`, `mvp` role to `mvp`, and `occams-razor` role to `occams-razor`. Each reviewer task:
    - names one role and rubric;
    - has current writer task as parent;
    - uses same operation and round;
