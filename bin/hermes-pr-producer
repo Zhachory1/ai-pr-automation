@@ -23,7 +23,7 @@ HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || echo /usr/local/libexec/ai
 : "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
 GH_TIMEOUT_SECONDS="${PR_PRODUCER_GH_TIMEOUT_SECONDS:-60}"
 MAX_UPDATED_AGE_DAYS="${PR_PRODUCER_MAX_UPDATED_AGE_DAYS:-0}"   # 0 disables
-REVIEW_ALL_OWNERS="${PR_REVIEW_DISCOVER_ALL_OWNERS:-}"
+if [[ "$MODE" == review ]]; then DISCOVER_ALL_OWNERS="${PR_REVIEW_DISCOVER_ALL_OWNERS:-}"; else DISCOVER_ALL_OWNERS="${PR_MAINTAIN_DISCOVER_ALL_OWNERS:-}"; fi
 AUTHORITY="${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}"
 AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
@@ -173,8 +173,8 @@ if (( ${#GRANTED[@]} == 0 )); then log "no repos granted in $AUTHORITY; nothing 
 repo_granted() { local r="$1"; local g; for g in "${GRANTED[@]}"; do [[ "$g" == "$r" || "$g" == "${r%%/*}/*" ]] && return 0; done; return 1; }
 
 ALL_OWNERS=()
-if [[ "$MODE" == review && -n "$REVIEW_ALL_OWNERS" ]]; then
-  IFS=',' read -r -a ALL_OWNERS <<<"$REVIEW_ALL_OWNERS"
+if [[ -n "$DISCOVER_ALL_OWNERS" ]]; then
+  IFS=',' read -r -a ALL_OWNERS <<<"$DISCOVER_ALL_OWNERS"
   for owner in "${ALL_OWNERS[@]}"; do
     [[ "$owner" =~ ^[A-Za-z0-9._-]+$ ]] || { log "invalid discover-all owner: $owner"; exit 2; }
     [[ " ${GRANTED[*]} " == *" $owner/* "* ]] || { log "discover-all owner lacks wildcard authority: $owner"; exit 2; }
@@ -187,7 +187,7 @@ search_prs() {
     --jq '.[] | [.repository.nameWithOwner, (.number|tostring), .url, .title, (.updatedAt|fromdateiso8601|tostring)] | @tsv' 2>/dev/null
 }
 
-log "discovering PRs ($GH_FILTER @me, all owners: ${REVIEW_ALL_OWNERS:-none}) across ${#GRANTED[@]} granted repo(s)"
+log "discovering PRs ($GH_FILTER @me, all owners: ${DISCOVER_ALL_OWNERS:-none}) across ${#GRANTED[@]} granted repo(s)"
 gh_status=0
 prs="$(search_prs "$GH_FILTER" @me)" || gh_status=$?
 if (( gh_status == 0 )); then
