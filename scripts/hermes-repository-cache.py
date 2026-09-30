@@ -59,6 +59,7 @@ def atomic_json(path, value):
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as target:
+            os.fchmod(target.fileno(), 0o640)
             json.dump(value, target, sort_keys=True, separators=(",", ":")); target.write("\n")
             target.flush(); os.fsync(target.fileno())
         os.replace(temporary, path)

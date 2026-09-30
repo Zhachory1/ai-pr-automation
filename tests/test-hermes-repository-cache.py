@@ -45,7 +45,8 @@ class RepositoryCacheTest(unittest.TestCase):
         snapshot.chmod(0o700)
         self.assertEqual(cache.materialize(self.args(root))["snapshot"], str(snapshot)); self.assertEqual(snapshot.stat().st_mode & 0o777, 0o750)
         shown = cache.status(self.args(root, max_age_seconds=60)); self.assertFalse(shown["stale"]); self.assertTrue(shown["snapshot_ready"]); self.assertGreaterEqual(shown["age_seconds"], 0)
-        manifest = json.loads((root / "ACME/widget.json").read_text()); self.assertEqual(manifest["head_sha"], updated["head_sha"])
+        manifest_path = root / "ACME/widget.json"; manifest = json.loads(manifest_path.read_text())
+        self.assertEqual(manifest["head_sha"], updated["head_sha"]); self.assertEqual(manifest_path.stat().st_mode & 0o777, 0o640)
 
     def test_replay_and_remote_drift_fail_closed(self):
         root, upstream, seed = self.fixture(); args = self.args(root, remote=str(upstream), seed=seed)
