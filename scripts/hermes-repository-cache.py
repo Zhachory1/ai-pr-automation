@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Enroll, synchronize, and inspect host-managed read-only repository mirrors."""
-import argparse, fcntl, grp, json, os, pathlib, re, shutil, subprocess, tempfile, time, urllib.parse
+import argparse, fcntl, grp, json, os, pathlib, re, shutil, subprocess, tarfile, tempfile, time, urllib.parse
 
 DEFAULT_ROOT = pathlib.Path("/Users/Shared/ai-pr-automation-runtime/repositories")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -81,6 +81,11 @@ def inspect(root, repo, duration_ms=0, fetched_at=None):
     return value
 
 
+def snapshot_path(root, repo, sha):
+    owner, name = repo.split("/")
+    return root / owner / f"{name}.snapshots" / sha
+
+
 def locked(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+")
@@ -131,6 +136,35 @@ def sync(args):
         return inspect(root, repo, round((time.monotonic() - started) * 1000))
 
 
+def materialize(args):
+    root, repo = safe_root(args.root), identity(args.repository)
+    mirror, manifest, lock = paths(root, repo)
+    with locked(lock):
+        if not manifest.is_file(): fail("repository is not enrolled")
+        value = json.loads(manifest.read_text())
+        if not value.get("fetched_at"): fail("repository must be synchronized before materialization")
+        sha = value["head_sha"]; destination = snapshot_path(root, repo, sha)
+        if destination.is_symlink(): fail("repository snapshot must not be a symlink")
+        if not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = pathlib.Path(tempfile.mkdtemp(prefix=f".{sha}.", dir=destination.parent))
+            env = {**os.environ, "GIT_LFS_SKIP_SMUDGE": "1", "GIT_TERMINAL_PROMPT": "0"}
+            process = subprocess.Popen(["git", f"--git-dir={mirror}", "archive", "--format=tar", sha], env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            try:
+                try:
+                    with tarfile.open(fileobj=process.stdout, mode="r|") as archive: archive.extractall(temporary, filter="data")
+                except tarfile.TarError as error: raise ValueError("repository archive contains unsafe paths") from error
+                if process.wait(timeout=1800): fail("git archive failed")
+                os.replace(temporary, destination)
+            finally:
+                if process.stdout: process.stdout.close()
+                if process.poll() is None: process.kill(); process.wait()
+                shutil.rmtree(temporary, ignore_errors=True)
+        value["snapshot"] = str(destination); value["snapshot_sha"] = sha; value["snapshot_size_bytes"] = disk_bytes(destination)
+        atomic_json(manifest, value)
+        return value
+
+
 def status(args):
     root, repo = safe_root(args.root), identity(args.repository)
     _, manifest, _ = paths(root, repo)
@@ -142,6 +176,8 @@ def status(args):
     if args.max_age_seconds is not None and args.max_age_seconds < 0: fail("max age must be non-negative")
     value["age_seconds"] = max(0, int(time.time()) - int(value["fetched_at"]))
     value["stale"] = bool(args.max_age_seconds is not None and value["age_seconds"] > args.max_age_seconds)
+    snapshot = pathlib.Path(value.get("snapshot", ""))
+    value["snapshot_ready"] = bool(value.get("snapshot_sha") == value.get("head_sha") and snapshot.is_dir() and not snapshot.is_symlink())
     return value
 
 
@@ -150,6 +186,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     add = commands.add_parser("enroll"); add.add_argument("repository"); add.add_argument("--remote"); add.add_argument("--seed", type=pathlib.Path); add.set_defaults(handler=enroll)
     update = commands.add_parser("sync"); update.add_argument("repository"); update.set_defaults(handler=sync)
+    snapshot = commands.add_parser("materialize"); snapshot.add_argument("repository"); snapshot.set_defaults(handler=materialize)
     show = commands.add_parser("status"); show.add_argument("repository"); show.add_argument("--max-age-seconds", type=int); show.set_defaults(handler=status)
     args = parser.parse_args()
     try:

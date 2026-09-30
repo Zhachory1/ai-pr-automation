@@ -38,7 +38,11 @@ class RepositoryCacheTest(unittest.TestCase):
         updated = cache.sync(self.args(root)); self.assertNotEqual(updated["head_sha"], enrolled["head_sha"])
         self.assertEqual(updated["default_branch"], "main"); self.assertGreater(updated["fetched_at"], 0)
         self.assertEqual(cache.git(mirror, "show", f"{updated['head_sha']}:README.md"), "two")
-        shown = cache.status(self.args(root, max_age_seconds=60)); self.assertFalse(shown["stale"]); self.assertGreaterEqual(shown["age_seconds"], 0)
+        materialized = cache.materialize(self.args(root)); snapshot = pathlib.Path(materialized["snapshot"])
+        self.assertEqual((snapshot / "README.md").read_text(), "two\n")
+        self.assertFalse((snapshot / "feature.txt").exists()); self.assertEqual(materialized["snapshot_sha"], updated["head_sha"])
+        self.assertEqual(cache.materialize(self.args(root))["snapshot"], str(snapshot))
+        shown = cache.status(self.args(root, max_age_seconds=60)); self.assertFalse(shown["stale"]); self.assertTrue(shown["snapshot_ready"]); self.assertGreaterEqual(shown["age_seconds"], 0)
         manifest = json.loads((root / "ACME/widget.json").read_text()); self.assertEqual(manifest["head_sha"], updated["head_sha"])
 
     def test_replay_and_remote_drift_fail_closed(self):
@@ -57,6 +61,12 @@ class RepositoryCacheTest(unittest.TestCase):
         actual = base / "actual"; actual.mkdir(); link = base / "link"; link.symlink_to(actual, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "symlink"): cache.safe_root(link)
 
+    def test_materialize_rejects_symlink_outside_snapshot(self):
+        root, upstream, seed = self.fixture(); cache.enroll(self.args(root, remote=str(upstream), seed=seed))
+        git("checkout", "main", cwd=seed); (seed / "escape").symlink_to("../../outside"); git("add", "escape", cwd=seed); git("commit", "-m", "unsafe link", cwd=seed); git("push", cwd=seed)
+        cache.sync(self.args(root))
+        with self.assertRaisesRegex(ValueError, "unsafe paths"): cache.materialize(self.args(root))
+
     def test_reader_group_requires_root_and_sets_effective_group(self):
         with mock.patch.object(cache.os, "geteuid", return_value=501):
             with self.assertRaisesRegex(ValueError, "requires root"): cache.configure_permissions("staff")
@@ -67,6 +77,7 @@ class RepositoryCacheTest(unittest.TestCase):
 
     def test_stale_status_and_unenrolled_failure(self):
         root, upstream, seed = self.fixture(); cache.enroll(self.args(root, remote=str(upstream), seed=seed))
+        with self.assertRaisesRegex(ValueError, "synchronized"): cache.materialize(self.args(root))
         manifest = root / "ACME/widget.json"; value = json.loads(manifest.read_text()); value["fetched_at"] = int(time.time()) - 100; cache.atomic_json(manifest, value)
         self.assertTrue(cache.status(self.args(root, max_age_seconds=10))["stale"])
         with self.assertRaisesRegex(ValueError, "non-negative"): cache.status(self.args(root, max_age_seconds=-1))
