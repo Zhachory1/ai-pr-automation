@@ -4,6 +4,8 @@ import argparse, fcntl, grp, json, os, pathlib, re, shutil, subprocess, tarfile,
 
 DEFAULT_ROOT = pathlib.Path("/Users/Shared/ai-pr-automation-runtime/repositories")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+SWE_OPERATION = re.compile(r"^swe-implement-[0-9a-f]{64}$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def fail(message): raise ValueError(message)
@@ -184,6 +186,33 @@ def materialize(args):
         return value
 
 
+def pin(args):
+    root, repo = safe_root(args.root), identity(args.repository)
+    if not SWE_OPERATION.fullmatch(args.operation): fail("invalid SWE operation")
+    if not SHA.fullmatch(args.base_sha): fail("invalid base SHA")
+    mirror, manifest, lock = paths(root, repo); ref = f"refs/hermes-pins/{args.operation}"
+    with locked(lock):
+        if not manifest.is_file(): fail("repository is not enrolled")
+        value = json.loads(manifest.read_text())
+        if value.get("head_sha") != args.base_sha: fail("base SHA differs from fresh cache head")
+        git(mirror, "cat-file", "-e", f"{args.base_sha}^{{commit}}")
+        probe = subprocess.run(["git", f"--git-dir={mirror}", "rev-parse", "--verify", "--quiet", ref], capture_output=True, text=True, timeout=30)
+        existing = probe.stdout.strip() if probe.returncode == 0 else ""
+        if existing and existing != args.base_sha: fail("operation pin collision")
+        if not existing: git(mirror, "update-ref", ref, args.base_sha, "0" * 40)
+        return {"repository": repo, "operation": args.operation, "base_sha": args.base_sha, "mirror": str(mirror), "pin_ref": ref}
+
+
+def unpin(args):
+    root, repo = safe_root(args.root), identity(args.repository)
+    if not SWE_OPERATION.fullmatch(args.operation): fail("invalid SWE operation")
+    mirror, _, lock = paths(root, repo); ref = f"refs/hermes-pins/{args.operation}"
+    with locked(lock):
+        probe = subprocess.run(["git", f"--git-dir={mirror}", "rev-parse", "--verify", "--quiet", ref], capture_output=True, timeout=30)
+        if probe.returncode == 0: git(mirror, "update-ref", "-d", ref)
+        return {"repository": repo, "operation": args.operation, "removed": probe.returncode == 0}
+
+
 def status(args):
     root, repo = safe_root(args.root), identity(args.repository)
     _, manifest, _ = paths(root, repo)
@@ -206,6 +235,8 @@ def main():
     add = commands.add_parser("enroll"); add.add_argument("repository"); add.add_argument("--remote"); add.add_argument("--seed", type=pathlib.Path); add.set_defaults(handler=enroll)
     update = commands.add_parser("sync"); update.add_argument("repository"); update.set_defaults(handler=sync)
     snapshot = commands.add_parser("materialize"); snapshot.add_argument("repository"); snapshot.set_defaults(handler=materialize)
+    pin_cmd = commands.add_parser("pin"); pin_cmd.add_argument("repository"); pin_cmd.add_argument("operation"); pin_cmd.add_argument("base_sha"); pin_cmd.set_defaults(handler=pin)
+    unpin_cmd = commands.add_parser("unpin"); unpin_cmd.add_argument("repository"); unpin_cmd.add_argument("operation"); unpin_cmd.set_defaults(handler=unpin)
     show = commands.add_parser("status"); show.add_argument("repository"); show.add_argument("--max-age-seconds", type=int); show.set_defaults(handler=status)
     args = parser.parse_args()
     try:

@@ -27,7 +27,7 @@ class RepositoryCacheTest(unittest.TestCase):
 
     @staticmethod
     def args(root, repository="ACME/widget", **values):
-        return argparse.Namespace(root=root, repository=repository, remote=values.get("remote"), seed=values.get("seed"), max_age_seconds=values.get("max_age_seconds"))
+        return argparse.Namespace(root=root, repository=repository, remote=values.get("remote"), seed=values.get("seed"), max_age_seconds=values.get("max_age_seconds"), operation=values.get("operation"), base_sha=values.get("base_sha"))
 
     def test_seed_enroll_incremental_sync_and_status(self):
         root, upstream, seed = self.fixture(); args = self.args(root, remote=str(upstream), seed=seed)
@@ -73,6 +73,14 @@ class RepositoryCacheTest(unittest.TestCase):
         git("checkout", "main", cwd=seed); (seed / "escape").symlink_to("../../outside"); git("add", "escape", cwd=seed); git("commit", "-m", "unsafe link", cwd=seed); git("push", cwd=seed)
         cache.sync(self.args(root))
         with self.assertRaisesRegex(ValueError, "unsafe paths"): cache.materialize(self.args(root))
+
+    def test_swe_pin_is_idempotent_and_collision_safe(self):
+        root, upstream, seed = self.fixture(); cache.enroll(self.args(root, remote=str(upstream), seed=seed)); current = cache.sync(self.args(root))
+        operation = "swe-implement-" + "b" * 64; args = self.args(root, operation=operation, base_sha=current["head_sha"])
+        first = cache.pin(args); self.assertEqual(cache.pin(args), first)
+        self.assertEqual(cache.git(pathlib.Path(first["mirror"]), "rev-parse", first["pin_ref"]), current["head_sha"])
+        with self.assertRaisesRegex(ValueError, "differs"): cache.pin(self.args(root, operation="swe-implement-" + "c" * 64, base_sha="a" * 40))
+        removed = cache.unpin(self.args(root, operation=operation)); self.assertTrue(removed["removed"]); self.assertFalse(cache.unpin(self.args(root, operation=operation))["removed"])
 
     def test_reader_group_requires_root_and_sets_effective_group(self):
         with mock.patch.object(cache.os, "geteuid", return_value=501):
