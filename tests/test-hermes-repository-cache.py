@@ -78,8 +78,17 @@ class RepositoryCacheTest(unittest.TestCase):
         root, upstream, seed = self.fixture(); cache.enroll(self.args(root, remote=str(upstream), seed=seed)); current = cache.sync(self.args(root))
         operation = "swe-implement-" + "b" * 64; args = self.args(root, operation=operation, base_sha=current["head_sha"])
         first = cache.pin(args); self.assertEqual(cache.pin(args), first)
-        self.assertEqual(cache.git(pathlib.Path(first["mirror"]), "rev-parse", first["pin_ref"]), current["head_sha"])
-        with self.assertRaisesRegex(ValueError, "differs"): cache.pin(self.args(root, operation="swe-implement-" + "c" * 64, base_sha="a" * 40))
+        mirror = pathlib.Path(first["mirror"]); manifest_path = root / "ACME/widget.json"; manifest = json.loads(manifest_path.read_text())
+        self.assertEqual(cache.git(mirror, "rev-parse", first["pin_ref"]), current["head_sha"])
+
+        missing = "f" * 40; cache.atomic_json(manifest_path, {**manifest, "head_sha":missing})
+        with self.assertRaisesRegex(ValueError, "git command failed"): cache.pin(self.args(root, operation="swe-implement-" + "c" * 64, base_sha=missing))
+
+        tree = cache.git(mirror, "rev-parse", "HEAD^{tree}")
+        second = subprocess.run(["git", f"--git-dir={mirror}", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit-tree", tree, "-p", current["head_sha"]], input="second\n", text=True, check=True, capture_output=True).stdout.strip()
+        cache.atomic_json(manifest_path, {**manifest, "head_sha":second})
+        with self.assertRaisesRegex(ValueError, "pin collision"): cache.pin(self.args(root, operation=operation, base_sha=second))
+
         removed = cache.unpin(self.args(root, operation=operation)); self.assertTrue(removed["removed"]); self.assertFalse(cache.unpin(self.args(root, operation=operation))["removed"])
 
     def test_reader_group_requires_root_and_sets_effective_group(self):

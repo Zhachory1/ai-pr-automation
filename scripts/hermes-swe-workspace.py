@@ -13,7 +13,9 @@ def fail(message): raise ValueError(message)
 
 def run(args, cwd=None):
     completed = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=1800, env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1"})
-    if completed.returncode: fail(f"git command failed: {args[1] if len(args) > 1 else 'git'}")
+    if completed.returncode:
+        detail = completed.stderr.strip().splitlines()[-1][:200] if completed.stderr.strip() else ""
+        fail(f"git command failed: {args[1] if len(args) > 1 else 'git'}" + (f": {detail}" if detail else ""))
     return completed.stdout.strip()
 
 

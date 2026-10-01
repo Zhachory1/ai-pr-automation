@@ -208,7 +208,7 @@ def unpin(args):
     if not SWE_OPERATION.fullmatch(args.operation): fail("invalid SWE operation")
     mirror, _, lock = paths(root, repo); ref = f"refs/hermes-pins/{args.operation}"
     with locked(lock):
-        probe = subprocess.run(["git", f"--git-dir={mirror}", "rev-parse", "--verify", "--quiet", ref], capture_output=True, timeout=30)
+        probe = subprocess.run(["git", f"--git-dir={mirror}", "rev-parse", "--verify", "--quiet", ref], capture_output=True, text=True, timeout=30)
         if probe.returncode == 0: git(mirror, "update-ref", "-d", ref)
         return {"repository": repo, "operation": args.operation, "removed": probe.returncode == 0}
 
