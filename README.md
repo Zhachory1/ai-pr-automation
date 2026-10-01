@@ -39,93 +39,62 @@ Full design and rollout: **[`docs/hermes/README.md`](docs/hermes/README.md)**. S
 
 - macOS host with a dedicated non-admin `hermes-agent` account
 - Docker Desktop for Compose controller/producers and support services
-- Read-only GitHub token for Compose producers
+- Scoped GitHub token for the `hermes-agent` account; installation copies that exact token to Compose producers, so its actual permissions must be reviewed
 - `jq`, `psql` client for operator diagnostics
 - A pinned Hermes install for the service account (`scripts/hermes-native.sh install`)
 
 ## Quick start
 
-Configure `.env`, install the pinned host Hermes runtime, then start the fleet.
+Start with the [from-zero setup guide](docs/getting-started.md) and its [documentation plan](docs/documentation-plan.md). The steps below include live activation: `scripts/fleet.sh up` starts all default producers and the controller, which can run paid models and make GitHub changes. Bare `scripts/compose.sh up -d --build` also starts default producers/controller. Neither is an idle bootstrap or a review-only dry run.
+
+Configure `.env`, install the pinned host Hermes runtime, then start the fleet only after approving repository, provider, and credential scope.
 
 ```bash
-cp .env.example .env    # fill DB/UI secrets, API key bundle, producer token, and runtime paths
-scripts/fleet.sh up                # Compose controller/producers + host gateway/dashboard/bridge
-scripts/fleet.sh status
-scripts/m0-verify.sh               # substrate checks (Postgres, Hindsight, swarmvault, coderag)
+cp .env.example .env    # replace sample paths and secrets; follow docs/getting-started.md
 ```
 
-Generate owner-only Fleet Controller secret files outside `CODE_ROOT`, set their paths in `.env`,
-then rebuild `status`:
+Generate owner-only Fleet Controller secrets outside `CODE_ROOT` using the existing no-overwrite TLS generator:
 
 ```bash
 install -d -m 700 "$HOME/.config/ai-pr-automation"
 umask 077
 openssl rand -hex 32 > "$HOME/.config/ai-pr-automation/fleet-controller-session-secret"
-openssl genrsa -out "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" 3072
-openssl req -x509 -new -sha256 -days 3650 \
-  -key "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" \
-  -out "$HOME/.config/ai-pr-automation/fleet-controller-ca.crt" \
-  -subj '/CN=Fleet Controller Local CA' \
-  -addext 'basicConstraints=critical,CA:TRUE,pathlen:0' \
-  -addext 'keyUsage=critical,keyCertSign,cRLSign'
-cert_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fleet-controller.XXXXXX")"
-chmod 700 "$cert_tmp"
-trap 'rm -rf "$cert_tmp"' EXIT
-openssl req -new -newkey rsa:3072 -nodes \
-  -keyout "$HOME/.config/ai-pr-automation/fleet-controller.key" \
-  -out "$cert_tmp/fleet-controller.csr" -subj '/CN=localhost'
-cat > "$cert_tmp/fleet-controller.ext" <<'EOF'
-basicConstraints=critical,CA:FALSE
-keyUsage=critical,digitalSignature,keyEncipherment
-extendedKeyUsage=serverAuth
-subjectAltName=DNS:localhost,IP:127.0.0.1,DNS:fleet.localhost,DNS:hermes.localhost,DNS:memory.localhost,DNS:code.localhost
-EOF
-openssl x509 -req -sha256 -days 365 -in "$cert_tmp/fleet-controller.csr" \
-  -CA "$HOME/.config/ai-pr-automation/fleet-controller-ca.crt" \
-  -CAkey "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" -CAcreateserial \
-  -out "$HOME/.config/ai-pr-automation/fleet-controller.crt" \
-  -extfile "$cert_tmp/fleet-controller.ext"
-rm -rf "$cert_tmp"
-trap - EXIT
-chmod 600 "$HOME/.config/ai-pr-automation/fleet-controller.key"
-rm -f "$HOME/.config/ai-pr-automation/fleet-controller-ca.key" \
-  "$HOME/.config/ai-pr-automation/fleet-controller-ca.srl"
-security add-trusted-cert -r trustRoot -k "$HOME/Library/Keychains/login.keychain-db" \
-  "$HOME/.config/ai-pr-automation/fleet-controller-ca.crt"
-git archive b7fe7ed Dockerfile.status bin/status-server \
-  | docker build -f Dockerfile.status -t agent-fleet/status:pre-auth-b7fe7ed -
-scripts/compose.sh up -d --build --force-recreate status
+scripts/generate-ui-tls.sh  # prints matching .env paths; refuses to overwrite existing TLS files
 ```
 
-Trusting the CA certificate changes the human login Keychain and remains an explicit operator action.
-The command destroys the CA signing key after issuing one leaf, so it cannot mint other trusted identities.
-Never mount or configure a CA key in Compose. Set the session/TLS `FLEET_CONTROLLER_*_FILE` paths
-from `.env.example` before `scripts/compose.sh up`.
+Set the `FLEET_CONTROLLER_*_FILE` values in `.env` to these actual paths (replace `/Users/YOU`). Trusting the generated CA in the login Keychain is a **separate operator decision**; the generator prints the command but does not run it. It destroys the CA signing key after issuing the leaf. Never mount a CA key in Compose. See [the ordered checklist](docs/getting-started.md#3-configure-compose-and-fleet-controller-tls) before starting services.
 
 Open https://localhost:8080 for the unified UI landing page. All UIs share port 8080 through nginx
 hostname routing: `fleet.localhost` (Fleet Controller), `hermes.localhost` (Hermes dashboard),
 `memory.localhost` (Hindsight), and `code.localhost` (Coderag). The proxy is loopback-only and
 passwordless. Fleet Controller still enforces exact Host, Origin, and CSRF checks for writes.
 
-Then install the host-native runtime under `hermes-agent` and grant a repository:
+Set up the service account's private `GH_TOKEN` and approved provider credentials, then grant only selected repositories in the authority YAML (see [from-zero setup](docs/getting-started.md)). Install the pinned host runtime **only after** reviewing its privileged host changes:
 
 ```bash
-sudo scripts/hermes-native.sh install          # pinned Hermes for the service account
-sudo scripts/hermes-native.sh sync-profiles     # install immutable profiles
-# grant repos in the authority YAML (see agent-config/hermes/authority.example.yaml)
+sudo scripts/hermes-native.sh install
+sudo scripts/hermes-native.sh preflight
 scripts/hermes-authority.py --check Zhachory1/ai-pr-automation
 ```
 
-See [`docs/hermes/README.md`](docs/hermes/README.md) for the authority allowlist and per-role
-activation.
+After reviewing the live-activation checklist in [from-zero setup](docs/getting-started.md#5-explicitly-authorize-live-activation), enable the fleet and check its status:
+
+```bash
+scripts/fleet.sh up
+scripts/fleet.sh status
+scripts/m0-verify.sh  # retains a synthetic Hindsight test fact
+```
+
+See [`docs/hermes/README.md`](docs/hermes/README.md) for detailed lifecycle and per-role behavior.
 
 ### Fleet Controller rollback
 
-Rollback does not depend on valid new TLS material. Use direct Compose only for this retained-image
-recovery path:
+Rollback does not depend on valid new TLS material. The old image is **not** part of initial setup. If rollback is required, build the pinned pre-auth image and use direct Compose only for this recovery path; stop the fleet first:
 
 ```bash
-docker compose stop ui-proxy
+git archive b7fe7ed Dockerfile.status bin/status-server \
+  | docker build -f Dockerfile.status -t agent-fleet/status:pre-auth-b7fe7ed -
+docker compose stop ui-proxy  # free host port 8080 for the rollback status image
 FLEET_CONTROLLER_PASSWORD_FILE=/dev/null \
 FLEET_CONTROLLER_SESSION_SECRET_FILE=/dev/null \
 FLEET_CONTROLLER_TLS_CA_CERT_FILE=/dev/null \
@@ -189,7 +158,7 @@ Required posture:
 
 - Grant each repository in the authority YAML; producers only enqueue work for granted repos.
 - The deploy key pushes feature branches only; branch protection blocks protected-branch and merge.
-- The read-only API token cannot merge; merge is a human GitHub action.
+- Scope the service-account GitHub token so it cannot merge; installation copies that same token to Compose discovery producers. Merge must remain a human GitHub action.
 - Confirm whether private repository content may be sent to the selected provider before enrolling.
 
 ## Testing
