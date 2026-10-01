@@ -30,6 +30,9 @@ REVIEW_MODE_MARKER="$CONFIG_ROOT/pr-review-queue-engine"
 MAINTAIN_PRODUCER_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-producer-maintain.plist"
 MAINTAIN_PRODUCER_STAGED_PLIST="$CONFIG_ROOT/com.example.ai-pr-automation-producer-maintain.plist"
 MAINTAIN_PRODUCER_LABEL="com.example.ai-pr-automation-producer-maintain"
+DOC_ALERT_PLIST="/Library/LaunchDaemons/com.example.ai-pr-automation-doc-alert.plist"
+DOC_ALERT_LABEL="com.example.ai-pr-automation-doc-alert"
+DOC_ALERT_BIN="$SUPPORT_ROOT/hermes-doc-alert-notify"
 MAINTAIN_MODE_MARKER="$CONFIG_ROOT/pr-maintain-queue-engine"
 REVIEW_PRODUCER_BIN="$SUPPORT_ROOT/hermes-pr-producer"
 REVIEW_KANBAN_ENQUEUE="$SUPPORT_ROOT/hermes-pr-kanban-enqueue.py"
@@ -55,6 +58,7 @@ WORKFLOW_ROOT="${PR_SAFETY_WORKFLOW_ROOT:-$HERMES_HOME/workflow-runs}"
 BRIDGE_PORT="${HERMES_KANBAN_BRIDGE_PORT:-8766}"
 BRIDGE_HOST_HEADER="${HERMES_KANBAN_BRIDGE_HOST_HEADER:-hermes-council.localhost:$BRIDGE_PORT}"
 SHARED_RUNTIME="${HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime}"
+DOC_ALERT_SPOOL_HOST="${DOC_WRITER_STAGE_HOST:-$SHARED_RUNTIME/doc-writer}/alerts"
 SNAPSHOT_ROOT="${PR_SAFETY_SNAPSHOT_ROOT:-$SHARED_RUNTIME/safety-snapshots}"
 POLICY_PATH="${PR_SAFETY_POLICY_PATH:-$CONFIG_ROOT/pr-safety-policy-v1.md}"
 POLICY_VERSION="${PR_SAFETY_POLICY_VERSION:-v1}"
@@ -292,6 +296,10 @@ sync_profile() {
 
 install_native() {
   need_root; need_user
+  if service_loaded "$DOC_ALERT_LABEL"; then
+    echo "stop document alerts before reinstall, then run doc-alert-start to reload the new plist" >&2
+    return 1
+  fi
   prepare_bridge_support_sync
   install -d -m 755 "$SUPPORT_ROOT" "$CONFIG_ROOT" "$LOG_ROOT" "$SHARED_RUNTIME" "$SHARED_RUNTIME/secrets"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$HERMES_HOME/scripts" \
@@ -321,8 +329,9 @@ install_native() {
     "$LOG_ROOT/watchdog.out.log" "$LOG_ROOT/watchdog.err.log"
   install -d -m 700 -o "$SERVICE_USER" "$SERVICE_HOME/.local/share/ai-pr-automation/doc-writer" \
     "$SERVICE_HOME/.local/share/ai-pr-automation/curator"
+  install -d -m 0770 -o "$SERVICE_USER" -g staff "$DOC_ALERT_SPOOL_HOST"
   local logfile
-  for logfile in gateway.out gateway.err dashboard.out dashboard.err bridge.out bridge.err producer-pr-safety.out producer-pr-safety.err producer-review.out producer-review.err producer-maintain.out producer-maintain.err; do
+  for logfile in gateway.out gateway.err dashboard.out dashboard.err bridge.out bridge.err producer-pr-safety.out producer-pr-safety.err producer-review.out producer-review.err producer-maintain.out producer-maintain.err doc-alert.out doc-alert.err; do
     install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"
   done
   local installer=""
@@ -359,6 +368,7 @@ install_native() {
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-pr-safety-kanban-enqueue.py" "$KANBAN_ENQUEUE"
   install -m 0555 -o root -g wheel "$ROOT/bin/hermes-pr-safety-producer" "$SAFETY_PRODUCER_BIN"
   install -m 0555 -o root -g wheel "$ROOT/bin/hermes-pr-producer" "$REVIEW_PRODUCER_BIN"
+  install -m 0555 -o root -g wheel "$ROOT/bin/hermes-doc-alert-notify" "$DOC_ALERT_BIN"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-pr-kanban-enqueue.py" "$REVIEW_KANBAN_ENQUEUE"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-prd-kanban-enqueue.py" "$PRD_KANBAN_ENQUEUE"
   install -m 0555 -o root -g wheel "$ROOT/scripts/hermes-prd-kanban-advance.py" "$PRD_KANBAN_ADVANCE"
@@ -380,6 +390,7 @@ install_native() {
     "$ROOT/scripts/hermes-pr-safety-kanban-enqueue.py:$KANBAN_ENQUEUE" \
     "$ROOT/bin/hermes-pr-safety-producer:$SAFETY_PRODUCER_BIN" \
     "$ROOT/bin/hermes-pr-producer:$REVIEW_PRODUCER_BIN" \
+    "$ROOT/bin/hermes-doc-alert-notify:$DOC_ALERT_BIN" \
     "$ROOT/scripts/hermes-pr-kanban-enqueue.py:$REVIEW_KANBAN_ENQUEUE" \
     "$ROOT/scripts/hermes-prd-kanban-enqueue.py:$PRD_KANBAN_ENQUEUE" \
     "$ROOT/scripts/hermes-prd-kanban-advance.py:$PRD_KANBAN_ADVANCE" \
@@ -459,6 +470,20 @@ temporary = pathlib.Path(target + ".tmp"); temporary.write_text(text)
 os.chmod(temporary, 0o644); os.replace(temporary, target)
 PY
   plutil -lint "$SAFETY_PRODUCER_PLIST" >/dev/null
+  python3 - "$ROOT/launchd/com.example.ai-pr-automation-doc-alert.plist.template" \
+    "$DOC_ALERT_PLIST" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$LAUNCHER" \
+    "$SUPPORT_ROOT" "$DOC_ALERT_SPOOL_HOST" "$LOG_ROOT" <<'PY'
+import os, pathlib, sys
+source, target, user, home, hermes_home, binary, support, spool, logs = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in {"__HERMES_USER__":user,"__SERVICE_HOME__":home,"__HERMES_HOME__":hermes_home,
+                   "__HERMES_BIN__":binary,"__SUPPORT_ROOT__":support,
+                   "__DOC_ALERT_SPOOL__":spool,"__LOG_ROOT__":logs}.items():
+    text = text.replace(key, value)
+temporary = pathlib.Path(target + ".tmp"); temporary.write_text(text)
+os.chmod(temporary, 0o644); os.replace(temporary, target)
+PY
+  plutil -lint "$DOC_ALERT_PLIST" >/dev/null
   python3 - "$ROOT/launchd/com.example.ai-pr-automation-producer.plist.template" \
     "$REVIEW_PRODUCER_STAGED_PLIST" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" "$SUPPORT_ROOT" \
     "$AUTHORITY_FILE" "$REVIEW_PRODUCER_INTERVAL" "$LOG_ROOT" "$LAUNCHER" \
@@ -659,6 +684,36 @@ case "${1:-}" in
     wait_unloaded "$MAINTAIN_PRODUCER_LABEL"
     rm -f "$MAINTAIN_MODE_MARKER" "$MAINTAIN_PRODUCER_PLIST"
     ;;
+  doc-alert-start)
+    need_root; need_user
+    python3 - "$HERMES_HOME/.env" <<'PY'
+import pathlib, re, sys
+lines = pathlib.Path(sys.argv[1]).read_text().splitlines()
+keys = ("SIGNAL_ACCOUNT", "SIGNAL_HOME_CHANNEL", "SIGNAL_HTTP_URL")
+values = {key: [] for key in keys}
+for line in lines:
+    match = re.match(r"^\s*(?:export\s+)?(SIGNAL_ACCOUNT|SIGNAL_HOME_CHANNEL|SIGNAL_HTTP_URL)=(.*)$", line)
+    if match:
+        values[match.group(1)].append(match.group(2))
+if any(len(values[key]) != 1 for key in keys) \
+   or not re.fullmatch(r"\+[1-9][0-9]{6,14}", values["SIGNAL_ACCOUNT"][0]) \
+   or values["SIGNAL_HOME_CHANNEL"] != values["SIGNAL_ACCOUNT"] \
+   or not re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}", values["SIGNAL_HTTP_URL"][0]):
+    raise SystemExit("doc alerts require one self-only Signal account/home channel and localhost daemon URL")
+PY
+    [[ -x "$LAUNCHER" && -x "$DOC_ALERT_BIN" && -f "$DOC_ALERT_PLIST" ]] \
+      || { echo "document alert notifier not installed" >&2; exit 2; }
+    [[ -d "$DOC_ALERT_SPOOL_HOST" && ! -L "$DOC_ALERT_SPOOL_HOST" ]] \
+      || { echo "document alert spool not installed" >&2; exit 2; }
+    launchctl bootout "system/$DOC_ALERT_LABEL" 2>/dev/null || true
+    wait_unloaded "$DOC_ALERT_LABEL"
+    launchctl bootstrap system "$DOC_ALERT_PLIST"
+    ;;
+  doc-alert-stop)
+    need_root
+    launchctl bootout "system/$DOC_ALERT_LABEL" 2>/dev/null || true
+    wait_unloaded "$DOC_ALERT_LABEL"
+    ;;
   memory-cron-install) need_root; need_user; memory_cron_install ;;
   memory-cron-start) need_root; need_user; memory_cron_start ;;
   memory-cron-stop) need_root; need_user; memory_cron_stop ;;
@@ -712,6 +767,7 @@ case "${1:-}" in
   down)
     need_root
     "$ROOT/scripts/hermes-native.sh" memory-cron-stop
+    "$ROOT/scripts/hermes-native.sh" doc-alert-stop
     "$ROOT/scripts/hermes-native.sh" review-producer-stop
     "$ROOT/scripts/hermes-native.sh" maintain-producer-stop
     "$ROOT/scripts/hermes-native.sh" producer-stop
@@ -720,11 +776,11 @@ case "${1:-}" in
     "$ROOT/scripts/hermes-native.sh" stop
     ;;
   status)
-    for service in "$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL" "$SAFETY_PRODUCER_LABEL" "$REVIEW_PRODUCER_LABEL" "$MAINTAIN_PRODUCER_LABEL"; do
+    for service in "$LABEL" "$DASHBOARD_LABEL" "$BRIDGE_LABEL" "$SAFETY_PRODUCER_LABEL" "$REVIEW_PRODUCER_LABEL" "$MAINTAIN_PRODUCER_LABEL" "$DOC_ALERT_LABEL"; do
       launchctl print "system/$service" 2>/dev/null | awk -v name="$service" \
         '/^[[:space:]]*state =/{print name ": " $0; found=1; exit} END{if(!found) print name ": not loaded"}'
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|prd-canary-enqueue|design-canary-enqueue|roadmap-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|doc-alert-start|doc-alert-stop|prd-canary-enqueue|design-canary-enqueue|roadmap-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

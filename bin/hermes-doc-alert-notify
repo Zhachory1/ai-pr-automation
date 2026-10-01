@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Deliver durable document review nudges from the host without exposing Signal to Docker."""
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import urllib.request
+
+NAME = re.compile(r"(doc-open-questions|doc-publication-approval)-([1-9][0-9]*)\.(pending|retry-[12])\Z")
+LABELS = {"doc-open-questions": "needs answers", "doc-publication-approval": "needs publication review"}
+
+
+def notify(root, send, check):
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("document alert spool is unavailable")
+    for path in sorted(root.iterdir()):
+        match = NAME.fullmatch(path.name)
+        if not match or path.is_symlink() or not path.is_file():
+            continue
+        kind, review_id, state = match.groups()
+        sending = path.with_suffix(".sending")
+        try:
+            path.rename(sending)
+        except FileNotFoundError:
+            continue
+        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        attempt = 0 if state == "pending" else int(state[-1])
+        try:
+            check()
+        except Exception as error:
+            retry = sending.with_suffix(f".retry-{attempt + 1}" if attempt < 2 else ".failed")
+            sending.rename(retry)
+            print(f"doc alert {review_id}: daemon unavailable ({type(error).__name__}); {retry.suffix[1:]}", file=sys.stderr)
+            continue
+        message = f"Document review #{review_id} {LABELS[kind]}. Open Documents in the status UI."
+        try:
+            result = send(message)
+            if result.returncode:
+                raise RuntimeError(f"Hermes send exited {result.returncode}")
+        except FileNotFoundError:
+            retry = sending.with_suffix(f".retry-{attempt + 1}" if attempt < 2 else ".failed")
+            sending.rename(retry)
+            print(f"doc alert {review_id}: Hermes executable missing; {retry.suffix[1:]}", file=sys.stderr)
+        except Exception as error:
+            sending.rename(sending.with_suffix(".uncertain"))
+            print(f"doc alert {review_id}: delivery uncertain ({type(error).__name__}); manual check required", file=sys.stderr)
+        else:
+            sending.rename(sending.with_suffix(".sent"))
+            print(f"doc alert {review_id}: sent", flush=True)
+
+
+def main():
+    account = os.environ.get("SIGNAL_ACCOUNT", "")
+    home = os.environ.get("SIGNAL_HOME_CHANNEL", "")
+    endpoint = os.environ.get("SIGNAL_HTTP_URL", "")
+    if not re.fullmatch(r"\+[1-9][0-9]{6,14}", account) or home != account \
+            or not re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):[0-9]{1,5}", endpoint):
+        raise SystemExit("Signal account, self-only home destination, and localhost daemon URL are required")
+    root = pathlib.Path(os.environ["DOC_ALERT_SPOOL_DIR"])
+    url = endpoint + "/api/v1/check"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def check():
+        with opener.open(url, timeout=3) as response:
+            if response.status != 200:
+                raise RuntimeError("signal-cli daemon unhealthy")
+
+    def send(message):
+        return subprocess.run([os.environ["HERMES_BIN"], "send", "--quiet", "--to", "signal", message],
+                              capture_output=True, timeout=30)
+
+    notify(root, send, check)
+
+
+if __name__ == "__main__":
+    main()

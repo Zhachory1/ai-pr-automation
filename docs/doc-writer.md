@@ -59,6 +59,16 @@ doc-writer-server: run the persona (PRD or DD) + bundled Rokt handbook → draft
 `scripts/compose.sh --profile doc-writer up -d --build doc-writer-server` (set `DOC_WRITER_INBOX_HOST` in
 `.env`). Then use the **Documents** section of the status UI.
 
+## Optional Signal review alerts
+
+The local `hermes-agent` account can receive a Signal nudge when document questions or exact-byte publication approval enter the review queue. Alerts contain only review ID and event type. Read and approve in the status UI, never in Signal; delivery cannot change review state.
+
+After the normal host-native install creates `DOC_WRITER_STAGE_HOST/alerts`, set `SIGNAL_HOME_CHANNEL=+YOUR_NUMBER` in `/Users/hermes-agent/.hermes/.env` alongside `SIGNAL_ACCOUNT` and `SIGNAL_HTTP_URL=http://127.0.0.1:18080`. As `hermes-agent`, test `hermes send --to signal "Test document alert"` and confirm HTTP 200 from `http://127.0.0.1:18080/api/v1/check`. Opt in through the Compose `.env` with `DOC_ALERT_SPOOL_DIR=/doc-stage/alerts`; recreate `hermes-controller` through the normal fleet rollout and run `sudo scripts/hermes-native.sh doc-alert-start`. `scripts/hermes-native.sh status` shows the timer. Keep Signal credentials and daemon on the host, not in Docker. For a non-default `DOC_WRITER_STAGE_HOST`, export that same path during native install and `doc-alert-start`. Before reinstalling host-native support, run `doc-alert-stop`; reinstall refuses a loaded timer, and `doc-alert-start` loads the new plist afterward.
+
+The host timer checks every minute. If the daemon is down, it retries twice before leaving a `.failed` marker in `DOC_WRITER_STAGE_HOST/alerts`; once healthy, rename it to `.pending` to retry. If delivery is uncertain (including a crash), `.sending` or `.uncertain` **is not retried**: check Note to Self before renaming it to `.pending`. `.sent` prevents duplicate delivery after restart. A review closed just before delivery may get one stale nudge; pending reviews from before activation may also be alerted. The spool uses the existing staff-accessible stage boundary, so another trusted local staff user could forge an ID-only nudge. Retain terminal markers for deduplication; archive them only after the review is no longer pending.
+
+To disable alerts, unset `DOC_ALERT_SPOOL_DIR`, recreate the controller, and run `sudo scripts/hermes-native.sh doc-alert-stop`. Existing markers remain for inspection.
+
 ## Known follow-up
 - Bundle the council skill into the image so finalized docs get a real council review instead of the
   skipped banner. Until then, run council manually on the drafted doc.

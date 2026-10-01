@@ -1010,15 +1010,62 @@ class Controller:
             self.schedule(pool, row["hermes_api_open_attempts"], True)
         return len(rows)
 
+    def queue_doc_alerts(self):
+        root = os.environ.get("DOC_ALERT_SPOOL_DIR")
+        if not root:
+            return
+        directory = pathlib.Path(root)
+        if not directory.is_dir() or directory.is_symlink():
+            raise ValueError("document alert spool is unavailable")
+        with self.connect() as db:
+            rows = db.execute("""SELECT id, proposal->>'kind' AS kind
+                FROM pending_maintenance_reviews
+                WHERE state='pending'
+                  AND proposal->>'kind' IN ('doc-open-questions','doc-publication-approval')
+                ORDER BY id""").fetchall()
+        for row in rows:
+            name = f"{row['kind']}-{row['id']}"
+            if not any((directory / (name + suffix)).exists() for suffix in
+                       (".pending", ".sending", ".sent", ".uncertain", ".failed", ".retry-1", ".retry-2")):
+                try:
+                    fd = os.open(directory / (name + ".pending"),
+                                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+                except FileExistsError:
+                    pass
+                else:
+                    os.close(fd)
+        waiting = []
+        for path in directory.iterdir():
+            match = re.fullmatch(r"(?:doc-open-questions|doc-publication-approval)-([1-9][0-9]*)\.(?:pending|retry-[12])", path.name)
+            if match and not path.is_symlink():
+                waiting.append((int(match.group(1)), path))
+        if waiting:
+            with self.connect() as db:
+                active = {row["id"] for row in db.execute("""SELECT id FROM pending_maintenance_reviews
+                    WHERE state='pending' AND id=ANY(%s)""", ([ident for ident, _ in waiting],)).fetchall()}
+            for ident, path in waiting:
+                if ident not in active:
+                    try:
+                        path.rename(path.with_suffix(".cancelled"))
+                    except FileNotFoundError:
+                        pass
+
     def run(self):
         self.configure()
         with ThreadPoolExecutor(max_workers=8) as pool:
             self.recover_open(pool)
             next_recovery = time.monotonic() + 5
+            next_alerts = time.monotonic()
             while True:
                 if time.monotonic() >= next_recovery:
                     self.recover_open(pool)
                     next_recovery = time.monotonic() + 5
+                if time.monotonic() >= next_alerts:
+                    try:
+                        self.queue_doc_alerts()
+                    except Exception as error:
+                        print(f"document alert spool failed: {type(error).__name__}: {error}", flush=True)
+                    next_alerts = time.monotonic() + 30
                 for kind in KINDS:
                     attempt = self.claim(kind)
                     if attempt: self.schedule(pool, attempt)
