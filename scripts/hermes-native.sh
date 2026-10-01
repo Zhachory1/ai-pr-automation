@@ -210,13 +210,17 @@ prd_canary_enqueue() {
   need_root
   [[ "$#" == 1 && "$1" == /* ]] \
     || { echo "usage: $0 prd-canary-enqueue <absolute-json-file>" >&2; return 2; }
-  local engine="${PRD_WORKFLOW_ENGINE:-fixed}"
+  local engine="${PRD_WORKFLOW_ENGINE:-fixed}" document_kind="${DOCUMENT_KIND:-prd}"
   [[ "$engine" == fixed || "$engine" == dynamic ]] \
     || { echo "invalid PRD_WORKFLOW_ENGINE: $engine" >&2; return 2; }
+  [[ "$document_kind" == prd || "$document_kind" == design ]] \
+    || { echo "invalid DOCUMENT_KIND: $document_kind" >&2; return 2; }
+  [[ "$document_kind" == prd || "$engine" == dynamic ]] \
+    || { echo "design intake requires dynamic engine" >&2; return 2; }
   python3 - "$1" "$SERVICE_USER" "$SERVICE_HOME" "$HERMES_HOME" \
-    "$INSTALL_DIR/venv/bin/python" "$PRD_KANBAN_ENQUEUE" "$LAUNCHER" "$engine" "$REPOSITORY_CACHE_ROOT" <<'PY'
+    "$INSTALL_DIR/venv/bin/python" "$PRD_KANBAN_ENQUEUE" "$LAUNCHER" "$engine" "$document_kind" "$REPOSITORY_CACHE_ROOT" <<'PY'
 import os, stat, subprocess, sys
-path, user, home, hermes_home, python, enqueue, launcher, engine, repository_cache = sys.argv[1:]
+path, user, home, hermes_home, python, enqueue, launcher, engine, document_kind, repository_cache = sys.argv[1:]
 try: fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
 except OSError as error: raise SystemExit(f"invalid PRD intake: {error}")
 with os.fdopen(fd, "rb") as source:
@@ -226,7 +230,7 @@ with os.fdopen(fd, "rb") as source:
 if len(data) > 131072 or len(data) != status.st_size: raise SystemExit("invalid or changed PRD intake")
 command = ["sudo", "-u", user, "env", f"HOME={home}", f"HERMES_HOME={hermes_home}", python,
            "-B", enqueue, "--hermes-home", hermes_home, "--hermes-bin", launcher, "--engine", engine,
-           "--repository-cache-root", repository_cache]
+           "--document-kind", document_kind, "--repository-cache-root", repository_cache]
 raise SystemExit(subprocess.run(command, input=data).returncode)
 PY
 }
@@ -659,6 +663,7 @@ case "${1:-}" in
   memory-cron-start) need_root; need_user; memory_cron_start ;;
   memory-cron-stop) need_root; need_user; memory_cron_stop ;;
   prd-canary-enqueue) shift; prd_canary_enqueue "$@" ;;
+  design-canary-enqueue) shift; DOCUMENT_KIND=design PRD_WORKFLOW_ENGINE=dynamic prd_canary_enqueue "$@" ;;
   prd-canary-advance) shift; prd_canary_advance "$@" ;;
   bridge-start)
     need_root; preflight
@@ -720,5 +725,5 @@ case "${1:-}" in
     done
     ;;
   logs) tail -n 200 "$LOG_ROOT"/*.log 2>/dev/null ;;
-  *) echo "usage: $0 install|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|prd-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 install|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status|sync-support|sync-profiles|preflight|start|stop|producer-start|producer-stop|review-mode-set-kanban|review-producer-start|review-producer-stop|maintain-mode-set-kanban|maintain-producer-start|maintain-producer-stop|memory-cron-install|memory-cron-start|memory-cron-stop|prd-canary-enqueue|design-canary-enqueue|prd-canary-advance|bridge-start|bridge-stop|bridge-reconcile|bridge-status|dashboard-start|dashboard-stop|up|down|status|logs" >&2; exit 2 ;;
 esac

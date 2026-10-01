@@ -40,7 +40,7 @@ class FakeCli:
 class EnqueueTest(unittest.TestCase):
     def fixture(self):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup); root = pathlib.Path(temporary.name)
-        return argparse.Namespace(hermes_home=root / "home", hermes_bin=root / "hermes", engine="fixed", repository_cache_root=root / "repositories", knowledge_repositories=[]), FakeCli()
+        return argparse.Namespace(hermes_home=root / "home", hermes_bin=root / "hermes", engine="fixed", document_kind="prd", repository_cache_root=root / "repositories", knowledge_repositories=[]), FakeCli()
     def request(self, title="Write launch PRD", requirements="Ship a small canary", repositories=None):
         core = {"title": title, "requester": "operator", "requirements": requirements}
         if repositories is not None: core["repositories"] = repositories
@@ -111,6 +111,19 @@ class EnqueueTest(unittest.TestCase):
         manifest["fetched_at"] = 1; cache_root = args.repository_cache_root; snapshot = cache_root / "ACME/widget.snapshots" / sha; snapshot.mkdir(parents=True); (cache_root / "ACME/widget.json").write_text(json.dumps({**manifest,"snapshot":str(snapshot)}))
         with self.assertRaisesRegex(ValueError, "cache stale"):
             self.admit(args, cli, self.request("Stale repo", "Must inspect source", ["ACME/widget"]))
+
+    def test_design_dynamic_intake_reuses_evidence_plane(self):
+        args, cli = self.fixture(); args.engine = "dynamic"; args.document_kind = "design"
+        request = self.request("Design migration", "Produce evidence-backed architecture")
+        core = {k:request[k] for k in ("title","requester","requirements")}; request["operation_id"] = "design-" + hashlib.sha256(enqueue.canonical(core)).hexdigest()
+        result = self.admit(args, cli, request); writer = cli.tasks[result["tasks"]["writer"]]; body = json.loads(writer["body"])
+        self.assertEqual((result["board"], body["workflow"], writer["assignee"]), ("design-write", "design-write", "design-write-v1"))
+        self.assertEqual(body["reviewer_roles"], ["software-architect", "mvp", "occams-razor"])
+        self.assertIn("proposed boundaries, components, APIs, events, schemas, state ownership, data and deployment flow", body["contract"]["sections"])
+        self.assertIn("assign roles to matching profiles exactly: software-architect to software-architect, mvp to mvp, occams-razor to occams-razor", body["contract"]["fanout"])
+        args, cli = self.fixture(); args.document_kind = "design"
+        with self.assertRaisesRegex(ValueError, "only for PRD"):
+            self.admit(args, cli, request)
 
     def test_engine_switch_cannot_mix_one_operation(self):
         args, cli = self.fixture(); fixed = self.admit(args, cli)

@@ -16,10 +16,23 @@ DYNAMIC_WRITER_CONTRACT = {
     "synthesis_body": ["include workflow, operation, stage=synthesis, round, reviewer roles, source filename, digest, and these complete branch rules", "dedupe blockers and record owner role", "approve: block needs_input with final attachment identity", "revise below round 2: create exactly one prd-write-v1 goal-mode writer with goal_max_turns=4, max_runtime_seconds=3600, current synthesis as parent, and a self-contained copy of this contract", "revision council always includes mvp and occams-razor plus unresolved blocker owners", "missing or malformed evidence, deny recommendation, or requested round 3: block needs_input", "on a resumed human block, validate and apply human_decision below before reviewer synthesis"],
     "human_decision": ["accept only newest comment prefixed human_decision_v1 whose author is exactly default", "require comment after latest needs_input block and before latest unblock event", "require matching operation and current attachment digest", "approve completes synthesis with metadata.status=approved", "revise requires non-empty reason and creates exactly one next writer subject to round cap", "deny requires non-empty reason and completes synthesis with metadata.status=denied", "invalid or stale decision re-blocks needs_input"],
 }
+DESIGN_WRITER_CONTRACT = {
+    "writer_execution": DYNAMIC_WRITER_CONTRACT["writer_execution"],
+    "artifact": DYNAMIC_WRITER_CONTRACT["artifact"],
+    "sections": ["requirements source, current architecture, goals and non-goals", "proposed boundaries, components, APIs, events, schemas, state ownership, data and deployment flow", "security, reliability, performance, operability, migration, rollout, rollback, tests, observability, alternatives and trade-offs", "Mermaid topology or sequence diagrams where useful"],
+    "fanout": ["create software-architect, mvp, and occams-razor reviewers with current writer as parent", "assign roles to matching profiles exactly: software-architect to software-architect, mvp to mvp, occams-razor to occams-razor", "create one design-write-v1 synthesis with writer and all reviewers as parents", "use design-write:{operation}:{round}:{role} idempotency keys", "do not set task skills; every child body is self-contained with repository and knowledge evidence", "complete writer with every returned child ID in created_cards"],
+    "reviewer_body": ["include complete architecture, MVP, or Occam rubric", "read design attachment and spot-check claims against pinned sources", "return pass|revise|needs_human|deny with blockers, owner roles, advisories, attachment identity, digest, and evidence", "do not create tasks"],
+    "synthesis_body": ["dedupe blockers and preserve owner roles", "pass blocks needs_input with final attachment identity and advisories", "revise below round 2 creates one goal-mode design-write-v1 writer with mandatory three reviewers", "missing evidence, unresolved authority, deny recommendation, or round 3 request blocks needs_input"],
+    "human_decision": DYNAMIC_WRITER_CONTRACT["human_decision"],
+}
+DOCUMENTS = {
+    "prd": {"board": BOARD, "name": BOARD_NAME, "prefix": "prd", "profile": "prd-write-v1", "reviewers": ["product-pm", "mvp", "occams-razor"], "contract": DYNAMIC_WRITER_CONTRACT, "label": "PRD"},
+    "design": {"board": "design-write", "name": "Design Write", "prefix": "design", "profile": "design-write-v1", "reviewers": ["software-architect", "mvp", "occams-razor"], "contract": DESIGN_WRITER_CONTRACT, "label": "design"},
+}
 
 def fail(message): raise ValueError(message)
 def canonical(value): return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
-def load_request():
+def load_request(prefix="prd"):
     def unique(pairs):
         value = {}
         for key, item in pairs:
@@ -37,7 +50,7 @@ def load_request():
     if raw != canonical(value): fail("intake must be canonical JSON")
     core = {key: value[key] for key in ("title", "requester", "requirements")}
     if "repositories" in value: core["repositories"] = repositories
-    if value["operation_id"] != "prd-" + hashlib.sha256(canonical(core)).hexdigest(): fail("operation ID differs from canonical request")
+    if value["operation_id"] != prefix + "-" + hashlib.sha256(canonical(core)).hexdigest(): fail("operation ID differs from canonical request")
     return value, raw
 
 def repository_evidence(request, root, knowledge_repositories=(), max_age_seconds=3600):
@@ -64,18 +77,19 @@ def run(command, env, json_output=False):
     except json.JSONDecodeError as error: raise ValueError("Hermes CLI returned invalid JSON") from error
 
 def enqueue(args):
-    request, intake = load_request(); operation = request["operation_id"]
+    document = DOCUMENTS[args.document_kind]; board_slug, board_name = document["board"], document["name"]
+    request, intake = load_request(document["prefix"]); operation = request["operation_id"]
     env = {"HOME": str(args.hermes_home.parent), "HERMES_HOME": str(args.hermes_home), "PATH": os.environ.get("PATH", ""), "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "HERMES_SAFE_MODE": "1"}; command = [str(args.hermes_bin)]
     boards = run([*command, "kanban", "boards", "list", "--all", "--json"], env, True)
-    board = next((item for item in boards if item.get("slug") == BOARD), None)
-    if board is None: run([*command, "kanban", "boards", "create", BOARD, "--name", BOARD_NAME], env)
-    elif board.get("name") != BOARD_NAME: fail("board name mismatch")
-    existing = run([*command, "kanban", "--board", BOARD, "list", "--tenant", operation, "--json"], env, True)
+    board = next((item for item in boards if item.get("slug") == board_slug), None)
+    if board is None: run([*command, "kanban", "boards", "create", board_slug, "--name", board_name], env)
+    elif board.get("name") != board_name: fail("board name mismatch")
+    existing = run([*command, "kanban", "--board", board_slug, "list", "--tenant", operation, "--json"], env, True)
     contracts = set()
     for task in existing:
         try: body = json.loads(task.get("body", ""))
         except (AttributeError, json.JSONDecodeError): fail("existing operation has unknown task contract")
-        if body.get("workflow") == BOARD and body.get("operation") == operation: contracts.add("dynamic")
+        if body.get("workflow") == board_slug and body.get("operation") == operation: contracts.add("dynamic")
         elif body.get("operation_id") == operation: contracts.add("fixed")
         else: fail("existing operation has unknown task contract")
     if contracts and contracts != {args.engine}: fail("operation already belongs to other workflow engine")
@@ -84,42 +98,43 @@ def enqueue(args):
         repositories = [item for item in evidence if item["kind"] == "repository"]
         knowledge = [item for item in evidence if item["kind"] == "knowledge"]
         body = canonical({
-            "workflow": BOARD,
+            "workflow": board_slug,
             "operation": operation,
             "stage": "writer",
             "round": 0,
             "role": "writer",
             "intake": request,
-            "reviewer_roles": ["product-pm", "mvp", "occams-razor"],
+            "reviewer_roles": document["reviewers"],
             "repositories": repositories,
             "knowledge_sources": knowledge,
             "repository_rules": ["inspect every pinned snapshot before drafting", "cite current-state claims as OWNER/REPO@SHA:path:line", "use search_files for discovery and read_file for evidence", "do not replace accessible repository facts with assumptions or future discovery tasks", "block if any snapshot is unreadable"],
             "knowledge_rules": ["search ads-success-kb and private-docs snapshots for relevant decisions, plans, incidents, ownership, and prior rejected approaches", "recall memory-ads-success and memory-org but never retain", "query DocShare, RoktGPT, Atlassian, and Buildkite when relevant", "cite snapshot paths, document IDs or URLs, memory IDs, issue keys, and build references", "summarize only necessary non-sensitive evidence; never dump raw private or recalled content", "surface conflicts between code, docs, tickets, and memory"],
-            "contract": DYNAMIC_WRITER_CONTRACT,
-            "output": "write verified PRD artifact, create required reviewers and synthesis, then complete with exact created_cards",
+            "contract": document["contract"],
+            "output": f"write verified {document['label']} artifact, create required reviewers and synthesis, then complete with exact created_cards",
         }).decode()
-        create = [*command, "kanban", "--board", BOARD, "create", request["title"], "--body", body, "--idempotency-key", f"{BOARD}:{operation}:0:writer", "--tenant", operation, "--max-runtime", "3600", "--max-retries", "1", "--goal", "--goal-max-turns", "4", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--assignee", "prd-write-v1", "--json"]
+        create = [*command, "kanban", "--board", board_slug, "create", request["title"], "--body", body, "--idempotency-key", f"{board_slug}:{operation}:0:writer", "--tenant", operation, "--max-runtime", "3600", "--max-retries", "1", "--goal", "--goal-max-turns", "4", "--completion-contract", "local-only", "--created-by", "operator", "--initial-status", "blocked", "--assignee", document["profile"], "--json"]
         created = run(create, env, True)
         task_id = created.get("id") if isinstance(created, dict) else None
         status = created.get("status") if isinstance(created, dict) else None
         if not isinstance(task_id, str) or not task_id or not isinstance(status, str): fail("invalid task create result")
-        if created.get("body") != body or created.get("assignee") != "prd-write-v1" or created.get("tenant") != operation or created.get("parents") not in ([], None) or created.get("skills") not in ([], None): fail("dynamic writer task mismatch")
-        attachments = run([*command, "kanban", "--board", BOARD, "attachments", task_id, "--json"], env, True)
+        if created.get("body") != body or created.get("assignee") != document["profile"] or created.get("tenant") != operation or created.get("parents") not in ([], None) or created.get("skills") not in ([], None): fail("dynamic writer task mismatch")
+        attachments = run([*command, "kanban", "--board", board_slug, "attachments", task_id, "--json"], env, True)
         if not attachments:
             with tempfile.TemporaryDirectory() as directory:
                 path = pathlib.Path(directory) / "intake.json"; path.write_bytes(intake)
-                run([*command, "kanban", "--board", BOARD, "attach", task_id, str(path), "--name", "intake.json", "--content-type", "application/json", "--author", "operator"], env)
+                run([*command, "kanban", "--board", board_slug, "attach", task_id, str(path), "--name", "intake.json", "--content-type", "application/json", "--author", "operator"], env)
         elif len(attachments) != 1 or attachments[0].get("filename") != "intake.json" or attachments[0].get("size") != len(intake) or attachments[0].get("content_type") != "application/json": fail("writer attachment mismatch")
         if status == "blocked":
-            shown = run([*command, "kanban", "--board", BOARD, "show", task_id, "--json"], env, True)
+            shown = run([*command, "kanban", "--board", board_slug, "show", task_id, "--json"], env, True)
             events, runs = shown.get("events"), shown.get("runs")
             initial = isinstance(events, list) and runs == [] and len(events) == 3 and events[0].get("kind") == "created" \
                 and events[1].get("kind") == "blocked" and events[1].get("payload") == {"reason":"initial_status","status":"blocked","actor":"operator"} \
                 and events[2].get("kind") == "attached" and events[2].get("payload", {}).get("filename") == "intake.json"
             if initial:
-                run([*command, "kanban", "--board", BOARD, "unblock", task_id], env)
-                if run([*command, "kanban", "--board", BOARD, "show", task_id, "--json"], env, True).get("task", {}).get("status") == "blocked": fail("task remained blocked")
-        return {"board": BOARD, "operation_id": operation, "tasks": {"writer": task_id}}
+                run([*command, "kanban", "--board", board_slug, "unblock", task_id], env)
+                if run([*command, "kanban", "--board", board_slug, "show", task_id, "--json"], env, True).get("task", {}).get("status") == "blocked": fail("task remained blocked")
+        return {"board": board_slug, "operation_id": operation, "tasks": {"writer": task_id}}
+    if args.document_kind != "prd": fail("fixed engine is available only for PRD recovery")
     full = {"operation_id": operation, "round": 0, "intake": request}; digest = "writer result attachment raw-byte SHA-256"
     bodies = {
         "root": {**full, "role": "root", "output": "remain blocked and unassigned; intake.json attachment is source of record"},
@@ -155,7 +170,7 @@ def enqueue(args):
     return {"board": BOARD, "operation_id": operation, "tasks": tasks}
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--hermes-home", type=pathlib.Path, required=True); parser.add_argument("--hermes-bin", type=pathlib.Path, required=True); parser.add_argument("--engine", choices=ENGINES, default="fixed"); parser.add_argument("--repository-cache-root", type=pathlib.Path, default=DEFAULT_REPOSITORY_CACHE); parser.add_argument("--knowledge-repository", action="append", dest="knowledge_repositories", default=list(DEFAULT_KNOWLEDGE_REPOSITORIES))
+    parser = argparse.ArgumentParser(); parser.add_argument("--hermes-home", type=pathlib.Path, required=True); parser.add_argument("--hermes-bin", type=pathlib.Path, required=True); parser.add_argument("--engine", choices=ENGINES, default="fixed"); parser.add_argument("--document-kind", choices=DOCUMENTS, default="prd"); parser.add_argument("--repository-cache-root", type=pathlib.Path, default=DEFAULT_REPOSITORY_CACHE); parser.add_argument("--knowledge-repository", action="append", dest="knowledge_repositories", default=list(DEFAULT_KNOWLEDGE_REPOSITORIES))
     try: print(json.dumps(enqueue(parser.parse_args()), sort_keys=True, separators=(",", ":")))
-    except (OSError, ValueError) as error: raise SystemExit(f"Hermes PRD enqueue failed: {error}")
+    except (OSError, ValueError) as error: raise SystemExit(f"Hermes document enqueue failed: {error}")
 if __name__ == "__main__": main()
