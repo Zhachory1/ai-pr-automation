@@ -41,6 +41,9 @@ class SweEnqueueTest(unittest.TestCase):
         request=self.request(); fake=FakeRun(request,self.workspace); result=self.admit(request,fake)
         self.assertEqual((result["status"],result["task_id"],result["repository"]),("ready","t_1234abcd","ACME/widget"))
         body=json.loads(fake.body); self.assertEqual(body["request"],request); self.assertEqual(body["contract"]["posture"],"Caveman reasoning and Ponytail coding")
+        self.assertEqual(body["marker"],f"<!-- ai-pr-automation swe={request['operation_id']} base={request['base_sha']} -->")
+        self.assertIn("hermes-pr-kanban-enqueue.py --kind pr-review",body["contract"]["review_enqueue"]["command"])
+        self.assertIn("do not call kanban_complete until marker read-back",body["contract"]["completion_gate"])
         create=next(c for c in fake.commands if "--idempotency-key" in c)
         self.assertIn("--goal",create); self.assertIn("dir:"+str(self.workspace),create); self.assertEqual(create[create.index("--assignee")+1],"swe-implement-v1")
 
