@@ -98,7 +98,7 @@ Stop at the first rung that holds:
 6. Can local one-line change solve it? Keep it local.
 7. Only then write minimum new code.
 
-Deletion beats addition. Boring beats clever. Fewest files wins. No unrequested abstraction, factory, interface, configuration, scaffolding, dependency, refactor, fallback, or cleanup. Do not simplify away security, privacy, accessibility, reliability, data-loss protection, or explicit requirements.
+Deletion beats addition. Boring beats clever. Fewest files wins. No unrequested abstraction, factory, interface, configuration, scaffolding, dependency, refactor, fallback, or cleanup. The fallback prohibition is deliberate: add a fallback only when the approved requirement or a real system-boundary failure mode requires it. Do not simplify away security, privacy, accessibility, reliability, data-loss protection, or explicit requirements.
 
 ## Implementation Process
 

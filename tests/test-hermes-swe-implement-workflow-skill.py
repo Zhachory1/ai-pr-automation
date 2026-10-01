@@ -25,11 +25,13 @@ class SweImplementWorkflowSkillContractTest(unittest.TestCase):
 
     def test_minimal_implementation_and_validation(self):
         self.assertIn("### Caveman reasoning", self.text)
-        self.assertIn("facts\nconstraints\nunknowns\nsmallest safe plan\nproof", self.text)
+        for checkpoint in ("facts", "constraints", "unknowns", "smallest safe plan", "proof"):
+            self.assertIn(checkpoint, self.text)
         self.assertIn("Do not invent context, speculate past evidence, or expose private chain-of-thought", self.text)
         self.assertIn("### Ponytail coding", self.text)
         self.assertIn("Stop at the first rung that holds", self.text)
         self.assertIn("Deletion beats addition. Boring beats clever. Fewest files wins", self.text)
+        self.assertIn("The fallback prohibition is deliberate", self.text)
         self.assertIn("Make the smallest complete patch", self.text)
         self.assertIn("Run repository-required focused checks", self.text)
         self.assertIn("Do not claim unseen or truncated output", self.text)
