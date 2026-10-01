@@ -37,7 +37,8 @@ for section in (install, preflight, up, down):
 fleet = Path("scripts/fleet.sh").read_text()
 assert 'sudo env PRD_WORKFLOW_ENGINE="${PRD_WORKFLOW_ENGINE:-fixed}"' in fleet
 assert '"$ROOT/scripts/hermes-native.sh" prd-canary-enqueue "$2"' in fleet
-assert 'sudo "$ROOT/scripts/hermes-native.sh" design-canary-enqueue "$2"' in fleet
+assert 'design-canary-enqueue|roadmap-canary-enqueue)' in fleet
+assert 'sudo "$ROOT/scripts/hermes-native.sh" "$1" "$2"' in fleet
 assert 'sudo "$ROOT/scripts/hermes-native.sh" prd-canary-advance "$2"' in fleet
 for section in (fleet[fleet.index("  up)"):fleet.index("  down)")], fleet[fleet.index("  down)"):fleet.index("  review-kanban-up)")]):
     assert "prd-canary" not in section
@@ -107,6 +108,14 @@ import json, pathlib, sys
 args = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert args[args.index("--engine"):args.index("--engine") + 2] == ["--engine", "dynamic"]
 assert args[args.index("--document-kind"):args.index("--document-kind") + 2] == ["--document-kind", "design"]
+PY
+
+bash "$tmp/repo/scripts/hermes-native.sh" roadmap-canary-enqueue "$intake" >/dev/null
+python3 - "$MOCK_ARGV" <<'PY'
+import json, pathlib, sys
+args = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert args[args.index("--engine"):args.index("--engine") + 2] == ["--engine", "dynamic"]
+assert args[args.index("--document-kind"):args.index("--document-kind") + 2] == ["--document-kind", "roadmap"]
 PY
 
 out="$(bash "$tmp/repo/scripts/hermes-native.sh" prd-canary-advance "$operation")"

@@ -25,9 +25,19 @@ DESIGN_WRITER_CONTRACT = {
     "synthesis_body": ["dedupe blockers and preserve owner roles", "pass blocks needs_input with final attachment identity and advisories", "revise below round 2 creates one goal-mode design-write-v1 writer with mandatory three reviewers", "missing evidence, unresolved authority, deny recommendation, or round 3 request blocks needs_input"],
     "human_decision": DYNAMIC_WRITER_CONTRACT["human_decision"],
 }
+ROADMAP_WRITER_CONTRACT = {
+    "writer_execution": DYNAMIC_WRITER_CONTRACT["writer_execution"],
+    "artifact": DYNAMIC_WRITER_CONTRACT["artifact"],
+    "sections": ["planning horizon, goals, outcomes, evidence, assumptions, candidates, and exclusions", "prioritization rationale, now-next-later sequencing, dependencies, critical path, capacity, staffing, ownership, milestones, and gates", "risks, guardrails, rollback and de-scope options, metrics, measurement owner, review cadence, unresolved decisions, and Mermaid dependency or timeline diagrams"],
+    "fanout": ["create product-pm, vp-eng, mvp, and occams-razor reviewers with current writer as parent", "assign roles exactly: product-pm to product-pm, vp-eng to vp-eng, mvp to mvp, occams-razor to occams-razor", "create one roadmap-write-v1 synthesis with writer and all reviewers as parents", "use roadmap-write:{operation}:{round}:{role} idempotency keys", "every child body is self-contained with evidence and no task skills", "complete writer with every returned child ID in created_cards"],
+    "reviewer_body": ["include complete Product PM, VP Engineering, MVP, or Occam rubric", "spot-check outcome, dependency, effort, and capacity claims against pinned evidence", "return pass|revise|needs_human|deny with blockers, owners, advisories, attachment identity, digest, and evidence", "do not create tasks"],
+    "synthesis_body": ["dedupe blockers and preserve owners", "pass blocks needs_input with attachment identity, assumptions, advisories, and unresolved decisions", "revise below round 2 creates one goal-mode roadmap-write-v1 writer with all four mandatory reviewers", "missing evidence, absent priority or capacity authority, deny recommendation, or round 3 request blocks needs_input"],
+    "human_decision": DYNAMIC_WRITER_CONTRACT["human_decision"],
+}
 DOCUMENTS = {
     "prd": {"board": BOARD, "name": BOARD_NAME, "prefix": "prd", "profile": "prd-write-v1", "reviewers": ["product-pm", "mvp", "occams-razor"], "contract": DYNAMIC_WRITER_CONTRACT, "label": "PRD"},
     "design": {"board": "design-write", "name": "Design Write", "prefix": "design", "profile": "design-write-v1", "reviewers": ["software-architect", "mvp", "occams-razor"], "contract": DESIGN_WRITER_CONTRACT, "label": "design"},
+    "roadmap": {"board": "roadmap-write", "name": "Roadmap Write", "prefix": "roadmap", "profile": "roadmap-write-v1", "reviewers": ["product-pm", "vp-eng", "mvp", "occams-razor"], "contract": ROADMAP_WRITER_CONTRACT, "label": "roadmap"},
 }
 
 def fail(message): raise ValueError(message)

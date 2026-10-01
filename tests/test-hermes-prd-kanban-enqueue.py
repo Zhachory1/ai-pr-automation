@@ -125,6 +125,16 @@ class EnqueueTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only for PRD"):
             self.admit(args, cli, request)
 
+    def test_roadmap_dynamic_intake_uses_four_reviewer_council(self):
+        args, cli = self.fixture(); args.engine = "dynamic"; args.document_kind = "roadmap"
+        request = self.request("Roadmap agent workflows", "Prioritize evidence-backed initiatives")
+        core = {k:request[k] for k in ("title","requester","requirements")}; request["operation_id"] = "roadmap-" + hashlib.sha256(enqueue.canonical(core)).hexdigest()
+        result = self.admit(args, cli, request); writer = cli.tasks[result["tasks"]["writer"]]; body = json.loads(writer["body"])
+        self.assertEqual((result["board"], body["workflow"], writer["assignee"]), ("roadmap-write", "roadmap-write", "roadmap-write-v1"))
+        self.assertEqual(body["reviewer_roles"], ["product-pm", "vp-eng", "mvp", "occams-razor"])
+        self.assertIn("prioritization rationale, now-next-later sequencing, dependencies, critical path, capacity, staffing, ownership, milestones, and gates", body["contract"]["sections"])
+        self.assertIn("assign roles exactly: product-pm to product-pm, vp-eng to vp-eng, mvp to mvp, occams-razor to occams-razor", body["contract"]["fanout"])
+
     def test_engine_switch_cannot_mix_one_operation(self):
         args, cli = self.fixture(); fixed = self.admit(args, cli)
         args.engine = "dynamic"
