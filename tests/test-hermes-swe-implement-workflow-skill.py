@@ -45,7 +45,9 @@ class SweImplementWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("Read back PR URL, draft state, base, head branch/SHA, marker, repository, and author", self.text)
 
     def test_pr_review_handoff(self):
-        self.assertIn("Enqueue exact repository, PR number, and head SHA on `pr-review`", self.text)
+        self.assertIn("hermes_direct_pr_journal.identity", self.text)
+        self.assertIn("hermes-pr-kanban-enqueue.py --kind pr-review", self.text)
+        self.assertIn("Only then call `kanban_complete`", self.text)
         self.assertIn("review task ID", self.text)
         self.assertIn("Do not merge or approve your own PR", self.text)
 

@@ -178,10 +178,12 @@ Read back PR URL, draft state, base, head branch/SHA, marker, repository, and au
 
 After draft PR read-back:
 
-1. Enqueue exact repository, PR number, and head SHA on `pr-review`.
-2. Verify returned review task identity.
-3. Record PR URL and review task ID in SWE result.
-4. Stop. PR feedback fixes belong to `pr-maintain` or a separately approved implementation round.
+1. Ensure draft PR body contains the exact operation marker and assign the authenticated agent (`@me`) for discovery.
+2. Build canonical `pr-review` request from exact repository, PR number, and head SHA with installed `hermes_direct_pr_journal.identity`.
+3. Pipe it to `/usr/local/libexec/ai-pr-automation/hermes-pr-kanban-enqueue.py --kind pr-review` using service `HERMES_HOME`, Hermes binary, and pr-review workspace root.
+4. Verify returned operation, status, and `t_........` review task ID match exact head.
+5. Record PR URL and review task ID in SWE result.
+6. Only then call `kanban_complete` and stop. If queue client or verification is unavailable, block `capability`; do not report success. PR feedback fixes belong to `pr-maintain` or a separately approved implementation round.
 
 Do not merge or approve your own PR.
 

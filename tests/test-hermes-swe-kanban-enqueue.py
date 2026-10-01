@@ -41,6 +41,9 @@ class SweEnqueueTest(unittest.TestCase):
         request=self.request(); fake=FakeRun(request,self.workspace); result=self.admit(request,fake)
         self.assertEqual((result["status"],result["task_id"],result["repository"]),("ready","t_1234abcd","ACME/widget"))
         body=json.loads(fake.body); self.assertEqual(body["request"],request); self.assertEqual(body["contract"]["posture"],"Caveman reasoning and Ponytail coding")
+        self.assertEqual(body["marker"],f"<!-- ai-pr-automation swe={request['operation_id']} base={request['base_sha']} -->")
+        self.assertIn("hermes-pr-kanban-enqueue.py --kind pr-review",body["contract"]["review_enqueue"]["command"])
+        self.assertIn("do not call kanban_complete until marker read-back",body["contract"]["completion_gate"])
         create=next(c for c in fake.commands if "--idempotency-key" in c)
         self.assertIn("--goal",create); self.assertIn("dir:"+str(self.workspace),create); self.assertEqual(create[create.index("--assignee")+1],"swe-implement-v1")
 
@@ -52,6 +55,25 @@ class SweEnqueueTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"digest differs"): self.admit(request,FakeRun(request,self.workspace))
         self.manifest["fetched_at"]=1;(self.root/"cache/ACME/widget.json").write_text(json.dumps(self.manifest));request=self.request()
         with self.assertRaisesRegex(ValueError,"stale"): self.admit(request,FakeRun(request,self.workspace))
+
+    def test_rejects_non_root_before_any_side_effect(self):
+        request=self.request(); fake=FakeRun(request,self.workspace)
+        raw=swe.canonical(request).decode()
+        with mock.patch("sys.stdin",io.StringIO(raw)),mock.patch.object(swe,"run",side_effect=fake),mock.patch.object(swe.os,"geteuid",return_value=501):
+            with self.assertRaisesRegex(ValueError,"root"): swe.enqueue(self.args(self.root))
+        self.assertEqual(fake.commands,[])
+
+    def test_rejects_create_show_identity_drift(self):
+        for field,override in (("body","{\"tampered\":true}"),("tenant","foreign-op"),("workspace_path","/tmp/other"),("assignee","wrong-profile")):
+            with self.subTest(field=field):
+                request=self.request(); fake=FakeRun(request,self.workspace)
+                original_call=fake.__call__
+                def drifted(command,timeout=120,json_output=False,input_text=None,_f=field,_o=override,_orig=original_call):
+                    result=_orig(command,timeout=timeout,json_output=json_output,input_text=input_text)
+                    if isinstance(result,dict) and "task" in result and "show" in list(map(str,command)):
+                        task=dict(result["task"]); task[_f]=_o; return {"task":task,"runs":result["runs"],"events":result["events"]}
+                    return result
+                with self.assertRaisesRegex(ValueError,"identity drift"): self.admit(request,drifted)
 
     def test_rejects_noncanonical_operation_and_repo(self):
         request=self.request(); request["operation_id"]="swe-implement-"+"0"*64
