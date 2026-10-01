@@ -21,7 +21,7 @@ commands = native[native.index("prd_canary_enqueue() {"):native.index("\nrequire
 for text in (
     'need_root', '"$#" == 1', '"$1" == /*', 'os.O_RDONLY | os.O_NOFOLLOW',
     'stat.S_ISREG(status.st_mode)', 'source.read(131073)', 'len(data) > 131072',
-    'PRD_WORKFLOW_ENGINE:-fixed', '"--engine", engine', '"--repository-cache-root", repository_cache',
+    'PRD_WORKFLOW_ENGINE:-fixed', '"--engine", engine', '"--document-kind", document_kind', '"--repository-cache-root", repository_cache',
     '["sudo", "-u", user, "env"', 'subprocess.run(command, input=data)',
     '"$INSTALL_DIR/venv/bin/python" "$PRD_KANBAN_ENQUEUE" "$LAUNCHER"',
     '"$1" =~ ^prd-[0-9a-f]{64}$', '"$PRD_KANBAN_ADVANCE"', '--operation-id "$1"',
@@ -37,6 +37,7 @@ for section in (install, preflight, up, down):
 fleet = Path("scripts/fleet.sh").read_text()
 assert 'sudo env PRD_WORKFLOW_ENGINE="${PRD_WORKFLOW_ENGINE:-fixed}"' in fleet
 assert '"$ROOT/scripts/hermes-native.sh" prd-canary-enqueue "$2"' in fleet
+assert 'sudo "$ROOT/scripts/hermes-native.sh" design-canary-enqueue "$2"' in fleet
 assert 'sudo "$ROOT/scripts/hermes-native.sh" prd-canary-advance "$2"' in fleet
 for section in (fleet[fleet.index("  up)"):fleet.index("  down)")], fleet[fleet.index("  down)"):fleet.index("  review-kanban-up)")]):
     assert "prd-canary" not in section
@@ -88,7 +89,7 @@ cmp -s "$intake" "$MOCK_STDIN"
 python3 - "$MOCK_ARGV" "$tmp" <<'PY'
 import json, pathlib, sys
 args = json.loads(pathlib.Path(sys.argv[1]).read_text()); root = pathlib.Path(sys.argv[2])
-assert args == ["-u", pathlib.Path.home().owner(), "env", f"HOME={root}/home", f"HERMES_HOME={root}/home/.hermes", f"{root}/install/venv/bin/python", "-B", f"{root}/support/hermes-prd-kanban-enqueue.py", "--hermes-home", f"{root}/home/.hermes", "--hermes-bin", f"{root}/home/.local/bin/hermes", "--engine", "fixed", "--repository-cache-root", f"{root}/repositories"]
+assert args == ["-u", pathlib.Path.home().owner(), "env", f"HOME={root}/home", f"HERMES_HOME={root}/home/.hermes", f"{root}/install/venv/bin/python", "-B", f"{root}/support/hermes-prd-kanban-enqueue.py", "--hermes-home", f"{root}/home/.hermes", "--hermes-bin", f"{root}/home/.local/bin/hermes", "--engine", "fixed", "--document-kind", "prd", "--repository-cache-root", f"{root}/repositories"]
 PY
 
 export PRD_WORKFLOW_ENGINE=dynamic
@@ -99,6 +100,14 @@ args = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert args[args.index("--engine"):args.index("--engine") + 2] == ["--engine", "dynamic"]
 PY
 unset PRD_WORKFLOW_ENGINE
+
+bash "$tmp/repo/scripts/hermes-native.sh" design-canary-enqueue "$intake" >/dev/null
+python3 - "$MOCK_ARGV" <<'PY'
+import json, pathlib, sys
+args = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert args[args.index("--engine"):args.index("--engine") + 2] == ["--engine", "dynamic"]
+assert args[args.index("--document-kind"):args.index("--document-kind") + 2] == ["--document-kind", "design"]
+PY
 
 out="$(bash "$tmp/repo/scripts/hermes-native.sh" prd-canary-advance "$operation")"
 [[ "$out" == '{"status":"mock"}' ]]
