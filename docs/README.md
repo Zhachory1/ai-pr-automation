@@ -1,4 +1,10 @@
-# Design docs
+# Documentation
+
+- **[From-zero host-native setup](getting-started.md)** — prerequisites, credentials, TLS, and explicit live-activation gate.
+- **[Documentation rollout plan](documentation-plan.md)** — next slices: configuration, architecture, operator recovery, and clean-host trial.
+- **[Hermes operations](hermes/README.md)** and **[Compose substrate](../docker/README.md)** — current runtime contracts and support services.
+
+## Historical design records
 
 - **[hermes-migration-roadmap.md](hermes-migration-roadmap.md)** — proposed strangler migration
   from custom fleet plumbing to Hermes while retaining domain safety controls.

@@ -8,11 +8,7 @@ PR-safety Kanban recovery bridge through `host.docker.internal` (see
 
 ## Bring it up
 
-```bash
-cp .env.example .env      # then edit: CODE_ROOT, passwords, Hindsight provider, vault path
-scripts/compose.sh up -d --build  # validates vault path, then builds and starts support services
-scripts/m0-verify.sh      # substrate checks (Postgres, Hindsight, swarmvault, coderag)
-```
+Use [from-zero setup](../docs/getting-started.md) for service-account credentials, Fleet Controller TLS, authority, and explicit activation. **Bare `scripts/compose.sh up -d --build` also starts the controller and all default producers**, not only support services. Do not use it as an idle substrate check. `scripts/m0-verify.sh` checks support services after startup and retains a synthetic Hindsight test fact.
 
 Schema upgrades for an existing database volume run through the `schema-migrate` service, which
 reapplies additive numbered migrations (`02`–`19`). `01-schema.sql` is the immutable
