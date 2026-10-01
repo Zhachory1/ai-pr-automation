@@ -298,8 +298,9 @@ def safety_request(value, binary, env):
         producer_env = {**env, **{key: os.environ[key] for key in settings},
                         "PR_SAFETY_QUEUE_ENGINE": "kanban", "PR_SAFETY_MERGED_PR_INPUT_FILE": str(record),
                         "HERMES_BIN": str(binary)}
-        try: outcome = subprocess.run([str(ROOT.parent / "bin/hermes-pr-safety-producer")],
-                                      capture_output=True, env=producer_env, timeout=180)
+        producer = ROOT / "hermes-pr-safety-producer"
+        if not producer.is_file(): producer = ROOT.parent / "bin/hermes-pr-safety-producer"
+        try: outcome = subprocess.run([str(producer)], capture_output=True, env=producer_env, timeout=180)
         except (OSError, subprocess.TimeoutExpired) as error: raise ValueError("PR safety admission uncertain") from error
         if outcome.returncode: fail("PR safety admission failed; inspect host logs")
     return status(operation, binary, env)

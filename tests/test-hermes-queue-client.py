@@ -140,15 +140,20 @@ class QueueClientTest(unittest.TestCase):
         policy["PR_SAFETY_MERGED_PR_AUTHORS"] = "fleet"
         info = {"state": "closed", "merged_at": "2026-09-30", "merge_commit_sha": value["head_sha"],
                 "base": {"sha": "b" * 40}, "user": {"login": "fleet"}}
-        def fake_producer(command, **kwargs):
-            self.assertIn("hermes-pr-safety-producer", str(command))
-            record = pathlib.Path(kwargs["env"]["PR_SAFETY_MERGED_PR_INPUT_FILE"])
-            self.assertEqual(json.loads(record.read_text())["mergeSha"], value["head_sha"])
-            return SimpleNamespace(returncode=0)
-        with patch.dict(client.os.environ, policy), patch.object(client, "authorized"), \
-             patch.object(client, "github", return_value=info), patch.object(client.subprocess, "run", side_effect=fake_producer), \
-             patch.object(client, "status", return_value={"board": "pr-safety-council", "status": "blocked"}):
-            self.assertEqual(client.safety_request(value, self.binary, self.env)["status"], "blocked")
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            producer = root / "hermes-pr-safety-producer"
+            producer.touch()
+            def fake_producer(command, **kwargs):
+                self.assertEqual(command, [str(producer)])
+                record = pathlib.Path(kwargs["env"]["PR_SAFETY_MERGED_PR_INPUT_FILE"])
+                self.assertEqual(json.loads(record.read_text())["mergeSha"], value["head_sha"])
+                return SimpleNamespace(returncode=0)
+            with patch.object(client, "ROOT", root), patch.dict(client.os.environ, policy), \
+                 patch.object(client, "authorized"), patch.object(client, "github", return_value=info), \
+                 patch.object(client.subprocess, "run", side_effect=fake_producer), \
+                 patch.object(client, "status", return_value={"board": "pr-safety-council", "status": "blocked"}):
+                self.assertEqual(client.safety_request(value, self.binary, self.env)["status"], "blocked")
 
     def test_status_check_selects_latest_document_task_on_each_board(self):
         for prefix, board in (("prd", "prd-write"), ("design", "design-write"), ("roadmap", "roadmap-write")):
