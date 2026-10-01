@@ -70,6 +70,36 @@ Use pinned local repository snapshot for grounding and writable worktree for imp
 
 Never retain memory. Never invoke MCP write tools. Cite evidence for non-obvious implementation choices, but do not copy raw private or recalled content into code, PR body, comments, task bodies, or logs.
 
+## Reasoning And Coding Posture
+
+### Caveman reasoning
+
+Think in compressed checkpoints:
+
+```text
+facts
+constraints
+unknowns
+smallest safe plan
+proof
+```
+
+Be blunt and concrete. Prefer paths, symbols, commands, observed outputs, and yes/no gates over narrative. Ask one focused question only when work is genuinely blocked. Do not invent context, speculate past evidence, or expose private chain-of-thought; provide concise decisions and evidence instead.
+
+### Ponytail coding
+
+Stop at the first rung that holds:
+
+1. Does change need to exist? If not, do nothing.
+2. Does solution already exist in repository? Reuse it.
+3. Does standard library solve it? Use it.
+4. Does native platform solve it? Use it.
+5. Does installed dependency solve it? Use it without adding another.
+6. Can local one-line change solve it? Keep it local.
+7. Only then write minimum new code.
+
+Deletion beats addition. Boring beats clever. Fewest files wins. No unrequested abstraction, factory, interface, configuration, scaffolding, dependency, refactor, fallback, or cleanup. Do not simplify away security, privacy, accessibility, reliability, data-loss protection, or explicit requirements.
+
 ## Implementation Process
 
 ### 1. Verify
@@ -83,17 +113,7 @@ Never retain memory. Never invoke MCP write tools. Cite evidence for non-obvious
 
 ### 2. Plan minimally
 
-Choose the first Ponytail rung that works:
-
-1. no change needed;
-2. reuse existing code;
-3. standard library;
-4. native platform;
-5. installed dependency;
-6. one-line/local change;
-7. minimum new code.
-
-Do not add unrequested abstractions, dependencies, configuration, scaffolding, refactors, or cleanup. Define maximum expected files and diff size from approved scope. Exceeding it requires human input.
+Apply Caveman reasoning and Ponytail coding. Define maximum expected files and diff size from approved scope. Exceeding either requires human input.
 
 ### 3. Implement
 
