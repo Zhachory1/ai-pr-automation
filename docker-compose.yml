@@ -272,6 +272,7 @@ services:
       DOC_WRITER_STAGE_DIR: /doc-stage
       DOC_WRITER_INBOX_DIR: /doc-inbox
       DOC_WRITER_PUBLICATION_BIN: /app/doc-writer-publication
+      DOC_ALERT_SPOOL_DIR: ${DOC_ALERT_SPOOL_DIR:-}
       PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}
       PR_SAFETY_POLICY_PATH: ${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}
       PR_SAFETY_POLICY_VERSION: ${PR_SAFETY_POLICY_VERSION:-v1}
