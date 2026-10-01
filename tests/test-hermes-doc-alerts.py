@@ -130,6 +130,11 @@ class AlertsTest(unittest.TestCase):
             result = subprocess.run([sys.executable, "-c", check, str(config)], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b"one self-only Signal account", result.stderr)
+            config.write_text("SIGNAL_ACCOUNT=+15551234567 # linked account\n"
+                              "export SIGNAL_HOME_CHANNEL=+15551234567\t# Note to Self\n"
+                              "SIGNAL_HTTP_URL=http://127.0.0.1:18080 # local daemon\n")
+            result = subprocess.run([sys.executable, "-c", check, str(config)], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_loaded_timer_is_unloaded_before_reconfiguration(self):
         source = (ROOT / "scripts/hermes-native.sh").read_text()

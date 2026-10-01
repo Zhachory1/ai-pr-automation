@@ -694,7 +694,7 @@ values = {key: [] for key in keys}
 for line in lines:
     match = re.match(r"^\s*(?:export\s+)?(SIGNAL_ACCOUNT|SIGNAL_HOME_CHANNEL|SIGNAL_HTTP_URL)=(.*)$", line)
     if match:
-        values[match.group(1)].append(match.group(2))
+        values[match.group(1)].append(re.sub(r"[ \t]+#.*$", "", match.group(2)).rstrip())
 if any(len(values[key]) != 1 for key in keys) \
    or not re.fullmatch(r"\+[1-9][0-9]{6,14}", values["SIGNAL_ACCOUNT"][0]) \
    or values["SIGNAL_HOME_CHANNEL"] != values["SIGNAL_ACCOUNT"] \
