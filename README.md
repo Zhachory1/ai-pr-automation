@@ -6,15 +6,16 @@ autonomous agent fleet**.
 ## Architecture
 
 A single pinned [Hermes](https://github.com/NousResearch/hermes) runtime executes profiles under the
-non-admin `hermes-agent` macOS account. Docker Compose owns producers, queue claims, leases, strict
-result handling, and deterministic effects. Controller calls host Hermes through profile-scoped Runs
-API keys; host launchd keeps gateway, dashboard, and the PR-safety Kanban recovery bridge.
+non-admin `hermes-agent` macOS account. Compose now schedules PR review directly through the
+`pr-review-v1` Runs API; the remaining workflows still use the Postgres controller pending cutover.
+Host launchd keeps the Hermes gateway, dashboard, and PR-safety recovery bridge.
 
 ```
-Compose producers ──▶ Postgres queue/attempts ──▶ Compose controller ──Runs API/bridge──▶ host Hermes
+Compose review cron ──Runs API──▶ host Hermes pr-review-v1
+Other Compose producers ──▶ Postgres ──▶ Compose controller ──▶ host Hermes
 ```
 
-- **Postgres queue** keeps dedupe, fixed per-kind caps, route generations, exact request bytes,
+- **Remaining Postgres queue** keeps dedupe, fixed per-kind caps, route generations, exact request bytes,
   stable idempotency keys, leased claims, exact-byte document approval, and reconcile state.
 - **Compose controller** claims and renews queue work, replays lost submissions with identical bytes,
   polls/stops Hermes runs, strictly parses output, and nonce-fences settlement. PR safety defaults to
@@ -42,6 +43,7 @@ and [Compose substrate](docker/README.md).
 
 - macOS host with a dedicated non-admin `hermes-agent` account
 - Docker Desktop for Compose controller/producers and support services
+- A separate discovery token and a file containing only the `pr-review-v1` API key for the review cron
 - Scoped GitHub token for the `hermes-agent` account; installation copies that exact token to Compose producers, so its actual permissions must be reviewed
 - `jq`, `psql` client for operator diagnostics
 - A pinned Hermes install for the service account (`scripts/hermes-native.sh install`)
@@ -55,6 +57,11 @@ Configure `.env`, install the pinned host Hermes runtime, then start the fleet o
 ```bash
 cp .env.example .env    # replace sample paths and secrets; follow docs/getting-started.md
 ```
+
+For the default review cron, set `GITHUB_DISCOVERY_TOKEN_FILE` and `HERMES_REVIEW_API_KEY_FILE`
+in `.env` to existing nonempty, owner-only files. The latter contains the `pr-review-v1` key from
+the installed Hermes API bundle, not the full bundle. The old review producer is no longer a
+separate default service; keep it stopped when starting this Compose configuration.
 
 Generate owner-only Fleet Controller secrets outside `CODE_ROOT` using the existing no-overwrite TLS generator:
 
@@ -115,7 +122,7 @@ This is a **degraded HTTP-only fallback**, not restored queue access: `fleet.sh 
 
 | Kind | GitHub scope | Behavior |
 | --- | --- | --- |
-| `pr-review` | Open PRs assigned to the operator | Review only; posts `APPROVE` for validated clean verdicts, otherwise `COMMENT` or `REQUEST_CHANGES` |
+| `pr-review` | Open PRs assigned to the operator | Compose cron submits exact heads to Hermes; its profile posts the review |
 | `pr-maintain` | Open PRs authored by the operator | Handle review feedback and CI with one bounded fix pass, at most 3 rounds per PR lineage |
 | `swe-implement` | Enrolled repository | Implement a bounded task on a fresh branch and open a draft PR |
 | `doc-write` | Fleet Controller | Draft a PRD/DD; exact bytes require human approval before filing |

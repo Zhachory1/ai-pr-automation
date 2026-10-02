@@ -1,15 +1,14 @@
 # Hermes API Control Plane
 
-Status: Compose control plane active; host PR-safety producer is installed and runs only when `PR_SAFETY_QUEUE_ENGINE=kanban`; other host producer jobs remain retired.
+Status: Compose PR review now uses a direct cron-to-Hermes Runs API producer. The other kinds still use the Compose control plane; host PR-safety producer runs only when `PR_SAFETY_QUEUE_ENGINE=kanban`.
 
 ## Architecture
 
-Compose owns deterministic scheduling and effects. Host Hermes owns profile execution.
+Compose schedules review directly; host Hermes owns its review effect. The remaining kinds still use the Postgres controller.
 
 ```text
-Compose producers -> Postgres requests/hermes_runs -> Compose hermes-controller
-                                                   -> host.docker.internal:8642 (Runs API)
-                                                   -> host.docker.internal:8766 (Kanban recovery bridge)
+Compose review cron -> host.docker.internal:8642 (pr-review-v1 Runs API)
+Other Compose producers -> Postgres requests/hermes_runs -> Compose hermes-controller -> host Hermes
 ```
 
 Host launchd keeps:
@@ -22,8 +21,8 @@ Host launchd keeps:
 Compose runs:
 
 - `hermes-controller`;
-- `pr-producer-review`;
-- `pr-producer-maintain`;
+- `pr-producer-review` (direct cron; requires its own discovery token and review API key files);
+- `pr-producer-maintain` (still Postgres-backed);
 - `pr-safety-producer` in `postgres` mode; it idles when queue engine is `kanban`;
 - `memory-curate-producer`;
 - Postgres, Fleet Controller, and support services.
@@ -137,8 +136,9 @@ and review transitions. It makes no service-profile, service-board, model, GitHu
 
 ## Authority and producers
 
-Repository authority YAML is scope-of-attention, not credential security. Compose review/maintain
-producers discover open PRs, resolve exact heads, and enqueue deduped rows. PR-safety queue engine defaults
+Repository authority YAML is scope-of-attention, not credential security. Compose review cron
+submits exact heads directly to Hermes with a stable idempotency key; maintenance still enqueues
+deduped Postgres rows. PR-safety queue engine defaults
 to `postgres`; when explicitly set to `kanban`, Compose safety discovery idles and the host launchd producer
 creates the fixed five-task graph through the pinned local Hermes CLI. The snapshot root stays root-owned
 `0750`; direct enqueue uses its service-owned `direct-kanban/` child, which legacy Postgres GC never scans.

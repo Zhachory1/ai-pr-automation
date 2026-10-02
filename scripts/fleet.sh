@@ -37,22 +37,25 @@ recreate_producer() {
     || { echo "$mode producer failed $engine environment/running verification" >&2; return 1; }
 }
 
-recreate_review_producer() {
-  local engine="$1" container state environment matches
-  PR_REVIEW_QUEUE_ENGINE="$engine" "$ROOT/scripts/compose.sh" up -d --no-deps --force-recreate pr-producer-review
-  container="$("$ROOT/scripts/compose.sh" ps -q pr-producer-review)"
-  [[ -n "$container" && "$container" != *$'\n'* ]] \
-    || { echo "expected one pr-producer-review container" >&2; return 1; }
-  state="$(docker inspect --format '{{.State.Running}}' "$container")"
-  environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container")"
-  matches="$(grep -Fxc "PR_REVIEW_QUEUE_ENGINE=$engine" <<<"$environment" || true)"
-  [[ "$state" == true && "$matches" == 1 ]] \
-    || { echo "pr-producer-review failed $engine environment/running verification" >&2; return 1; }
-}
-
 case "${1:-}" in
   up)
     "$ROOT/scripts/hermes-authority.py" --file "$AUTHORITY_SOURCE" >/dev/null
+    "$ROOT/scripts/compose.sh" config --format json | python3 -c '
+import json, os, pathlib, stat, sys
+secrets = json.load(sys.stdin)["secrets"]
+for name in ("github_discovery_token", "hermes_review_key"):
+    path = pathlib.Path(secrets[name]["file"])
+    try:
+        info, parent = path.lstat(), path.parent.lstat()
+    except OSError:
+        raise SystemExit(f"configure owner-only {name} before fleet up")
+    owners = {0, os.getuid()}
+    if (not stat.S_ISREG(info.st_mode) or info.st_size == 0 or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_uid not in owners or not stat.S_ISDIR(parent.st_mode)
+            or stat.S_IMODE(parent.st_mode) & 0o077 or parent.st_uid not in owners):
+        raise SystemExit(f"configure owner-only {name} before fleet up")
+'
+    sudo "$ROOT/scripts/hermes-native.sh" review-producer-stop
     sudo "$ROOT/scripts/hermes-native.sh" producer-stop
     "$ROOT/scripts/compose.sh" stop pr-safety-producer
     install -d -m 0700 "$(dirname "$DOCKER_AUTHORITY")"
@@ -81,17 +84,6 @@ case "${1:-}" in
     sudo "$ROOT/scripts/hermes-native.sh" producer-stop
     "$ROOT/scripts/compose.sh" down
     sudo "$ROOT/scripts/hermes-native.sh" down
-    ;;
-  review-kanban-up)
-    recreate_review_producer kanban
-    if ! sudo "$ROOT/scripts/hermes-native.sh" review-mode-set-kanban; then
-      sudo "$ROOT/scripts/hermes-native.sh" review-producer-stop || true
-      exit 1
-    fi
-    ;;
-  review-postgres-up)
-    sudo "$ROOT/scripts/hermes-native.sh" review-producer-stop
-    recreate_review_producer postgres
     ;;
   maintain-kanban-up)
     recreate_producer maintain pr-producer-maintain PR_MAINTAIN_QUEUE_ENGINE kanban
@@ -152,5 +144,5 @@ case "${1:-}" in
     echo '=== Host-native Hermes ==='
     sudo "$ROOT/scripts/hermes-native.sh" logs
     ;;
-  *) echo "usage: $0 up|down|review-kanban-up|review-postgres-up|maintain-kanban-up|maintain-postgres-up|memory-cron-up|memory-postgres-up|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status|prd-canary-enqueue|design-canary-enqueue|roadmap-canary-enqueue|prd-canary-advance|status|logs" >&2; exit 2 ;;
+  *) echo "usage: $0 up|down|maintain-kanban-up|maintain-postgres-up|memory-cron-up|memory-postgres-up|repo-cache-install|repo-cache-enroll|repo-cache-sync|repo-cache-materialize|repo-cache-status|prd-canary-enqueue|design-canary-enqueue|roadmap-canary-enqueue|prd-canary-advance|status|logs" >&2; exit 2 ;;
 esac

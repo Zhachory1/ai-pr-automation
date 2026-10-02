@@ -303,23 +303,19 @@ services:
         condition: service_completed_successfully
 
   pr-producer-review:
-    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
+    image: agent-fleet/hermes-pr-review-cron:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.hermes-pr-review-cron
     restart: unless-stopped
-    command: ["/app/hermes-compose-producer.sh", "review"]
     environment:
-      REQUESTS_DB_HOST: db-requests
-      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
-      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
-      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      HERMES_AUTHORITY_FILE: /config/authority.yaml
-      GITHUB_TOKEN_FILE: /run/secrets/github_read_token
-      PRODUCER_INTERVAL_SECONDS: ${PR_PRODUCER_INTERVAL_SECONDS:-300}
-      PR_REVIEW_QUEUE_ENGINE: ${PR_REVIEW_QUEUE_ENGINE:-postgres}
-    secrets: [github_read_token]
+      PR_REVIEW_CRON_SCHEDULE: ${PR_REVIEW_CRON_SCHEDULE:-*/5 * * * *}
+      HERMES_API_BASE_URL: http://host.docker.internal:8642
+    secrets: [github_discovery_token, hermes_review_key]
     volumes:
       - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
-    depends_on:
-      schema-migrate: {condition: service_completed_successfully}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   pr-producer-maintain:
     image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
@@ -445,3 +441,7 @@ secrets:
     file: ${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:?set HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE}
   github_read_token:
     file: ${GITHUB_READ_TOKEN_FILE:-/dev/null}
+  github_discovery_token:
+    file: ${GITHUB_DISCOVERY_TOKEN_FILE:-/dev/null}
+  hermes_review_key:
+    file: ${HERMES_REVIEW_API_KEY_FILE:-/dev/null}

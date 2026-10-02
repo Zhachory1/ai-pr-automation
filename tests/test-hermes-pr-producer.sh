@@ -103,6 +103,32 @@ grep -q 'search prs --owner Zhachory1' "$tmp/gh.log"; grep -q 'search prs --owne
 [[ "$(grep -c 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" | tr -d ' ')" == 3 ]] || { echo "FAIL: owner-wide discovery did not enqueue three unique grants" >&2; exit 1; }
 echo "$owner_out" | grep -q 'enqueued=3' || { echo "FAIL: owner-wide summary wrong: $owner_out" >&2; exit 1; }
 
+# Optional review API mode reuses discovery, does not touch Postgres or start Hermes CLI.
+cat > "$tmp/bin/review-submit" <<'PY'
+import json, os, pathlib, sys
+with pathlib.Path(os.environ["TEST_STATE"], "api.log").open("a") as output:
+    output.write(" ".join(sys.argv[1:]) + "\n")
+if os.environ.get("FAIL_SUBMIT_PR") == sys.argv[2]: raise SystemExit(1)
+print(json.dumps({"run_id": "run-" + sys.argv[2], "status": "started", "replayed": False}))
+PY
+chmod +x "$tmp/bin/review-submit"
+: > "$tmp/api.log"; : > "$tmp/psql.log"
+api_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=api \
+  HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
+  HERMES_REVIEW_SUBMIT_BIN="$tmp/bin/review-submit" bin/hermes-pr-producer review 2>&1)"
+[[ ! -s "$tmp/psql.log" && "$(wc -l < "$tmp/api.log" | tr -d ' ')" == 2 ]] \
+  || { echo 'FAIL: API review mode did not submit exactly two granted PRs without Postgres' >&2; exit 1; }
+grep -q 'Zhachory1/ai-pr-automation 7 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$tmp/api.log"
+! grep -q 'other/repo' "$tmp/api.log" || { echo 'FAIL: ungranted PR submitted to Hermes API' >&2; exit 1; }
+echo "$api_out" | grep -q 'admitted=2 failed=0 skipped=1' || { echo "FAIL: API review summary wrong: $api_out" >&2; exit 1; }
+: > "$tmp/api.log"
+if FAIL_SUBMIT_PR=7 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=api \
+   HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
+   HERMES_REVIEW_SUBMIT_BIN="$tmp/bin/review-submit" bin/hermes-pr-producer review >/dev/null 2>&1; then
+  echo 'FAIL: failed first review submission returned success' >&2; exit 1
+fi
+[[ "$(wc -l < "$tmp/api.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: failed first review starved next PR' >&2; exit 1; }
+
 # maintain mode uses the author filter and pr-maintain kind.
 : > "$tmp/psql.log"
 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_AUTHORITY_FILE="$tmp/authority.yaml" \
