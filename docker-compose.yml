@@ -321,6 +321,22 @@ services:
     depends_on:
       schema-migrate: {condition: service_completed_successfully}
 
+  pr-producer-review-direct:
+    profiles: ["direct-review"]
+    image: agent-fleet/hermes-pr-review-cron:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.hermes-pr-review-cron
+    restart: unless-stopped
+    environment:
+      PR_REVIEW_CRON_SCHEDULE: ${PR_REVIEW_CRON_SCHEDULE:-*/5 * * * *}
+      HERMES_API_BASE_URL: http://host.docker.internal:8642
+    secrets: [github_discovery_token, hermes_review_key]
+    volumes:
+      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   pr-producer-maintain:
     image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
     restart: unless-stopped
@@ -445,3 +461,7 @@ secrets:
     file: ${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:?set HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE}
   github_read_token:
     file: ${GITHUB_READ_TOKEN_FILE:-/dev/null}
+  github_discovery_token:
+    file: ${GITHUB_DISCOVERY_TOKEN_FILE:-/dev/null}
+  hermes_review_key:
+    file: ${HERMES_REVIEW_API_KEY_FILE:-/dev/null}

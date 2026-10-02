@@ -29,8 +29,8 @@ AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
 if [[ "$MODE" == review ]]; then QUEUE_VAR=PR_REVIEW_QUEUE_ENGINE; else QUEUE_VAR=PR_MAINTAIN_QUEUE_ENGINE; fi
 QUEUE_ENGINE="${!QUEUE_VAR:-postgres}"
-[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban ]] \
-  || { echo "$QUEUE_VAR must be postgres or kanban" >&2; exit 2; }
+[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban || ( "$QUEUE_ENGINE" == api && "$MODE" == review ) ]] \
+  || { echo "$QUEUE_VAR must be postgres or kanban (api for review only)" >&2; exit 2; }
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) hermes-pr-producer[$MODE] $*" >&2; }
@@ -40,6 +40,9 @@ TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
 if [[ "$QUEUE_ENGINE" == postgres ]]; then
   need psql
+elif [[ "$QUEUE_ENGINE" == api ]]; then
+  HERMES_REVIEW_SUBMIT_BIN="${HERMES_REVIEW_SUBMIT_BIN:-$HERE/scripts/hermes-review-submit.py}"
+  [[ -f "$HERMES_REVIEW_SUBMIT_BIN" ]] || { echo "Hermes review submitter unavailable" >&2; exit 2; }
 else
   for required in HERMES_BIN HERMES_HOME HERMES_PYTHON HERMES_PR_KANBAN_ENQUEUE HERMES_PR_KANBAN_WORK_ROOT; do
     [[ -n "${!required:-}" ]] || { echo "$required is required for Kanban $MODE" >&2; exit 2; }
@@ -215,6 +218,14 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   fi
   sha="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" gh pr view "$number" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   if [[ -z "$sha" ]]; then log "skip $repo#$number: could not resolve head sha"; skip=$((skip+1)); continue; fi
+  if [[ "$QUEUE_ENGINE" == api ]]; then
+    if result="$("$TIMEOUT_BIN" --kill-after=5s 30s python3 "$HERMES_REVIEW_SUBMIT_BIN" "$repo" "$number" "$sha")"; then
+      enq=$((enq+1)); log "Hermes review $repo#$number@$sha: $result"
+    else
+      failed=$((failed+1)); log "Hermes review submit failed for $repo#$number@$sha"
+    fi
+    continue
+  fi
   if [[ "$QUEUE_ENGINE" == kanban ]]; then
     feedback=""; round=""
     if [[ "$KIND" == pr-maintain ]]; then
@@ -262,7 +273,7 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   if [[ "$inserted" =~ ^[0-9]+$ ]]; then enq=$((enq+1)); log "enqueued $KIND $dedupe_key (#$inserted)"; else dedupe=$((dedupe+1)); fi
 done <<< "$prs"
 
-if [[ "$QUEUE_ENGINE" == kanban ]]; then
+if [[ "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api ]]; then
   log "done: admitted=$enq failed=$failed skipped=$skip"
   (( failed == 0 )) || exit 1
 else
