@@ -136,6 +136,27 @@ PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_AUTHORITY_FILE="$tmp/authority.ya
   bin/hermes-pr-producer maintain >/dev/null 2>&1
 grep -q 'pr-maintain' "$tmp/psql.log" || { echo 'FAIL: maintain kind not enqueued' >&2; exit 1; }
 
+# Optional maintenance API mode submits only actionable external feedback; head and digest bind identity.
+api_maintain() {
+  PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" GH_SCENARIO=maintain \
+    FEEDBACK_VERSION="${FEEDBACK_VERSION:-none}" HEAD_SHA="${HEAD_SHA:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}" \
+    PR_MAINTAIN_QUEUE_ENGINE=api HERMES_AUTHORITY_FILE="$tmp/authority.yaml" \
+    HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
+    HERMES_MAINTAIN_SUBMIT_BIN="$tmp/bin/review-submit" bin/hermes-pr-producer maintain
+}
+: > "$tmp/api.log"; : > "$tmp/psql.log"
+none_api="$(api_maintain 2>&1)"
+[[ ! -s "$tmp/api.log" && ! -s "$tmp/psql.log" ]] || { echo 'FAIL: no-feedback maintenance submitted' >&2; exit 1; }
+echo "$none_api" | grep -q 'skipped=1'
+FEEDBACK_VERSION=v1 api_maintain >/dev/null 2>&1
+FEEDBACK_VERSION=v1 api_maintain >/dev/null 2>&1
+[[ "$(wc -l < "$tmp/api.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: stable feedback not submitted twice for replay' >&2; exit 1; }
+[[ "$(sed -n '1p' "$tmp/api.log")" == "$(sed -n '2p' "$tmp/api.log")" ]] || { echo 'FAIL: same feedback changed identity' >&2; exit 1; }
+FEEDBACK_VERSION=v2 api_maintain >/dev/null 2>&1
+[[ "$(sed -n '1p' "$tmp/api.log")" != "$(sed -n '3p' "$tmp/api.log")" ]] || { echo 'FAIL: new feedback did not change digest' >&2; exit 1; }
+HEAD_SHA="$(printf 'a%.0s' {1..40})" FEEDBACK_VERSION=v1 api_maintain >/dev/null 2>&1
+[[ "$(sed -n '1p' "$tmp/api.log")" != "$(sed -n '4p' "$tmp/api.log")" ]] || { echo 'FAIL: new head reused old request' >&2; exit 1; }
+
 # Direct review mode admits current discoveries only and never touches PostgreSQL or invokes Hermes.
 mkdir -p "$tmp/support" "$tmp/home" "$tmp/work/historical-operation"
 cp scripts/hermes_direct_pr_journal.py "$tmp/support/"

@@ -29,8 +29,8 @@ AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
 if [[ "$MODE" == review ]]; then QUEUE_VAR=PR_REVIEW_QUEUE_ENGINE; else QUEUE_VAR=PR_MAINTAIN_QUEUE_ENGINE; fi
 QUEUE_ENGINE="${!QUEUE_VAR:-postgres}"
-[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban || ( "$QUEUE_ENGINE" == api && "$MODE" == review ) ]] \
-  || { echo "$QUEUE_VAR must be postgres or kanban (api for review only)" >&2; exit 2; }
+[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api ]] \
+  || { echo "$QUEUE_VAR must be postgres, kanban, or api" >&2; exit 2; }
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) hermes-pr-producer[$MODE] $*" >&2; }
@@ -41,8 +41,14 @@ TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 if [[ "$QUEUE_ENGINE" == postgres ]]; then
   need psql
 elif [[ "$QUEUE_ENGINE" == api ]]; then
-  HERMES_REVIEW_SUBMIT_BIN="${HERMES_REVIEW_SUBMIT_BIN:-$HERE/scripts/hermes-review-submit.py}"
-  [[ -f "$HERMES_REVIEW_SUBMIT_BIN" ]] || { echo "Hermes review submitter unavailable" >&2; exit 2; }
+  if [[ "$KIND" == pr-maintain ]]; then
+    HERMES_MAINTAIN_SUBMIT_BIN="${HERMES_MAINTAIN_SUBMIT_BIN:-$HERE/scripts/hermes-maintain-submit.py}"
+    [[ -f "$HERMES_MAINTAIN_SUBMIT_BIN" ]] || { echo "Hermes maintain submitter unavailable" >&2; exit 2; }
+    HERMES_PYTHON=python3
+  else
+    HERMES_REVIEW_SUBMIT_BIN="${HERMES_REVIEW_SUBMIT_BIN:-$HERE/scripts/hermes-review-submit.py}"
+    [[ -f "$HERMES_REVIEW_SUBMIT_BIN" ]] || { echo "Hermes review submitter unavailable" >&2; exit 2; }
+  fi
 else
   for required in HERMES_BIN HERMES_HOME HERMES_PYTHON HERMES_PR_KANBAN_ENQUEUE HERMES_PR_KANBAN_WORK_ROOT; do
     [[ -n "${!required:-}" ]] || { echo "$required is required for Kanban $MODE" >&2; exit 2; }
@@ -204,7 +210,7 @@ prs="$(awk -F '\t' 'NF && !seen[$1 FS $2]++' <<<"$prs")"
 if [[ -z "$prs" ]]; then log "no matching open PRs"; exit 0; fi
 
 DISCOVERY_TMP=""; login=""; login_attempted=0; login_ok=0
-if [[ "$QUEUE_ENGINE" == kanban && "$KIND" == pr-maintain ]]; then
+if [[ ( "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api ) && "$KIND" == pr-maintain ]]; then
   DISCOVERY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/hermes-pr-producer.XXXXXX")"
   trap 'rm -rf "$DISCOVERY_TMP"' EXIT
 fi
@@ -218,28 +224,36 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   fi
   sha="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" gh pr view "$number" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   if [[ -z "$sha" ]]; then log "skip $repo#$number: could not resolve head sha"; skip=$((skip+1)); continue; fi
+  feedback=""
+  if [[ "$KIND" == pr-maintain && "$QUEUE_ENGINE" != postgres ]]; then
+    if (( login_attempted == 0 )); then
+      login_attempted=1
+      if login="$(gh_read api user --jq .login 2>/dev/null)" && [[ -n "$login" ]]; then login_ok=1; fi
+    fi
+    if (( login_ok == 0 )); then
+      failed=$((failed+1)); log "feedback API failed for $repo#$number@$sha"; continue
+    fi
+    if ! feedback="$(feedback_snapshot "$repo" "$number" "$login")"; then
+      failed=$((failed+1)); log "feedback API failed for $repo#$number@$sha"; continue
+    fi
+    if [[ "$feedback" == empty ]]; then skip=$((skip+1)); log "skip $repo#$number@$sha: no actionable feedback"; continue; fi
+  fi
   if [[ "$QUEUE_ENGINE" == api ]]; then
-    if result="$("$TIMEOUT_BIN" --kill-after=5s 30s python3 "$HERMES_REVIEW_SUBMIT_BIN" "$repo" "$number" "$sha")"; then
-      enq=$((enq+1)); log "Hermes review $repo#$number@$sha: $result"
+    if [[ "$KIND" == pr-maintain ]]; then
+      submit=("$HERMES_MAINTAIN_SUBMIT_BIN" "$repo" "$number" "$sha" "$feedback")
     else
-      failed=$((failed+1)); log "Hermes review submit failed for $repo#$number@$sha"
+      submit=("$HERMES_REVIEW_SUBMIT_BIN" "$repo" "$number" "$sha")
+    fi
+    if result="$("$TIMEOUT_BIN" --kill-after=5s 30s python3 "${submit[@]}")"; then
+      enq=$((enq+1)); log "Hermes $KIND $repo#$number@$sha: $result"
+    else
+      failed=$((failed+1)); log "Hermes $KIND submit failed for $repo#$number@$sha"
     fi
     continue
   fi
   if [[ "$QUEUE_ENGINE" == kanban ]]; then
-    feedback=""; round=""
+    round=""
     if [[ "$KIND" == pr-maintain ]]; then
-      if (( login_attempted == 0 )); then
-        login_attempted=1
-        if login="$(gh_read api user --jq .login 2>/dev/null)" && [[ -n "$login" ]]; then login_ok=1; fi
-      fi
-      if (( login_ok == 0 )); then
-        failed=$((failed+1)); log "feedback API failed for $repo#$number@$sha"; continue
-      fi
-      if ! feedback="$(feedback_snapshot "$repo" "$number" "$login")"; then
-        failed=$((failed+1)); log "feedback API failed for $repo#$number@$sha"; continue
-      fi
-      if [[ "$feedback" == empty ]]; then skip=$((skip+1)); log "skip $repo#$number@$sha: no actionable feedback"; continue; fi
       if ! round="$(maintenance_round "$repo" "$number" "$feedback")"; then
         failed=$((failed+1)); log "maintenance history failed for $repo#$number@$sha"; continue
       fi

@@ -66,9 +66,25 @@ scripts/compose.sh up -d --no-deps hermes-controller
 
 This is **live activation**: it can immediately claim queued work, incur model costs, and cause GitHub/document/memory effects. It is not a read-only health check. If route/auth/profile generations changed, a bridge marker is unresolved, or the previous effect is uncertain, do not force a replacement attempt or reset database rows; inspect remote effects and use the [Hermes recovery contract](hermes/README.md#queue-and-runs-ledger). Review failures usually settle `failed`; uncertain maintenance and SWE effects enter `reconcile`. Do not use Fleet Controller **manual PR injection** as an automatic review retry: its manual timestamp dedupe key is not the reviewed head SHA marker, so even a posted review can settle locally as `failed`. This needs a separate code/test fix. Follow up with `scripts/fleet.sh status` and inspect queue/results before resuming producers.
 
+## Direct maintenance preview
+
+The `direct-maintain` profile is opt-in. After existing maintenance attempts finish, start **only** its named service; a profile-wide `up` would also restart the unprofiled legacy maintenance producer. These are live commands and may push a fix:
+
+```bash
+scripts/compose.sh stop pr-producer-maintain
+scripts/compose.sh --profile direct-maintain up -d --no-deps --build pr-producer-maintain-direct
+```
+
+To return to the controller-backed path, stop the direct service first:
+
+```bash
+scripts/compose.sh --profile direct-maintain stop pr-producer-maintain-direct
+scripts/compose.sh up -d --no-deps pr-producer-maintain
+```
+
 ## Queue-engine changes
 
-The old `fleet.sh review-kanban-up`/`review-postgres-up` commands were removed with the default review replacement. `maintain-kanban-up`/`maintain-postgres-up` and `memory-cron-up`/`memory-postgres-up` still **recreate a live producer and/or start a host job**; they are not validation commands. The scripts stop the old producer for their mode and verify the replacement environment. Existing Postgres requests, persisted Kanban cards, and run IDs are not erased or migrated by a switch. The `requests`/`hermes_runs` queries above cover the default controller path; new direct Kanban review/maintenance work lives in host Hermes workflow/journal state, not new Postgres attempts. Direct PR-safety council intake currently has no automatic Postgres settlement, final handoff, or incident queue. Inspect those host workflows separately and review the target mode, inflight attempts, external-effect authority, and rollback before using a switch. PR-safety has separate `PR_SAFETY_QUEUE_ENGINE` (Postgres vs host Kanban producer) and `PR_SAFETY_ANALYSIS_ENGINE` (`single` default vs council); bridge availability by itself does not activate a new council. See [Hermes authority and direct enqueue](hermes/README.md#authority-and-producers) and [configuration](configuration.md#workflows-and-switches).
+The old `fleet.sh review-kanban-up`/`review-postgres-up` commands were removed with the default review replacement. The optional `direct-maintain` Compose profile must not run alongside default `pr-producer-maintain`; stop one before starting the other. `maintain-kanban-up`/`maintain-postgres-up` and `memory-cron-up`/`memory-postgres-up` still **recreate a live producer and/or start a host job**; they are not validation commands. The scripts stop the old producer for their mode and verify the replacement environment. Existing Postgres requests, persisted Kanban cards, and run IDs are not erased or migrated by a switch. The `requests`/`hermes_runs` queries above cover the default controller path; new direct Kanban review/maintenance work lives in host Hermes workflow/journal state, not new Postgres attempts. Direct PR-safety council intake currently has no automatic Postgres settlement, final handoff, or incident queue. Inspect those host workflows separately and review the target mode, inflight attempts, external-effect authority, and rollback before using a switch. PR-safety has separate `PR_SAFETY_QUEUE_ENGINE` (Postgres vs host Kanban producer) and `PR_SAFETY_ANALYSIS_ENGINE` (`single` default vs council); bridge availability by itself does not activate a new council. See [Hermes authority and direct enqueue](hermes/README.md#authority-and-producers) and [configuration](configuration.md#workflows-and-switches).
 
 ## TLS, upgrades, and backup limits
 

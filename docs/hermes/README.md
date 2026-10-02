@@ -138,7 +138,11 @@ and review transitions. It makes no service-profile, service-board, model, GitHu
 
 Repository authority YAML is scope-of-attention, not credential security. Compose review cron
 submits exact heads directly to Hermes with a stable idempotency key; maintenance still enqueues
-deduped Postgres rows. PR-safety queue engine defaults
+deduped Postgres rows. An opt-in `direct-maintain` Compose profile submits nonempty external
+feedback snapshots to `pr-maintain-v1`; stop default `pr-producer-maintain` first. Its discovery
+token must use the same GitHub login as the host maintenance profile so own replies are excluded.
+The direct path keeps one fix pass per run but has no controller-backed three-round cap.
+PR-safety queue engine defaults
 to `postgres`; when explicitly set to `kanban`, Compose safety discovery idles and the host launchd producer
 creates the fixed five-task graph through the pinned local Hermes CLI. The snapshot root stays root-owned
 `0750`; direct enqueue uses its service-owned `direct-kanban/` child, which legacy Postgres GC never scans.

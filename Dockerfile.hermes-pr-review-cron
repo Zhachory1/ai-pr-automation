@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends bash cron gh jq
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY bin/hermes-pr-producer /app/bin/hermes-pr-producer
-COPY scripts/hermes-authority.py scripts/hermes_direct_pr_journal.py scripts/hermes_run_request.py scripts/hermes-review-submit.py /app/scripts/
-COPY scripts/hermes-review-cron-entrypoint.sh /app/bin/hermes-review-cron-entrypoint.sh
+COPY scripts/hermes-authority.py scripts/hermes_direct_pr_journal.py scripts/hermes_run_request.py scripts/hermes-review-submit.py scripts/hermes-maintain-submit.py /app/scripts/
+COPY scripts/hermes-review-cron-entrypoint.sh scripts/hermes-maintain-cron-entrypoint.sh /app/bin/
 RUN chmod 0555 /app/bin/* /app/scripts/*
 ENTRYPOINT ["/app/bin/hermes-review-cron-entrypoint.sh"]

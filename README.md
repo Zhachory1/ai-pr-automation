@@ -123,7 +123,7 @@ This is a **degraded HTTP-only fallback**, not restored queue access: `fleet.sh 
 | Kind | GitHub scope | Behavior |
 | --- | --- | --- |
 | `pr-review` | Open PRs assigned to the operator | Compose cron submits exact heads to Hermes; its profile posts the review |
-| `pr-maintain` | Open PRs authored by the operator | Handle review feedback and CI with one bounded fix pass, at most 3 rounds per PR lineage |
+| `pr-maintain` | Open PRs authored by the operator | Default controller: one fix pass, max 3 rounds per lineage. Optional direct cron: one pass per changed external-feedback snapshot, without that controller cap. |
 | `swe-implement` | Enrolled repository | Implement a bounded task on a fresh branch and open a draft PR |
 | `doc-write` | Fleet Controller | Draft a PRD/DD; exact bytes require human approval before filing |
 | `pr-safety-review` | Merged PRs | Read-only safety analysis (`single` default, opt-in fixed Kanban council); only incident candidates surface |
@@ -148,7 +148,7 @@ Review guardrails:
 Maintenance guardrails:
 
 - no merge, deploy, release, force-push, history rewrite, or default-branch push by the agent
-- one initial feedback/CI snapshot, then at most one low-risk fix pass, at most 3 rounds per PR lineage
+- one initial feedback/CI snapshot, then at most one low-risk fix pass; the current controller path caps at 3 rounds per PR lineage
 - changed files must finish committed+pushed, reverted to a clean diff, or explicitly blocked
 - failing CI is fixed only for clearly code-caused, locally test-validatable checks (lint/format,
   type errors, compile/build breaks, a unit test the diff broke), reproducing the repo's own command
