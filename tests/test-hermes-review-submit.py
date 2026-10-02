@@ -37,6 +37,37 @@ class ReviewSubmitTest(unittest.TestCase):
                 changed = subprocess.run([*command[:-1], "b" * 40], cwd=ROOT, env=env,
                                          capture_output=True, text=True, check=True)
                 self.assertNotEqual(response["operation_id"], json.loads(changed.stdout)["operation_id"])
+
+                authority = Path(directory) / "authority.yaml"
+                authority.write_text("repos:\n  - Owner/Repo\n")
+                binary = Path(directory) / "bin"
+                binary.mkdir()
+                gh = binary / "gh"
+                gh.write_text('#!/usr/bin/env bash\n'
+                              'if [[ "$1 $2" == "search prs" ]]; then\n'
+                              '  printf "Owner/Repo\\t7\\thttps://github.com/Owner/Repo/pull/7\\tReview\\t1700000000\\n"\n'
+                              'elif [[ "$1 $2" == "pr view" ]]; then\n'
+                              '  printf "%s\\n" "$TEST_HEAD_SHA"\n'
+                              'else exit 2; fi\n')
+                gh.chmod(0o755)
+                env.update({"PATH": str(binary) + os.pathsep + env["PATH"],
+                            "HERMES_AUTHORITY_FILE": str(authority),
+                            "HERMES_AUTHORITY_BIN": str(ROOT / "scripts/hermes-authority.py"),
+                            "HERMES_REVIEW_SUBMIT_BIN": str(ROOT / "scripts/hermes-review-submit.py"),
+                            "PR_REVIEW_QUEUE_ENGINE": "api", "TEST_HEAD_SHA": "c" * 40})
+                discover = ["bash", "bin/hermes-pr-producer", "review"]
+                for _ in range(2):
+                    subprocess.run(discover, cwd=ROOT, env=env, capture_output=True, text=True, check=True)
+                matched = [(operation, json.loads(body)) for operation, (_, body, _) in server.requests.items()
+                           if json.loads(json.loads(body)["input"])["head_sha"] == "c" * 40]
+                self.assertEqual(len(matched), 1)
+                operation, body = matched[0]
+                self.assertEqual(body["session_id"], operation)
+                self.assertEqual(json.loads(body["input"]), {"repo": "owner/repo", "number": 7,
+                                 "head_sha": "c" * 40, "operation_id": operation})
+                env["TEST_HEAD_SHA"] = "d" * 40
+                subprocess.run(discover, cwd=ROOT, env=env, capture_output=True, text=True, check=True)
+                self.assertEqual(len(server.requests), 4)
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
