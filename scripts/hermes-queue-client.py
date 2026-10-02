@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Typed local intake for the host Hermes Kanban CLI (run as hermes-agent)."""
+"""Typed host Hermes intake (run as hermes-agent)."""
 import argparse
 import hashlib
 import json
@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from hermes_direct_pr_journal import identity
+import hermes_run_request as run_api
 
 DOCUMENTS = {"prd-write": "prd", "design-write": "design", "dd-write": "design", "roadmap-write": "roadmap"}
 PR_KINDS = {"pr-review", "pr-maintain", "pr-safety"}
@@ -213,34 +214,14 @@ def feedback(repo, number, env):
     return hashlib.sha256(canonical([list(item) for item in sorted(items)])).hexdigest()
 
 
-def maintenance_payload(repo, number, head, title, url, digest, hermes_home):
-    root = hermes_home.parent / ".local/share/ai-pr-automation/pr-maintain"
-    if not root.is_dir() or root.is_symlink() or root.stat().st_uid != os.geteuid() or root.stat().st_mode & 0o777 != 0o700:
-        fail("unsafe PR maintenance workspace")
-    previous = {}
-    for index, entry in enumerate(root.iterdir()):
-        if index >= 1000: fail("PR maintenance history too large")
-        if not re.fullmatch(r"pr-maintain-[0-9a-f]{64}", entry.name) or not entry.is_dir() or entry.is_symlink(): continue
-        path = entry / "request.json"
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, "rb") as source:
-                info = os.fstat(source.fileno())
-                if info.st_uid != os.geteuid() or info.st_nlink != 1 or info.st_mode & 0o777 != 0o440:
-                    continue
-                raw = source.read(16385)
-            if len(raw) > 16384: continue
-            item = json.loads(raw, object_pairs_hook=unique)
-            if item.get("repo", "").lower() == repo.lower() and item.get("number") == number and \
-                    item.get("operation_id") == identity("pr-maintain", item["repo"], number, item["head_sha"],
-                                                          item["feedback_digest"])["operation_id"]:
-                previous[item["feedback_digest"]] = item
-        except (OSError, KeyError, TypeError, ValueError): continue
-    if digest in previous: return previous[digest]
-    if len(previous) >= 3: fail("PR maintenance round cap reached")
-    operation = identity("pr-maintain", repo, number, head, digest)["operation_id"]
-    return {"operation_id": operation, "repo": repo, "number": number, "url": url,
-            "title": title, "head_sha": head, "feedback_digest": digest, "round": len(previous) + 1}
+def profile_key(hermes_home, kind):
+    try:
+        lines = (hermes_home / "profiles" / run_api.PROFILES[kind] / ".env").read_text().splitlines()
+    except OSError as error:
+        raise ValueError("Hermes profile API key unavailable") from error
+    keys = [line.partition("=")[2] for line in lines if line.startswith("API_SERVER_KEY=")]
+    if len(keys) != 1 or not keys[0]: fail("Hermes profile API key unavailable")
+    return keys[0]
 
 
 def pr_request(value, hermes_home, binary, env):
@@ -253,28 +234,11 @@ def pr_request(value, hermes_home, binary, env):
             not isinstance(info.get("headRefOid"), str) or not SHA.fullmatch(info["headRefOid"]):
         fail("PR metadata invalid or PR is not open")
     head = info["headRefOid"]
-    if kind == "pr-review":
-        if head != value["head_sha"]: fail("PR head changed")
-        payload = {"operation_id": identity(kind, repo, number, head)["operation_id"], "repo": repo,
-                   "number": number, "url": info["url"], "title": info["title"], "head_sha": head}
-    else:
-        digest = feedback(repo, number, env)
-        payload = maintenance_payload(repo, number, head, info["title"], info["url"], digest, hermes_home)
-    operation = payload["operation_id"]
-    boards = run([str(binary), "kanban", "boards", "list", "--all", "--json"], env)
-    if not isinstance(boards, list): fail("invalid Kanban board listing")
-    existing = [board for board in boards if isinstance(board, dict) and board.get("slug") == kind]
-    if len(existing) > 1 or existing and existing[0].get("archived") is not False: fail("PR board unavailable")
-    if existing:
-        tasks = run([str(binary), "kanban", "--board", kind, "list", "--tenant", operation, "--archived", "--json"], env)
-        if tasks: return status(operation, binary, env)
-    root = hermes_home.parent / ".local/share/ai-pr-automation" / kind
-    result = run([sys.executable, str(ROOT / "hermes-pr-kanban-enqueue.py"), "--kind", kind,
-                  "--hermes-home", str(hermes_home), "--hermes-bin", str(binary),
-                  "--workspace-root", str(root)], env, canonical(payload))
-    if not isinstance(result, dict) or result.get("operation_id") != operation or result.get("board") != kind:
-        fail("ambiguous PR admission response")
-    return status(operation, binary, env)
+    if kind == "pr-review" and head != value["head_sha"]: fail("PR head changed")
+    digest = feedback(repo, number, env) if kind == "pr-maintain" else None
+    result = run_api.submit(kind, repo, number, head, profile_key(hermes_home, kind),
+                            feedback_digest=digest)
+    return {"version": 1, "kind": kind, **result}
 
 
 def safety_request(value, binary, env):
@@ -336,16 +300,20 @@ def main():
     actions.add_parser("request")
     show = actions.add_parser("status-check")
     show.add_argument("kind", choices=[*DOCUMENTS, *sorted(PR_KINDS)])
-    show.add_argument("operation_id")
+    show.add_argument("identifier", help="PR run ID or Kanban operation ID for other kinds")
     args = parser.parse_args()
     try:
         _, hermes_home, binary, env = host()
         if args.action == "request":
             output = request(intake(sys.stdin.buffer.read(8193)), hermes_home, binary, env)
         else:
-            output = status(args.operation_id, binary, env)
-            if output["kind"] != ("design-write" if args.kind == "dd-write" else args.kind):
-                fail("operation does not belong to requested board")
+            if args.kind in run_api.PROFILES:
+                output = {"version": 1, "kind": args.kind, **run_api.status(
+                    args.kind, args.identifier, profile_key(hermes_home, args.kind))}
+            else:
+                output = status(args.identifier, binary, env)
+                if output["kind"] != ("design-write" if args.kind == "dd-write" else args.kind):
+                    fail("operation does not belong to requested board")
         print(json.dumps(output, sort_keys=True, separators=(",", ":")))
     except (ValueError, OSError, KeyError, subprocess.TimeoutExpired) as error:
         raise SystemExit(f"Hermes queue client: {error}")

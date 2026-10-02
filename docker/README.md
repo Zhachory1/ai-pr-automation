@@ -63,7 +63,8 @@ registers a session against the shared daemon. All CBM processes MUST share one 
 (`CBM_CACHE_DIR`) and the exact same build — a different root is rejected while any process is active.
 The coderag container bridges its stdio frontend to `http://coderag:9750/mcp` on the Compose network
 and runs bridge and daemon together so the bridge cannot create a private graph. Its index is confined
-to the read-only `/code` mount.
+to the read-only `/code` mount. Host Hermes profiles reach the MCP at
+`http://127.0.0.1:9750/mcp`; nginx also routes `https://code.localhost:8080/mcp` separately from the graph UI.
 
 ### swarmvault — shared vault + doc-drop model
 
@@ -93,6 +94,9 @@ with a keyed provider (`HINDSIGHT_API_LLM_PROVIDER=openai` verified end to end).
 providers (`claude-code`) do NOT work headless in a container — there is no logged-in session inside
 it. Agents recall from the bank-scoped `http://hindsight:8888/mcp/fleet-shared/` endpoint; the shared
 bank is locked to a read-only MCP tool set by `hindsight-bank-init` so agents cannot self-retain junk.
+Host review and maintenance profiles use the existing read-only stdio shim against local
+`http://127.0.0.1:8888/v1/banks/fleet-shared/recall`. The shim never exposes retain; other
+profiles' existing memory configuration is unchanged.
 
 **hindsight data + PG major version:** `hindsight_pgdata` is mounted at the fixed pg18 PGDATA path
 (`/var/lib/postgresql/18/docker`) and the db image is pinned to `pgvector/pgvector:pg18`. The mount

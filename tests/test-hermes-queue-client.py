@@ -76,20 +76,20 @@ class QueueClientTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(str(self.binary) in command or "hermes-prd-kanban-enqueue.py" in str(command) for command, _ in calls))
 
-    def test_pr_review_uses_existing_enqueue_and_exact_head(self):
+    def test_pr_review_uses_runs_api_and_exact_head(self):
         value = {"kind": "pr-review", "repository": "Owner/Repo", "pr": 7, "head_sha": "a" * 40}
         operation = client.identity("pr-review", "Owner/Repo", 7, value["head_sha"])["operation_id"]
         info = {"number": 7, "title": "Review", "url": "https://github.com/Owner/Repo/pull/7",
                 "headRefOid": value["head_sha"], "state": "OPEN"}
-        def fake_run(command, env, input_data=None):
-            if "boards" in command: return []
-            self.assertIn("hermes-pr-kanban-enqueue.py", str(command))
-            self.assertEqual(json.loads(input_data)["operation_id"], operation)
-            return {"operation_id": operation, "board": "pr-review", "task_id": "t_12345678"}
+        admitted = {"operation_id": operation, "run_id": "run-1", "status": "started", "replayed": False}
         with patch.object(client, "authorized"), patch.object(client, "github", return_value=info), \
-             patch.object(client, "run", side_effect=fake_run), \
-             patch.object(client, "status", return_value={"task_id": "t_12345678", "status": "ready"}):
-            self.assertEqual(client.pr_request(value, self.home, self.binary, self.env)["status"], "ready")
+             patch.object(client, "profile_key", return_value="review-key"), \
+             patch.object(client.run_api, "submit", return_value=admitted) as submit:
+            result = client.pr_request(value, self.home, self.binary, self.env)
+            self.assertEqual((result["operation_id"], result["run_id"], result["kind"]),
+                             (operation, "run-1", "pr-review"))
+            submit.assert_called_once_with("pr-review", "Owner/Repo", 7, value["head_sha"], "review-key",
+                                           feedback_digest=None)
             with self.assertRaisesRegex(ValueError, "head changed"):
                 client.pr_request({**value, "head_sha": "b" * 40}, self.home, self.binary, self.env)
 
@@ -107,31 +107,21 @@ class QueueClientTest(unittest.TestCase):
         expected = client.hashlib.sha256(client.canonical([["review", "10", client.hashlib.sha256(b"fix this").hexdigest()]])).hexdigest()
         self.assertEqual(digest, expected)
 
-    def test_maintenance_request_creates_one_native_card(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = pathlib.Path(directory) / ".hermes"
-            root = pathlib.Path(directory) / ".local/share/ai-pr-automation/pr-maintain"
-            root.mkdir(parents=True, mode=0o700)
-            root.chmod(0o700)
-            value = {"kind": "pr-maintain", "repository": "Owner/Repo", "pr": 7}
-            head, digest = "a" * 40, "b" * 64
-            operation = client.identity("pr-maintain", "Owner/Repo", 7, head, digest)["operation_id"]
-            card = {"id": "t_12345678", "tenant": operation, "status": "ready",
-                    "body": client.canonical({"repo": "Owner/Repo", "number": 7, "head_sha": head,
-                                              "feedback_digest": digest, "operation_id": operation}).decode()}
-            info = {"number": 7, "title": "Maintain", "url": "https://github.com/Owner/Repo/pull/7",
-                    "headRefOid": head, "state": "OPEN"}
-            def fake_run(command, env, input_data=None):
-                if "boards" in command: return []
-                if "hermes-pr-kanban-enqueue.py" in str(command):
-                    self.assertEqual(json.loads(input_data)["round"], 1)
-                    return {"operation_id": operation, "board": "pr-maintain"}
-                if "list" in command: return [card]
-                self.fail("unexpected CLI command")
-            with patch.object(client, "authorized"), patch.object(client, "github", return_value=info), \
-                 patch.object(client, "feedback", return_value=digest), patch.object(client, "run", side_effect=fake_run):
-                result = client.pr_request(value, home, self.binary, self.env)
-            self.assertEqual((result["board"], result["task_id"]), ("pr-maintain", "t_12345678"))
+    def test_maintenance_request_uses_feedback_bound_runs_api(self):
+        value = {"kind": "pr-maintain", "repository": "Owner/Repo", "pr": 7}
+        head, digest = "a" * 40, "b" * 64
+        operation = client.identity("pr-maintain", "Owner/Repo", 7, head, digest)["operation_id"]
+        info = {"number": 7, "title": "Maintain", "url": "https://github.com/Owner/Repo/pull/7",
+                "headRefOid": head, "state": "OPEN"}
+        with patch.object(client, "authorized"), patch.object(client, "github", return_value=info), \
+             patch.object(client, "feedback", return_value=digest), \
+             patch.object(client, "profile_key", return_value="maintain-key"), \
+             patch.object(client.run_api, "submit", return_value={"operation_id": operation,
+                 "run_id": "run-2", "status": "started", "replayed": False}) as submit:
+            result = client.pr_request(value, self.home, self.binary, self.env)
+        self.assertEqual((result["operation_id"], result["run_id"]), (operation, "run-2"))
+        submit.assert_called_once_with("pr-maintain", "Owner/Repo", 7, head, "maintain-key",
+                                       feedback_digest=digest)
 
     def test_safety_request_uses_existing_snapshot_producer(self):
         value = {"kind": "pr-safety", "repository": "Owner/Repo", "pr": 7, "head_sha": "a" * 40}
@@ -180,9 +170,46 @@ class QueueClientTest(unittest.TestCase):
             result = client.status(operation, self.binary, self.env)
         self.assertEqual((result["board"], result["task_id"]), ("pr-safety-council", "t_00000005"))
 
+    def test_profile_key_reads_installed_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory)
+            profile = home / "profiles/pr-review-v1"
+            profile.mkdir(parents=True)
+            (profile / ".env").write_text("API_SERVER_KEY=review-key\n")
+            self.assertEqual(client.profile_key(home, "pr-review"), "review-key")
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                client.profile_key(home, "pr-maintain")
+
+    def test_pr_client_request_and_run_id_status(self):
+        head = "a" * 40
+        value = {"version": 1, "kind": "pr-review", "repository": "Owner/Repo", "pr": 7,
+                 "head_sha": head}
+        operation = client.identity("pr-review", "Owner/Repo", 7, head)["operation_id"]
+        info = {"number": 7, "title": "Review", "url": "https://github.com/Owner/Repo/pull/7",
+                "headRefOid": head, "state": "OPEN"}
+        admitted = {"operation_id": operation, "run_id": "run-1", "status": "started", "replayed": False}
+        with patch.object(client.sys, "argv", ["hermes-queue-client.py", "request"]), \
+             patch.object(client.sys, "stdin", SimpleNamespace(buffer=io.BytesIO(client.canonical(value)))), \
+             patch.object(client, "host", return_value=(None, self.home, self.binary, self.env)), \
+             patch.object(client, "authorized"), patch.object(client, "github", return_value=info), \
+             patch.object(client, "profile_key", return_value="review-key"), \
+             patch.object(client.run_api, "submit", return_value=admitted) as submit, \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            client.main()
+        self.assertEqual(json.loads(output.getvalue())["operation_id"], operation)
+        self.assertEqual(submit.call_args.args[:4], ("pr-review", "Owner/Repo", 7, head))
+        with patch.object(client.sys, "argv", ["hermes-queue-client.py", "status-check", "pr-review", "run-1"]), \
+             patch.object(client, "host", return_value=(None, self.home, self.binary, self.env)), \
+             patch.object(client, "profile_key", return_value="review-key"), \
+             patch.object(client.run_api, "status", return_value={"run_id": "run-1", "status": "completed"}) as status, \
+             contextlib.redirect_stdout(io.StringIO()) as output:
+            client.main()
+        self.assertEqual(json.loads(output.getvalue())["run_id"], "run-1")
+        status.assert_called_once_with("pr-review", "run-1", "review-key")
+
     def test_status_check_refuses_wrong_board(self):
         operation = "prd-" + "a" * 64
-        with patch.object(client.sys, "argv", ["hermes-queue-client.py", "status-check", "pr-maintain", operation]), \
+        with patch.object(client.sys, "argv", ["hermes-queue-client.py", "status-check", "dd-write", operation]), \
              patch.object(client, "host", return_value=(None, self.home, self.binary, self.env)), \
              patch.object(client, "status", return_value={"kind": "prd-write", "operation_id": operation}), \
              contextlib.redirect_stdout(io.StringIO()):

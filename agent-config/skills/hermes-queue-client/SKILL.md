@@ -1,27 +1,27 @@
 ---
 name: hermes-queue-client
-description: Request and status-check host Hermes Kanban PR review, maintenance, merged-PR safety, PRD, design/DD, and roadmap workflows using a typed Python CLI reference. No new service or caller-selected board/profile/task body.
+description: Submit PR review or maintenance to host Hermes Runs API and check a run by ID. Use for "ask Hermes to review this PR", "handle PR feedback", "Hermes status", or request a document draft through the existing host Kanban client.
 ---
 
-# Hermes queue
+# Talk to host Hermes
 
-Use the operator-provided invocation of `scripts/hermes-queue-client.py`, running as the `hermes-agent` OS account against the **existing host Hermes CLI**. If that invocation is unavailable, report that the host queue is unavailable; never point `HERMES_HOME` at your personal Hermes instance, use `sudo`, or call `hermes kanban` directly.
+Use the operator-provided invocation of `scripts/hermes-queue-client.py` **as `hermes-agent`**. Do not call the Hermes CLI directly, select a model/profile, use your personal Hermes home, or ask for API keys. If the invocation is unavailable, report that Hermes is unavailable.
 
-**Request:** pass one JSON envelope on stdin to `python3 scripts/hermes-queue-client.py request`:
+**PR review:** Submit an exact open head on stdin:
 
 ```json
-{"version":1,"kind":"prd-write","title":"Document the change","requirements":"State the problem, intended outcome, and constraints.","repositories":["OWNER/REPO"]}
+{"version":1,"kind":"pr-review","repository":"OWNER/REPO","pr":123,"head_sha":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
-| Kind | Fixed board | Request fields beyond `version` and `kind` |
-| --- | --- | --- |
-| `pr-review` | `pr-review` | `repository`, `pr`, exact open-PR `head_sha` |
-| `pr-maintain` | `pr-maintain` | `repository`, `pr` |
-| `pr-safety` | `pr-safety-council` | `repository`, `pr`, exact merged commit `head_sha` |
-| `prd-write` | `prd-write` | `title`, `requirements`, `repositories` |
-| `dd-write` | `design-write` | `title`, `requirements`, `repositories` |
-| `roadmap-write` | `roadmap-write` | `title`, `requirements`, `repositories`; board must be active |
+**PR maintenance:** Submit `{"version":1,"kind":"pr-maintain","repository":"OWNER/REPO","pr":123}`. The host client checks repository authority, current GitHub metadata, and external feedback before submitting. Do not supply a head, feedback digest, round, model, profile, or command yourself. Both kinds use the same Hermes Runs API identity and idempotency contract as the Compose cron producers. Repeating the same identity returns the existing run, not a new review/fix.
 
-For example, `{"version":1,"kind":"pr-maintain","repository":"OWNER/REPO","pr":123}`. The host checks repository grants, derives PR identity/feedback/round and safety snapshot, and uses existing enqueue scripts or Hermes CLI. For all three document kinds, intake sends repository names; the Hermes writer prepares and pins repository and knowledge snapshots before drafting or reviewer fan-out. External agents do not prepare cache snapshots. Do not submit profiles, models, providers, board names, commands, local paths, feedback digests, maintenance rounds, policy files, or task bodies. Repeating an exact request must adopt native work; never manually reopen a blocked card.
+Call `python3 scripts/hermes-queue-client.py request` with one JSON envelope on stdin. A PR response includes `operation_id`, `run_id`, `status`, and `replayed`. To check it, use **the returned run ID**, not operation ID:
 
-**Status-check:** `python3 scripts/hermes-queue-client.py status-check <kind> <operation_id>` reads the fixed Kanban board without claiming work. The response includes the board, operation, current task ID, and native status. This is not a human approve/revise/deny action or publication; those remain in Hermes's existing exact-digest operator workflow. If the host CLI is unavailable or a PR is ineligible, report the error. If document evidence cannot be prepared, the Hermes writer blocks; report that status rather than inventing or restarting a task.
+```text
+python3 scripts/hermes-queue-client.py status-check pr-review RUN_ID
+python3 scripts/hermes-queue-client.py status-check pr-maintain RUN_ID
+```
+
+Status-check reads the run; it does not create work. A failed request returns an error rather than a fabricated task. Never infer that GitHub was updated merely from `status: started`; inspect the terminal run and the PR.
+
+**Other existing kinds:** `prd-write`, `dd-write`, and `roadmap-write` still use host Kanban and check status by their returned `operation_id`. They produce drafts/tasks, **not** automatic inbox publication. `pr-safety` also remains a host Kanban request, but handoff delivery is undecided; do not describe it as a completed safety review. Document publication, memory writes, and PR-safety delivery await [#325](https://github.com/Zhachory1/ai-pr-automation/issues/325), [#326](https://github.com/Zhachory1/ai-pr-automation/issues/326), and [#324](https://github.com/Zhachory1/ai-pr-automation/issues/324).

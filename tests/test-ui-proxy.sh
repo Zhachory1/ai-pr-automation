@@ -17,7 +17,8 @@ assert {p['target'] for p in s['ui-proxy']['ports']} == {8080}
 assert all(p.get('host_ip') == '127.0.0.1' for p in s['ui-proxy']['ports'])
 assert not s['status'].get('ports')
 assert {p['target'] for p in s['hindsight'].get('ports',[])} == {8888}
-assert not s['coderag'].get('ports')
+assert {p['target'] for p in s['coderag']['ports']} == {9750}
+assert all(p.get('host_ip') == '127.0.0.1' for p in s['coderag']['ports'])
 signal=s['signal']
 assert signal['image'].startswith('bbernhard/signal-cli-rest-api@sha256:')
 assert {p['target'] for p in signal['ports']} == {8080}
@@ -50,6 +51,9 @@ grep -Fq 'proxy_set_header Origin $http_origin;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9119;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9999;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9749;' docker/ui-proxy.conf
+grep -Fq 'location = /mcp {' docker/ui-proxy.conf
+grep -Fq 'proxy_pass http://coderag:9750/mcp;' docker/ui-proxy.conf
+grep -Fq 'proxy_buffering off;' docker/ui-proxy.conf
 if grep -Fq 'proxy_set_header Origin https://127.0.0.1' docker/ui-proxy.conf; then
   echo 'FAIL: proxy spoofs an allowed Origin and bypasses Fleet CSRF checks' >&2; exit 1
 fi
