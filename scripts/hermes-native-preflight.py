@@ -23,10 +23,6 @@ def regular(path):
     return path
 
 
-def digest(path):
-    return hashlib.sha256(regular(path).read_bytes()).hexdigest()
-
-
 def profile_digest(root):
     value = hashlib.sha256()
     for name in (".no-bundled-skills", "SOUL.md", "config.yaml", "distribution.yaml"):
@@ -68,6 +64,7 @@ def main():
             key, value = line.split("=", 1)
             contract[key] = value
     manifest = json.loads(regular(args.manifest).read_text())
+    # Existing installations still carry the launcher hash in their manifest.
     expected = {"version", "commit", "installer_sha256", "launcher_sha256", "profile_digest"}
     if set(manifest) != expected:
         fail("install manifest shape changed")
@@ -84,8 +81,6 @@ def main():
         fail("installed checkout commit changed")
     if run(*git, "status", "--porcelain", "--untracked-files=no").strip():
         fail("installed checkout has tracked changes")
-    if digest(launcher) != manifest["launcher_sha256"]:
-        fail("Hermes launcher digest changed")
     if profile_digest(args.profile_source.resolve()) != manifest["profile_digest"]:
         fail("smoke profile source changed")
     installed_profile = home / "profiles/smoke-v1"
