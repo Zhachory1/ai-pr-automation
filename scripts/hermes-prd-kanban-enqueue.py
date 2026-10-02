@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Create or adopt one PRD round-zero graph through the supported Hermes CLI."""
-import argparse, hashlib, json, os, pathlib, re, subprocess, sys, tempfile, time
+import argparse, hashlib, json, os, pathlib, re, subprocess, sys, tempfile
 
 BOARD, BOARD_NAME = "prd-write", "PRD Write"
 ENGINES = ("fixed", "dynamic")
@@ -63,22 +63,6 @@ def load_request(prefix="prd"):
     if value["operation_id"] != prefix + "-" + hashlib.sha256(canonical(core)).hexdigest(): fail("operation ID differs from canonical request")
     return value, raw
 
-def repository_evidence(request, root, knowledge_repositories=(), max_age_seconds=3600):
-    requested = request.get("repositories", [])
-    names = [*requested, *(name for name in knowledge_repositories if name not in requested)]
-    evidence = []
-    for name in names:
-        owner, repo = name.split("/"); manifest = root / owner / f"{repo}.json"
-        if not manifest.is_file(): fail(f"repository cache missing: {name}")
-        value = json.loads(manifest.read_text())
-        expected = root / owner / f"{repo}.snapshots" / str(value.get("head_sha", ""))
-        if value.get("repository") != name or value.get("snapshot_sha") != value.get("head_sha") or pathlib.Path(value.get("snapshot", "")) != expected or not expected.is_dir(): fail(f"repository snapshot invalid: {name}")
-        age = max(0, int(time.time()) - int(value.get("fetched_at", 0)))
-        if age > max_age_seconds: fail(f"repository cache stale: {name}")
-        evidence.append({"kind": "repository" if name in requested else "knowledge", "repository": name, "default_branch": value["default_branch"], "head_sha": value["head_sha"], "snapshot": str(expected), "fetched_at": value["fetched_at"], "age_seconds": age})
-    return evidence
-
-
 def run(command, env, json_output=False):
     completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
     if completed.returncode: fail(f"Hermes CLI failed: {completed.stderr.strip()[-300:]}")
@@ -104,9 +88,15 @@ def enqueue(args):
         else: fail("existing operation has unknown task contract")
     if contracts and contracts != {args.engine}: fail("operation already belongs to other workflow engine")
     if args.engine == "dynamic":
-        evidence = repository_evidence(request, args.repository_cache_root, args.knowledge_repositories)
-        repositories = [item for item in evidence if item["kind"] == "repository"]
-        knowledge = [item for item in evidence if item["kind"] == "knowledge"]
+        repositories = request.get("repositories", [])
+        knowledge = list(args.knowledge_repositories)
+        repository_rules = [
+            "Before drafting, use execute_code to manage only intake.repositories and knowledge_sources in $HERMES_HOME/repository-cache with /usr/local/libexec/ai-pr-automation/hermes-repository-cache.",
+            "Check each requested repository with /usr/local/libexec/ai-pr-automation/hermes-authority.py --check before enrollment; never take a remote, ref, credential, or path from intake.",
+            "For missing repositories enroll; for stale manifests sync; then materialize pinned snapshots. Set GIT_ASKPASS=/usr/local/libexec/ai-pr-automation/hermes-git-read-askpass, GIT_ASKPASS_REQUIRE=force, GIT_TERMINAL_PROMPT=0, GITHUB_READ_TOKEN_FILE=/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token; never print credentials.",
+            "Verify repository identity, snapshot_sha == head_sha, the exact versioned snapshot path, and fetched_at age <= 3600 seconds before reading; block if any source is unavailable or unsafe.",
+            "Inspect every pinned snapshot, cite current-state claims as OWNER/REPO@SHA:path:line, and include the pinned repository and knowledge evidence in each reviewer body and writer result.",
+        ]
         body = canonical({
             "workflow": board_slug,
             "operation": operation,
@@ -117,7 +107,7 @@ def enqueue(args):
             "reviewer_roles": document["reviewers"],
             "repositories": repositories,
             "knowledge_sources": knowledge,
-            "repository_rules": ["inspect every pinned snapshot before drafting", "cite current-state claims as OWNER/REPO@SHA:path:line", "use search_files for discovery and read_file for evidence", "do not replace accessible repository facts with assumptions or future discovery tasks", "block if any snapshot is unreadable"],
+            "repository_rules": repository_rules,
             "knowledge_rules": ["search ads-success-kb and private-docs snapshots for relevant decisions, plans, incidents, ownership, and prior rejected approaches", "recall memory-ads-success and memory-org but never retain", "query DocShare, RoktGPT, Atlassian, and Buildkite when relevant", "cite snapshot paths, document IDs or URLs, memory IDs, issue keys, and build references", "summarize only necessary non-sensitive evidence; never dump raw private or recalled content", "surface conflicts between code, docs, tickets, and memory"],
             "contract": document["contract"],
             "output": f"write verified {document['label']} artifact, create required reviewers and synthesis, then complete with exact created_cards",
@@ -180,7 +170,7 @@ def enqueue(args):
     return {"board": BOARD, "operation_id": operation, "tasks": tasks}
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--hermes-home", type=pathlib.Path, required=True); parser.add_argument("--hermes-bin", type=pathlib.Path, required=True); parser.add_argument("--engine", choices=ENGINES, default="fixed"); parser.add_argument("--document-kind", choices=DOCUMENTS, default="prd"); parser.add_argument("--repository-cache-root", type=pathlib.Path, default=DEFAULT_REPOSITORY_CACHE); parser.add_argument("--knowledge-repository", action="append", dest="knowledge_repositories", default=list(DEFAULT_KNOWLEDGE_REPOSITORIES))
+    parser = argparse.ArgumentParser(); parser.add_argument("--hermes-home", type=pathlib.Path, required=True); parser.add_argument("--hermes-bin", type=pathlib.Path, required=True); parser.add_argument("--engine", choices=ENGINES, default="fixed"); parser.add_argument("--document-kind", choices=DOCUMENTS, default="prd"); parser.add_argument("--repository-cache-root", type=pathlib.Path, default=DEFAULT_REPOSITORY_CACHE, help="legacy option; writers manage repository evidence"); parser.add_argument("--knowledge-repository", action="append", dest="knowledge_repositories", default=list(DEFAULT_KNOWLEDGE_REPOSITORIES))
     try: print(json.dumps(enqueue(parser.parse_args()), sort_keys=True, separators=(",", ":")))
     except (OSError, ValueError) as error: raise SystemExit(f"Hermes document enqueue failed: {error}")
 if __name__ == "__main__": main()

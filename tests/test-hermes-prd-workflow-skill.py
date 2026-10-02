@@ -26,11 +26,14 @@ class PrdWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("`goal_mode=true`, `goal_max_turns=4`, and `max_runtime_seconds=3600`", intake)
         self.assertIn("sorted compact UTF-8 JSON", intake)
         self.assertIn('"prd-" + sha256(canonical_bytes)', intake)
-        self.assertIn("Resolve every explicitly named `OWNER/REPO`", intake)
+        self.assertIn("Validate every explicitly named `OWNER/REPO`", intake)
+        self.assertIn("Do not require a preexisting snapshot", intake)
+        self.assertIn("enroll missing repositories, sync stale manifests, and materialize missing snapshots", intake)
         self.assertIn("Do not create reviewers or synthesis at intake", intake)
 
     def test_writer_creates_required_round_graph(self):
         writer = self.text.split("## Writer Stage", 1)[1].split("## Reviewer Stage", 1)[0]
+        self.assertIn("Prepare and pin Repository Evidence before any draft", writer)
         self.assertIn("current writer task as parent", writer)
         self.assertIn("current writer and every reviewer as parents", writer)
         self.assertIn("use `search_files` for discovery and `read_file` for evidence", writer)
