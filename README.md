@@ -21,7 +21,8 @@ Compose producers ──▶ Postgres queue/attempts ──▶ Compose controller
   current single run, which never creates a Kanban council. The signed bridge stays available only so
   persisted Kanban attempts can recover; opting into `kanban` also allows new council claims.
 - **Host-native Hermes** owns profile/model/tool execution and host credentials. One immutable profile
-  maps to each queue kind; direct-effect uncertainty enters human reconcile and never blind-retries.
+  maps to each queue kind; uncertain maintenance/SWE effects enter human reconcile rather than blind
+  retry. Failed reviews need remote inspection before manual re-enqueue.
 - **Fleet Controller** (`status`) is the operator UI at `https://fleet.localhost:8080`: runs, queue, human-review
   queue, and exact-byte document approval. GitHub remains the PR merge UI.
 - The `hermes-agent` account is the execution boundary. It holds provider OAuth, repository deploy
@@ -32,8 +33,10 @@ Compose producers ──▶ Postgres queue/attempts ──▶ Compose controller
 Server-side GitHub branch protection keeps merge, protected-branch push, unsafe workflow execution,
 deployment, and administration out of the agent's reach. Merge stays a human operating decision.
 
-Full design and rollout: **[`docs/hermes/README.md`](docs/hermes/README.md)**. Support substrate:
-**[`docker/README.md`](docker/README.md)**.
+Operator guides: [from-zero setup](docs/getting-started.md), [configuration](docs/configuration.md),
+[architecture](docs/architecture.md), [operations](docs/operations.md), and
+[contributing](docs/contributing.md). Deeper runtime contracts: [Hermes](docs/hermes/README.md)
+and [Compose substrate](docker/README.md).
 
 ## Requirements
 
@@ -89,9 +92,10 @@ See [`docs/hermes/README.md`](docs/hermes/README.md) for detailed lifecycle and 
 
 ### Fleet Controller rollback
 
-Rollback does not depend on valid new TLS material. The old image is **not** part of initial setup. If rollback is required, build the pinned pre-auth image and use direct Compose only for this recovery path; stop the fleet first:
+Rollback does not depend on valid new TLS material. The old image is **not** part of initial setup. Drain active attempts and verify remote effects before this emergency path: it stops the fleet and restores an anonymous HTTP UI. Use direct Compose only for the rollback image:
 
 ```bash
+scripts/fleet.sh down
 git archive b7fe7ed Dockerfile.status bin/status-server \
   | docker build -f Dockerfile.status -t agent-fleet/status:pre-auth-b7fe7ed -
 docker compose stop ui-proxy  # free host port 8080 for the rollback status image
@@ -103,12 +107,9 @@ FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null \
 FLEET_CONTROLLER_ROLLBACK_VERSION=pre-auth-b7fe7ed \
   docker compose -f docker-compose.yml -f docker-compose.status-rollback.yml \
   up -d --no-deps --no-build --force-recreate status
-test "$(curl -sS -o /tmp/fleet-controller-rollback.html -w '%{http_code}' \
-  http://127.0.0.1:8080/)" = 200
-grep -q 'agent-fleet' /tmp/fleet-controller-rollback.html
 ```
 
-This rollback restores anonymous HTTP Fleet Controller. Stop the fleet before using it.
+This is a **degraded HTTP-only fallback**, not restored queue access: `fleet.sh down` also stops `db-requests`, and `--no-deps` does not restart it. The page may return HTTP 200 while displaying `DB unreachable`; do not approve decisions or treat that response as recovery. Restore and verify the database through a separately reviewed recovery procedure before using this UI for decisions. The anonymous HTTP surface has no login; keep it localhost-only and retire it after recovering the authenticated UI.
 
 ## Modes
 
@@ -156,7 +157,8 @@ cannot pile up duplicate queued jobs.
 
 Required posture:
 
-- Grant each repository in the authority YAML; producers only enqueue work for granted repos.
+- Grant intended repositories in authority YAML. PR-safety can also admit approved authors through
+  `PR_SAFETY_ALLOWED_ORGS`; review its effective scope before starting producers.
 - The deploy key pushes feature branches only; branch protection blocks protected-branch and merge.
 - Scope the service-account GitHub token so it cannot merge; installation copies that same token to Compose discovery producers. Merge must remain a human GitHub action.
 - Confirm whether private repository content may be sent to the selected provider before enrolling.

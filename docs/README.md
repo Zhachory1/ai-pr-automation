@@ -1,8 +1,12 @@
 # Documentation
 
 - **[From-zero host-native setup](getting-started.md)** — prerequisites, credentials, TLS, and explicit live-activation gate.
-- **[Documentation rollout plan](documentation-plan.md)** — next slices: configuration, architecture, operator recovery, and clean-host trial.
-- **[Hermes operations](hermes/README.md)** and **[Compose substrate](../docker/README.md)** — current runtime contracts and support services.
+- **[Documentation rollout plan](documentation-plan.md)** — implementation status and remaining clean-host trial.
+- **[Configuration](configuration.md)** — credentials, ownership, host/Compose precedence, and scope switches.
+- **[Architecture](architecture.md)** — control plane, trust boundaries, and effects by workflow.
+- **[Operations](operations.md)** — status, queue inspection, reconciliation, safe stop, and recovery limits.
+- **[Contributing](contributing.md)** — source map and focused checks.
+- **[Hermes runtime](hermes/README.md)** and **[Compose substrate](../docker/README.md)** — deeper current contracts.
 
 ## Historical design records
 
