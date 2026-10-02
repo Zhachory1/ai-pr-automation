@@ -303,26 +303,6 @@ services:
         condition: service_completed_successfully
 
   pr-producer-review:
-    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
-    restart: unless-stopped
-    command: ["/app/hermes-compose-producer.sh", "review"]
-    environment:
-      REQUESTS_DB_HOST: db-requests
-      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
-      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
-      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      HERMES_AUTHORITY_FILE: /config/authority.yaml
-      GITHUB_TOKEN_FILE: /run/secrets/github_read_token
-      PRODUCER_INTERVAL_SECONDS: ${PR_PRODUCER_INTERVAL_SECONDS:-300}
-      PR_REVIEW_QUEUE_ENGINE: ${PR_REVIEW_QUEUE_ENGINE:-postgres}
-    secrets: [github_read_token]
-    volumes:
-      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
-    depends_on:
-      schema-migrate: {condition: service_completed_successfully}
-
-  pr-producer-review-direct:
-    profiles: ["direct-review"]
     image: agent-fleet/hermes-pr-review-cron:latest
     build:
       context: .
