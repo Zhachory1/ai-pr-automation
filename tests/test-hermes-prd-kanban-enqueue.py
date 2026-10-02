@@ -92,27 +92,28 @@ class EnqueueTest(unittest.TestCase):
         self.assertEqual(len(creates), 2)
         self.assertTrue(all("--skill" not in command for command in creates))
 
-    def test_dynamic_repository_evidence_is_pinned_and_fail_closed(self):
-        args, cli = self.fixture(); args.engine = "dynamic"; cache_root = args.repository_cache_root
-        sha = "a" * 40; snapshot = cache_root / "ACME/widget.snapshots" / sha; snapshot.mkdir(parents=True); (snapshot / "README.md").write_text("evidence\n")
-        manifest = {"repository":"ACME/widget","default_branch":"main","head_sha":sha,"snapshot_sha":sha,"snapshot":str(snapshot),"fetched_at":int(enqueue.time.time())}
-        (cache_root / "ACME/widget.json").write_text(json.dumps(manifest))
-        result = self.admit(args, cli, self.request("Move ACME widget", "Use cached evidence", ["ACME/widget"]))
-        body = json.loads(cli.tasks[result["tasks"]["writer"]]["body"])
-        self.assertEqual(body["repositories"][0]["head_sha"], sha); self.assertEqual(body["repositories"][0]["snapshot"], str(snapshot))
-        self.assertIn("cite current-state claims as OWNER/REPO@SHA:path:line", body["repository_rules"]); self.assertEqual(body["knowledge_sources"], [])
-        self.assertIn("recall memory-ads-success and memory-org but never retain", body["knowledge_rules"])
-        knowledge = enqueue.repository_evidence(self.request(), cache_root, ["ACME/widget"])
-        self.assertEqual((knowledge[0]["kind"], knowledge[0]["repository"]), ("knowledge", "ACME/widget"))
+    def test_dynamic_writers_own_repository_snapshot_preparation(self):
+        for kind, prefix in (("prd", "prd"), ("design", "design"), ("roadmap", "roadmap")):
+            with self.subTest(kind=kind):
+                args, cli = self.fixture(); args.engine = "dynamic"; args.document_kind = kind
+                args.knowledge_repositories = ["ROKT/ads-success-kb", "ROKT/zhach-private-docs"]
+                request = self.request("Offline intake", "Writer pins sources", ["ACME/missing"])
+                core = {key: request[key] for key in ("title", "requester", "requirements", "repositories")}
+                request["operation_id"] = prefix + "-" + hashlib.sha256(enqueue.canonical(core)).hexdigest()
+                result = self.admit(args, cli, request)
+                body = json.loads(cli.tasks[result["tasks"]["writer"]]["body"])
+                self.assertEqual(body["repositories"], ["ACME/missing"])
+                self.assertEqual(body["knowledge_sources"], args.knowledge_repositories)
+                self.assertIn("execute_code", " ".join(body["repository_rules"]))
+                self.assertIn("hermes-repository-cache", " ".join(body["repository_rules"]))
+                self.assertFalse(args.repository_cache_root.exists())
+                self.assertEqual(len(cli.tasks), 1)
 
-        args, cli = self.fixture(); args.engine = "dynamic"
-        with self.assertRaisesRegex(ValueError, "cache missing"):
-            self.admit(args, cli, self.request("Missing repo", "Must inspect source", ["ACME/missing"]))
-        manifest["fetched_at"] = 1; cache_root = args.repository_cache_root; snapshot = cache_root / "ACME/widget.snapshots" / sha; snapshot.mkdir(parents=True); (cache_root / "ACME/widget.json").write_text(json.dumps({**manifest,"snapshot":str(snapshot)}))
-        with self.assertRaisesRegex(ValueError, "cache stale"):
-            self.admit(args, cli, self.request("Stale repo", "Must inspect source", ["ACME/widget"]))
-
-    def test_design_dynamic_intake_reuses_evidence_plane(self):
+    def test_design_dynamic_intake_uses_design_profile(self):
+        # Verifies that dynamic intake routes design requests to the design-write board/workflow/assignee
+        # and populates the correct reviewer roles and contract sections.  Distinct from
+        # test_dynamic_writers_own_repository_snapshot_preparation, which checks that the writer
+        # body carries repository_rules regardless of document kind.
         args, cli = self.fixture(); args.engine = "dynamic"; args.document_kind = "design"
         request = self.request("Design migration", "Produce evidence-backed architecture")
         core = {k:request[k] for k in ("title","requester","requirements")}; request["operation_id"] = "design-" + hashlib.sha256(enqueue.canonical(core)).hexdigest()

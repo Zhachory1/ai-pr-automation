@@ -32,6 +32,8 @@ class DesignWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("recall/reflect only, never retain", self.text)
         self.assertIn("Never invoke create, update, publish, comment, transition, retry, cancel, unblock, deploy, retain", self.text)
         self.assertIn("OWNER/REPO@SHA:path:line", self.text)
+        self.assertIn("Prepare and pin Repository Evidence before drafting", self.text)
+        self.assertIn("enroll missing repositories, sync stale manifests, and materialize missing snapshots", self.text)
         self.assertIn("Accessible facts deferred as assumptions return `revise`", self.text)
 
     def test_artifact_and_human_authority(self):

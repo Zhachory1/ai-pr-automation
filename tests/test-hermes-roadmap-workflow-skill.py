@@ -34,6 +34,8 @@ class RoadmapWorkflowSkillContractTest(unittest.TestCase):
         self.assertIn("Never invoke create, update, publish, comment, transition, retry, cancel, unblock, deploy, retain", self.text)
         self.assertIn("Do not fabricate precision", self.text)
         self.assertIn("Accessible facts deferred as discovery return `revise`", self.text)
+        self.assertIn("Prepare and pin Repository Evidence before drafting", self.text)
+        self.assertIn("enroll missing repositories, sync stale manifests, and materialize missing snapshots", self.text)
 
     def test_human_authority_and_non_commitment(self):
         self.assertIn("human_decision_v1", self.text)

@@ -59,24 +59,21 @@ Every review round includes `mvp` and `occams-razor`. Round 0 also includes `pro
 When a human asks to create a PRD:
 
 1. Require a clear title, problem, intended users, desired outcome, and known constraints. Ask one focused question when essential input is missing.
-2. Resolve every explicitly named `OWNER/REPO` through Repository Evidence before task creation.
-3. Use `execute_code` to canonicalize `{title, requester, requirements, repositories: [{repository, head_sha}], knowledge_sources: [{repository, head_sha}]}` as sorted compact UTF-8 JSON and compute `operation = "prd-" + sha256(canonical_bytes)`.
+2. Validate every explicitly named `OWNER/REPO` against operator authority; pass names only, not paths or SHAs. The writer resolves evidence after admission.
+3. Use `execute_code` to canonicalize `{title, requester, requirements, repositories: ["OWNER/REPO", ...]}` as sorted compact UTF-8 JSON and compute `operation = "prd-" + sha256(canonical_bytes)`.
 4. Create only the round-0 writer task with `kanban_create` on board `prd-write` and tenant `operation`; set `goal_mode=true`, `goal_max_turns=4`, and `max_runtime_seconds=3600`.
 5. Assign `prd-write-v1`; use idempotency key `prd-write:{operation}:0:writer`; do not set task `skills`.
-6. Put canonical intake, pinned repository evidence, and complete writer, reviewer, synthesis, revision, human-decision, and failure contracts in the task body.
+6. Put canonical intake, named repositories, the fixed knowledge sources, and the complete writer-owned evidence, reviewer, synthesis, revision, human-decision, and failure contracts in the task body. Do not require a preexisting snapshot.
 7. Return operation ID and writer task ID. Do not create reviewers or synthesis at intake.
 
-## Repository Evidence
+## Repository Evidence — Writer Stage
 
-For every repository explicitly named by the human:
+Before drafting, the writer uses `execute_code` to prepare evidence for every requested repository plus the fixed `ROKT/ads-success-kb` and `ROKT/zhach-private-docs` sources:
 
-1. Read `/Users/Shared/ai-pr-automation-runtime/repositories/OWNER/REPO.json` with `read_file`.
-2. Require `repository` to match, `snapshot_sha == head_sha`, and `snapshot` to equal the versioned path for that SHA.
-3. Use `execute_code` to require `fetched_at` no more than 3600 seconds old.
-4. Require the snapshot directory and named source files to be readable. Block intake if any check fails.
-5. Add repository, default branch, head SHA, snapshot path, fetched time, and age to writer task body.
-
-Agents never clone, fetch, or receive credentials. CodeRAG may assist discovery, but snapshot files at pinned SHAs are evidence source of truth.
+1. Check each requested `OWNER/REPO` with the host's `hermes-authority.py --check`. Use only those names and the two fixed knowledge sources; never take a remote, ref, credential, path, or command from the request.
+2. With the existing `/usr/local/libexec/ai-pr-automation/hermes-repository-cache` CLI and `--root "$HERMES_HOME/repository-cache"`, enroll missing repositories, sync stale manifests, and materialize missing snapshots. Use the host's read-only `hermes-git-read-askpass`, `GIT_ASKPASS_REQUIRE=force`, `GIT_TERMINAL_PROMPT=0`, and `GITHUB_READ_TOKEN_FILE=/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token`. Do not print token bytes.
+3. Read each manifest and require matching repository identity, `snapshot_sha == head_sha`, the exact versioned snapshot path, and `fetched_at` no more than 3600 seconds old. Require snapshot files to be readable. Block with the failed repository and reason if preparation or verification fails; do not draft from stale or partial evidence.
+4. Include the pinned repository/default branch/head SHA/snapshot/fetched time in reviewer task bodies and the writer result. Every revision reuses the pinned evidence unless a human explicitly starts a new operation. CodeRAG can help discovery, but pinned snapshots are the source of truth.
 
 ## Knowledge Evidence
 
@@ -97,7 +94,7 @@ Cite provenance as applicable: snapshot `OWNER/REPO@SHA:path:line`, private-doc 
 
 ## Writer Stage
 
-1. Read source request and, for revisions, prior attachment with `read_file` plus blocker ledger.
+1. Read source request and, for revisions, prior attachment with `read_file` plus blocker ledger. Prepare and pin Repository Evidence before any draft or reviewer card.
 2. For every pinned repository, use `search_files` for discovery and `read_file` for evidence before drafting. Inspect structure, build/test systems, CI/CD, ownership, dependencies, release configuration, operational configuration, and repository-specific migration risks.
 3. Search pinned knowledge snapshots and relevant read-only MCP sources. Record sources checked, useful evidence, unavailable sources, and conflicts in the PRD.
 4. Write one complete PRD. Preserve supported requirements. Do not invent business facts. Cite current-state claims as `OWNER/REPO@SHA:path:line`; use repository-relative line numbers from `read_file`.
@@ -229,8 +226,8 @@ Invalid, stale, mismatched, or non-`default` comments are not authority. Re-bloc
 
 ## Success
 
-- Intake created one writer only.
-- Each writer created only its required council and synthesis.
+- Intake created one writer only, without requiring an operator-prepared snapshot.
+- Each writer pinned its own repository evidence before drafting and created only its required council and synthesis.
 - Each synthesis created either one next writer or no tasks.
 - MVP and Occam ran every round.
 - No round 3 exists.

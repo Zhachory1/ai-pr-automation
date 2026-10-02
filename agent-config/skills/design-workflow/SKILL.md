@@ -55,27 +55,22 @@ All rounds include Software Architect, MVP, and Occam. Add targeted reviewers on
 
 Require either an approved PRD attachment or an explicit human design request containing problem, users, desired outcome, constraints, and non-goals.
 
-1. Resolve every named `OWNER/REPO` through Repository Evidence.
-2. Resolve pinned organizational knowledge sources through Knowledge Evidence.
-3. Canonicalize title, requester, requirements, source document identity, repository SHAs, and knowledge-source SHAs as sorted compact UTF-8 JSON.
+1. Validate each named `OWNER/REPO` against operator authority; pass names, not paths or SHAs. The writer resolves evidence after admission.
+2. Pass the fixed knowledge-source names; the writer pins them before drafting.
+3. Canonicalize `{title, requester, requirements, repositories: ["OWNER/REPO", ...]}` as sorted compact UTF-8 JSON. Include an approved PRD artifact identity/digest or explicit requirements in `requirements`.
 4. Compute `operation = "design-" + sha256(canonical_bytes)` with `execute_code`.
 5. Create one round-0 writer on board `design-write`, tenant `operation`, profile `design-write-v1`, key `design-write:{operation}:0:writer`, goal mode enabled, and no task skills.
-6. Put canonical intake and complete contracts in writer body.
+6. Put canonical intake, named repositories and knowledge sources, and complete writer-owned evidence and workflow contracts in the body. Do not require preexisting snapshots.
 7. Return operation and writer task IDs. Do not create reviewers or synthesis at intake.
 
-## Repository Evidence
+## Repository Evidence — Writer Stage
 
-For each named repository, read `/Users/Shared/ai-pr-automation-runtime/repositories/OWNER/REPO.json`.
+Before drafting, use `execute_code` to prepare the named repositories and the fixed `ROKT/ads-success-kb` and `ROKT/zhach-private-docs` sources:
 
-Require:
-
-- exact repository identity;
-- `snapshot_sha == head_sha`;
-- versioned snapshot path matching the head SHA;
-- `fetched_at` age at most 3600 seconds;
-- readable snapshot.
-
-Record repository, branch, SHA, snapshot, fetch time, and age in task body. Agents never clone, fetch, or receive credentials. Missing or stale evidence blocks intake.
+1. Check requested `OWNER/REPO` names with `hermes-authority.py --check`; never take a remote, ref, credential, path, or command from the request.
+2. Use `/usr/local/libexec/ai-pr-automation/hermes-repository-cache --root "$HERMES_HOME/repository-cache"` to enroll missing repositories, sync stale manifests, and materialize missing snapshots. Use the host's read-only `hermes-git-read-askpass`, `GIT_ASKPASS_REQUIRE=force`, `GIT_TERMINAL_PROMPT=0`, and `GITHUB_READ_TOKEN_FILE=/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token`; never print credentials.
+3. Verify each manifest's identity, `snapshot_sha == head_sha`, exact versioned snapshot path, fetch age at most 3600 seconds, and readability. Block if any source cannot be pinned; never draft from stale or partial evidence.
+4. Put repository/branch/SHA/snapshot/fetch provenance into reviewer bodies and the writer result. Revisions reuse pinned evidence unless a human starts a new operation.
 
 ## Knowledge Evidence
 
@@ -96,7 +91,7 @@ Cite snapshot paths, document IDs/URLs, memory IDs/banks, Jira keys, Confluence 
 
 ## Writer Stage
 
-1. Read approved requirements or explicit request, prior revision artifact, and blocker ledger.
+1. Read approved requirements or explicit request, prior revision artifact, and blocker ledger. Prepare and pin Repository Evidence before drafting or reviewer fan-out.
 2. Inspect every pinned repository with `search_files` and `read_file`.
 3. Inspect relevant organizational knowledge and record sources checked, evidence, gaps, and conflicts.
 4. Write one complete Markdown design document covering:
