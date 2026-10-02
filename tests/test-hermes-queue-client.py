@@ -47,10 +47,25 @@ class QueueClientTest(unittest.TestCase):
         for kind in ("prd-write", "dd-write", "roadmap-write"):
             self.assertEqual(client.intake(client.canonical({**self.value, "kind": kind}))["kind"], kind)
 
-    def test_host_refuses_personal_hermes_instance(self):
-        with patch.object(client.pwd, "getpwnam", return_value=SimpleNamespace(pw_uid=98765, pw_dir="/host")):
-            with self.assertRaisesRegex(ValueError, "host hermes-agent"):
-                client.host()
+    def test_host_uses_current_account_and_refuses_privilege_switch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory)
+            (home / ".hermes").mkdir()
+            binary = home / ".local/bin/hermes"
+            binary.parent.mkdir(parents=True)
+            binary.touch()
+            with patch.object(client.os, "getuid", return_value=98765), \
+                 patch.object(client.os, "geteuid", return_value=98765), \
+                 patch.object(client.pwd, "getpwuid", return_value=SimpleNamespace(pw_dir=str(home))):
+                self.assertEqual(client.host()[:3], (home, home / ".hermes", binary))
+            with patch.object(client.os, "getuid", return_value=98765), \
+                 patch.object(client.os, "geteuid", return_value=0):
+                with self.assertRaisesRegex(ValueError, "do not use sudo"):
+                    client.host()
+            with patch.object(client.os, "getuid", return_value=0), \
+                 patch.object(client.os, "geteuid", return_value=0):
+                with self.assertRaisesRegex(ValueError, "non-root"):
+                    client.host()
 
     def test_document_request_uses_existing_enqueue_and_reads_writer(self):
         calls = []
