@@ -110,6 +110,10 @@ class EnqueueTest(unittest.TestCase):
                 self.assertEqual(len(cli.tasks), 1)
 
     def test_design_dynamic_intake_uses_design_profile(self):
+        # Verifies that dynamic intake routes design requests to the design-write board/workflow/assignee
+        # and populates the correct reviewer roles and contract sections.  Distinct from
+        # test_dynamic_writers_own_repository_snapshot_preparation, which checks that the writer
+        # body carries repository_rules regardless of document kind.
         args, cli = self.fixture(); args.engine = "dynamic"; args.document_kind = "design"
         request = self.request("Design migration", "Produce evidence-backed architecture")
         core = {k:request[k] for k in ("title","requester","requirements")}; request["operation_id"] = "design-" + hashlib.sha256(enqueue.canonical(core)).hexdigest()
