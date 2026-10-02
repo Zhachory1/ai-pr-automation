@@ -40,16 +40,21 @@ recreate_producer() {
 case "${1:-}" in
   up)
     "$ROOT/scripts/hermes-authority.py" --file "$AUTHORITY_SOURCE" >/dev/null
-    review_files="$("$ROOT/scripts/compose.sh" config --format json | python3 -c '
-import json,sys
-secrets=json.load(sys.stdin)["secrets"]
-for name in ("github_discovery_token","hermes_review_key"):
- print(secrets[name]["file"])
-')"
-    while IFS= read -r path; do
-      [[ -f "$path" && -s "$path" && ! -L "$path" ]] \
-        || { echo "configure nonempty review discovery token and API key files before fleet up" >&2; exit 2; }
-    done <<< "$review_files"
+    "$ROOT/scripts/compose.sh" config --format json | python3 -c '
+import json, os, pathlib, stat, sys
+secrets = json.load(sys.stdin)["secrets"]
+for name in ("github_discovery_token", "hermes_review_key"):
+    path = pathlib.Path(secrets[name]["file"])
+    try:
+        info, parent = path.lstat(), path.parent.lstat()
+    except OSError:
+        raise SystemExit(f"configure owner-only {name} before fleet up")
+    owners = {0, os.getuid()}
+    if (not stat.S_ISREG(info.st_mode) or info.st_size == 0 or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_uid not in owners or not stat.S_ISDIR(parent.st_mode)
+            or stat.S_IMODE(parent.st_mode) & 0o077 or parent.st_uid not in owners):
+        raise SystemExit(f"configure owner-only {name} before fleet up")
+'
     sudo "$ROOT/scripts/hermes-native.sh" review-producer-stop
     sudo "$ROOT/scripts/hermes-native.sh" producer-stop
     "$ROOT/scripts/compose.sh" stop pr-safety-producer
