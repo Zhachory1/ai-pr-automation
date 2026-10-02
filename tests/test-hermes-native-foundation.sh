@@ -48,6 +48,10 @@ PY
 scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest "$tmp/manifest.json" \
   --install-dir "$tmp/install" --hermes-home "$tmp/service/.hermes" --profile-source "$tmp/source" \
   | jq -e '.status == "ready" and .profile == "smoke-v1"' >/dev/null
+printf '# harmless launcher change\n' >> "$tmp/service/.local/bin/hermes"
+scripts/hermes-native-preflight.py --contract "$tmp/contract.env" --manifest "$tmp/manifest.json" \
+  --install-dir "$tmp/install" --hermes-home "$tmp/service/.hermes" --profile-source "$tmp/source" \
+  | jq -e '.status == "ready" and .profile == "smoke-v1"' >/dev/null
 python3 - "$tmp/gateway.plist" "$tmp" "$(id -un)" <<'PY'
 import pathlib, plistlib, sys
 output, root, user = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
