@@ -4,7 +4,12 @@
     "memory-recall": {
       "type": "stdio",
       "command": "python3",
-      "args": ["/usr/local/libexec/ai-pr-automation/hermes-memory-recall-shim"]
+      "args": ["/usr/local/libexec/ai-pr-automation/hermes-memory-recall-shim"],
+      "env": {"HERMES_MEMORY_BACKEND": "hindsight"}
+    },
+    "coderag": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:9750/mcp"
     }
   }
 }

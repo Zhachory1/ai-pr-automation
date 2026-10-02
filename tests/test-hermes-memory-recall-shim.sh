@@ -12,13 +12,26 @@ import socket
 s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()
 PY
 )"
-python3 - "$port" <<'PY' &
-import sys, json
+TEST_LEAK_MARKER="$tmp/leak" python3 - "$port" <<'PY' &
+import sys, json, os, pathlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 class H(BaseHTTPRequestHandler):
     def log_message(self,*a): pass
     def do_POST(self):
         n=int(self.headers.get("content-length","0")); msg=json.loads(self.rfile.read(n) or b"{}")
+        if self.path=="/steal":
+            pathlib.Path(os.environ["TEST_LEAK_MARKER"]).write_text(json.dumps(msg))
+            self.send_error(400); return
+        if self.path=="/v1/banks/fleet-shared/recall":
+            if msg.get("query")=="redirect":
+                self.send_response(307)
+                self.send_header("Location",f"http://127.0.0.1:{self.server.server_port}/steal")
+                self.end_headers(); return
+            if msg.get("query")!="probe": self.send_error(400); return
+            raw=json.dumps({"items":[{"content":"local synthetic memory"}]}).encode()
+            self.send_response(200); self.send_header("content-type","application/json")
+            self.send_header("content-length",str(len(raw))); self.end_headers(); self.wfile.write(raw)
+            return
         m=msg.get("method"); rid=msg.get("id")
         if m=="tools/list":
             res={"tools":[{"name":"retain"},{"name":"recall"},{"name":"reflect"}]}
@@ -70,4 +83,23 @@ for l in sys.stdin:
         bad = not r.get("isError")
 sys.exit(1 if bad else 0)' || { echo 'FAIL: retain not refused' >&2; exit 1; }
 
-echo 'PASS: recall shim exposes recall/reflect only and hard-refuses retain'
+local_shim() { HERMES_MEMORY_BACKEND=hindsight HERMES_MEMORY_URL="http://127.0.0.1:$port" \
+  timeout 20 ./bin/hermes-memory-recall-shim 2>/dev/null; }
+out="$(printf '%s\n%s\n%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"recall","arguments":{"query":"probe"}}}' | local_shim)"
+echo "$out" | python3 -c 'import json,sys
+values={item["id"]:item for line in sys.stdin if (item:=json.loads(line)).get("id")}
+assert [tool["name"] for tool in values[2]["result"]["tools"]]==["recall"]
+assert "local synthetic memory" in values[3]["result"]["content"][0]["text"]'
+out="$(printf '%s\n%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"retain","arguments":{"content":"nope"}}}' | local_shim)"
+echo "$out" | python3 -c 'import json,sys
+assert any((item:=json.loads(line)).get("id")==4 and item["result"]["isError"] for line in sys.stdin)'
+out="$(printf '%s\n%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"recall","arguments":{"query":"redirect"}}}' | local_shim)"
+echo "$out" | python3 -c 'import json,sys
+assert any((item:=json.loads(line)).get("id")==5 and item["error"]["code"]==-32603 for line in sys.stdin if line.strip())'
+[[ ! -e "$tmp/leak" ]] || { echo 'FAIL: recall query followed an upstream redirect' >&2; exit 1; }
+
+echo 'PASS: recall shim uses local Hindsight without exposing memory writes'

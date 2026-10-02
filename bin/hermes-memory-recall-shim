@@ -11,23 +11,33 @@ This shim sits in front of the service and exposes ONLY recall and reflect. It r
 other write. Workers wire this stdio server (bare `recall`/`reflect` tools); the raw endpoint is never
 in a worker profile. The curate runner remains the sole writer, over its own direct curl path.
 
-Transport: newline-delimited JSON-RPC 2.0 on stdio (MCP stdio). Upstream: the memory service's
-Streamable-HTTP MCP, called with urllib (stateless; no session id needed).
+Transport: newline-delimited JSON-RPC 2.0 on stdio (MCP stdio). Default upstream is the
+remote memory service's Streamable-HTTP MCP. HERMES_MEMORY_BACKEND=hindsight uses only the local
+Hindsight recall REST endpoint, independently of the bank's MCP tool allowlist.
 
 Config via env:
   HERMES_MEMORY_MCP_BASE   default https://rokt-agent-memory.eng.roktinternal.com/mcp
   HERMES_MEMORY_BANK       bank path segment, default team-ads-success
+  HERMES_MEMORY_URL        local Hindsight base, default http://127.0.0.1:8888
 """
 import json
 import os
 import sys
+import urllib.parse
 import urllib.request
 
 BASE = os.environ.get("HERMES_MEMORY_MCP_BASE", "https://rokt-agent-memory.eng.roktinternal.com/mcp")
 BANK = os.environ.get("HERMES_MEMORY_BANK", "team-ads-success")
 UPSTREAM = f"{BASE.rstrip('/')}/{BANK}/"
+BACKEND = os.environ.get("HERMES_MEMORY_BACKEND", "remote")
+HINDSIGHT_URL = os.environ.get("HERMES_MEMORY_URL", "http://127.0.0.1:8888")
 READ_ONLY = ("recall", "reflect")
 PROTOCOL = "2024-11-05"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
 
 
 def upstream_call(method, params, req_id=1, timeout=30):
@@ -47,6 +57,21 @@ def upstream_call(method, params, req_id=1, timeout=30):
             except ValueError:
                 pass
     return payload
+
+
+def hindsight_recall(arguments, req_id):
+    parsed = urllib.parse.urlsplit(HINDSIGHT_URL)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or not parsed.port \
+            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("Hindsight URL must be host-local")
+    request = urllib.request.Request(HINDSIGHT_URL.rstrip("/") + "/v1/banks/fleet-shared/recall",
+                                     data=json.dumps(arguments).encode(),
+                                     headers={"content-type": "application/json"}, method="POST")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(request, timeout=30) as response:
+        result = json.load(response)
+    return {"jsonrpc": "2.0", "id": req_id, "result": {
+        "content": [{"type": "text", "text": json.dumps(result)}], "isError": False}}
 
 
 def send(obj):
@@ -79,18 +104,29 @@ def main():
             continue
         elif method == "tools/list":
             if tools_cache is None:
-                upstream = upstream_call("tools/list", {}, req_id) or {}
-                allt = upstream.get("result", {}).get("tools", [])
-                tools_cache = [t for t in allt if t.get("name") in READ_ONLY]
+                if BACKEND == "hindsight":
+                    tools_cache = [{"name": "recall", "description": "Recall fleet-shared memory",
+                                    "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}},
+                                                    "required": ["query"]}}]
+                else:
+                    upstream = upstream_call("tools/list", {}, req_id) or {}
+                    allt = upstream.get("result", {}).get("tools", [])
+                    tools_cache = [t for t in allt if t.get("name") in READ_ONLY]
             send({"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools_cache}})
         elif method == "tools/call":
             name = (msg.get("params") or {}).get("name")
-            if name not in READ_ONLY:
+            if name not in (("recall",) if BACKEND == "hindsight" else READ_ONLY):
                 # Hard refusal: this shim never writes. retain and anything else are denied.
                 send({"jsonrpc": "2.0", "id": req_id, "result": {
                     "isError": True,
                     "content": [{"type": "text",
                                  "text": f"tool {name!r} is not permitted; this endpoint is recall-only"}]}})
+                continue
+            if BACKEND == "hindsight":
+                try:
+                    send(hindsight_recall((msg.get("params") or {}).get("arguments") or {}, req_id))
+                except (OSError, ValueError):
+                    error(req_id, -32603, "local Hindsight unavailable")
                 continue
             upstream = upstream_call("tools/call", msg.get("params") or {}, req_id)
             if upstream is None:

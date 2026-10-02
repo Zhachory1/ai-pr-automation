@@ -129,8 +129,8 @@ services:
       - coderag_cache:/cache
       - ${CODE_ROOT:?set CODE_ROOT}:/code:ro
     command: ["serve-all"]
-    expose:
-      - "9750"
+    ports:
+      - "127.0.0.1:9750:9750"
     networks:
       - default
     healthcheck:
