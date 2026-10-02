@@ -46,7 +46,14 @@ spawned fresh per agent with private state:
 | db-requests (our Postgres) | TCP 5432 | yes, `up` |
 | hindsight (+ hindsight-db) | network service, HTTP :8888 / UI :9999 | yes, `up` |
 | coderag (codebase-memory-mcp) | **shared coordination daemon** + per-agent thin stdio frontend | yes, `up` (daemon) |
+| signal | linked-device state in `signal_state`; REST API inside Compose | yes, `up` |
 | swarmvault | **shared vault volume + `watch` daemon**; internal HTTP MCP bridge | yes, `up` |
+
+### Signal
+
+The pinned Signal REST container stores linked-device state in `signal_state`. Link a device yourself at `https://localhost:8080/signal/v1/qrcodelink?device_name=agent-fleet`; do not put account keys in `.env` or delete the named volume during updates. nginx proxies `/signal/` to the container on the same localhost UI port. Host Hermes can reach the REST send API at `http://127.0.0.1:${SIGNAL_LOCAL_PORT:-18080}/v2/send` (loopback only); this port is for host-to-container traffic, not a second operator UI. A real message requires a linked device and the operator's number, so no phone message is sent by Compose startup.
+
+This REST API is not the older host notifier's `/api/v1/check` protocol. Leave that timer unchanged until its controller-backed document-alert spool is retired.
 
 ### coderag — native shared daemon
 

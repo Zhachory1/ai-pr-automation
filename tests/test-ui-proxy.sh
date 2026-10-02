@@ -16,6 +16,12 @@ assert all(p.get('host_ip') == '127.0.0.1' for p in s['ui-proxy']['ports'])
 assert not s['status'].get('ports')
 assert {p['target'] for p in s['hindsight'].get('ports',[])} == {8888}
 assert not s['coderag'].get('ports')
+signal=s['signal']
+assert signal['image'].startswith('bbernhard/signal-cli-rest-api@sha256:')
+assert {p['target'] for p in signal['ports']} == {8080}
+assert all(p.get('host_ip') == '127.0.0.1' for p in signal['ports'])
+assert any(v['target'] == '/home/.local/share/signal-cli' and v['type'] == 'volume' for v in signal['volumes'])
+assert 'signal' in s['ui-proxy']['depends_on']
 assert {item['source'] for item in s['hermes-api-conformance']['secrets']} == {'hermes_api_keys'}
 for name, service in s.items():
     secrets = {item['source'] for item in service.get('secrets', [])}
@@ -33,6 +39,9 @@ for pair in \
   grep -Fq "server_name $host;" docker/ui-proxy.conf
   grep -Fq "proxy_pass $upstream;" docker/ui-proxy.conf
 done
+grep -Fq 'location /signal/ {' docker/ui-proxy.conf
+grep -Fq 'proxy_pass http://signal:8080/;' docker/ui-proxy.conf
+grep -Fq 'if ($http_origin != "") { return 403; }' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host $http_host;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header X-Fleet-Local-Proxy 1;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Origin $http_origin;' docker/ui-proxy.conf
