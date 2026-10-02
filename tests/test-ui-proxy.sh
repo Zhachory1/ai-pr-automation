@@ -7,7 +7,9 @@ env CODE_ROOT="$tmp/code" SWARMVAULT_VAULT="$tmp/vault" REQUESTS_DB_PASSWORD=x H
   DOC_WRITER_STAGE_HOST="$tmp/stage" HANDOFF_ROOT="$tmp/handoffs" \
   FLEET_CONTROLLER_PASSWORD_FILE=/dev/null FLEET_CONTROLLER_SESSION_SECRET_FILE=/dev/null \
   FLEET_CONTROLLER_TLS_CA_CERT_FILE=/dev/null FLEET_CONTROLLER_TLS_CERT_FILE=/dev/null \
-  FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null HERMES_API_KEYS_FILE=/dev/null docker compose --profile hermes-api-conformance config --format json > "$tmp/config.json"
+  FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null HERMES_API_KEYS_FILE=/dev/null \
+  HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE=/dev/null \
+  docker compose --profile hermes-api-conformance config --format json > "$tmp/config.json"
 python3 - "$tmp/config.json" <<'PY'
 import json,sys
 s=json.load(open(sys.argv[1]))['services']
