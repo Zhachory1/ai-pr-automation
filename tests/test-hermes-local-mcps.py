@@ -19,6 +19,11 @@ class LocalMcpTest(unittest.TestCase):
                     "env": {"HERMES_MEMORY_BACKEND": "hindsight"}})
                 self.assertEqual(servers["coderag"], {
                     "type": "streamable-http", "url": "http://127.0.0.1:9750/mcp"})
+                native = (ROOT / "agent-config/hermes/profiles" / profile / "config.yaml").read_text()
+                self.assertIn("mcp_servers:\n  memory-recall:\n    command: python3", native)
+                self.assertIn("/usr/local/libexec/ai-pr-automation/hermes-memory-recall-shim", native)
+                self.assertIn("HERMES_MEMORY_BACKEND: hindsight", native)
+                self.assertIn("  coderag:\n    url: http://127.0.0.1:9750/mcp", native)
 
 
 if __name__ == "__main__": unittest.main()

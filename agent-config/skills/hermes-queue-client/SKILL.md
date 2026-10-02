@@ -5,7 +5,7 @@ description: Submit PR review or maintenance to host Hermes Runs API and check a
 
 # Talk to host Hermes
 
-Use the operator-provided invocation of `scripts/hermes-queue-client.py` **as `hermes-agent`**. Do not call the Hermes CLI directly, select a model/profile, use your personal Hermes home, or ask for API keys. If the invocation is unavailable, report that Hermes is unavailable.
+Use the operator-provided invocation of `scripts/hermes-queue-client.py` as the current local user, whose `~/.hermes` hosts the gateway. Do not use `sudo` or another account, call the Hermes CLI directly, select a model/profile, or ask for API keys. If the invocation is unavailable, report that Hermes is unavailable.
 
 **PR review:** Submit an exact open head on stdin:
 

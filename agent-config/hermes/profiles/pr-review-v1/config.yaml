@@ -3,6 +3,14 @@ gateway:
     enabled: false
 terminal:
   env_passthrough: [GH_CONFIG_DIR]
+mcp_servers:
+  memory-recall:
+    command: python3
+    args: [/usr/local/libexec/ai-pr-automation/hermes-memory-recall-shim]
+    env:
+      HERMES_MEMORY_BACKEND: hindsight
+  coderag:
+    url: http://127.0.0.1:9750/mcp
 model:
   provider: anthropic
   default: claude-sonnet-4-6

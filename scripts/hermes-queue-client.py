@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Typed host Hermes intake (run as hermes-agent)."""
+"""Typed host Hermes intake for the current local account."""
 import argparse
 import hashlib
 import json
@@ -67,9 +67,9 @@ def intake(raw):
 
 
 def host():
-    account = pwd.getpwnam("hermes-agent")
-    if os.geteuid() != account.pw_uid: fail("run as the host hermes-agent account; do not use personal Hermes")
-    home = pathlib.Path(account.pw_dir)
+    if os.geteuid() == 0 or os.geteuid() != os.getuid():
+        fail("run as the current non-root account; do not use sudo")
+    home = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
     hermes_home = home / ".hermes"
     binary = home / ".local/bin/hermes"
     if not hermes_home.is_dir() or not binary.is_file(): fail("host Hermes installation unavailable")
