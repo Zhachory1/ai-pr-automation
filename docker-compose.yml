@@ -140,6 +140,16 @@ services:
       retries: 6
       start_period: 20s
 
+  signal:
+    image: bbernhard/signal-cli-rest-api@sha256:2cf09d66a86fdd210e42ee91662216364acc27da1163a8c44167a77ea3a6559a
+    restart: unless-stopped
+    environment:
+      MODE: native
+    ports:
+      - "127.0.0.1:${SIGNAL_LOCAL_PORT:-18080}:8080"
+    volumes:
+      - signal_state:/home/.local/share/signal-cli
+
   # Lexical guard for direct Compose use; scripts/compose.sh also resolves host symlinks.
   swarmvault-preflight:
     image: busybox:1.36
@@ -433,6 +443,8 @@ services:
         condition: service_healthy
       coderag:
         condition: service_healthy
+      signal:
+        condition: service_started
 
 networks:
   status-internal:
@@ -442,6 +454,7 @@ volumes:
   requests_pgdata:
   hindsight_pgdata:
   coderag_cache:
+  signal_state:
 
 secrets:
   fleet_controller_tls_ca_cert:

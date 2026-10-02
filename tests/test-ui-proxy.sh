@@ -7,7 +7,9 @@ env CODE_ROOT="$tmp/code" SWARMVAULT_VAULT="$tmp/vault" REQUESTS_DB_PASSWORD=x H
   DOC_WRITER_STAGE_HOST="$tmp/stage" HANDOFF_ROOT="$tmp/handoffs" \
   FLEET_CONTROLLER_PASSWORD_FILE=/dev/null FLEET_CONTROLLER_SESSION_SECRET_FILE=/dev/null \
   FLEET_CONTROLLER_TLS_CA_CERT_FILE=/dev/null FLEET_CONTROLLER_TLS_CERT_FILE=/dev/null \
-  FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null HERMES_API_KEYS_FILE=/dev/null docker compose --profile hermes-api-conformance config --format json > "$tmp/config.json"
+  FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null HERMES_API_KEYS_FILE=/dev/null \
+  HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE=/dev/null \
+  docker compose --profile hermes-api-conformance config --format json > "$tmp/config.json"
 python3 - "$tmp/config.json" <<'PY'
 import json,sys
 s=json.load(open(sys.argv[1]))['services']
@@ -16,6 +18,12 @@ assert all(p.get('host_ip') == '127.0.0.1' for p in s['ui-proxy']['ports'])
 assert not s['status'].get('ports')
 assert {p['target'] for p in s['hindsight'].get('ports',[])} == {8888}
 assert not s['coderag'].get('ports')
+signal=s['signal']
+assert signal['image'].startswith('bbernhard/signal-cli-rest-api@sha256:')
+assert {p['target'] for p in signal['ports']} == {8080}
+assert all(p.get('host_ip') == '127.0.0.1' for p in signal['ports'])
+assert any(v['target'] == '/home/.local/share/signal-cli' and v['type'] == 'volume' for v in signal['volumes'])
+assert 'signal' in s['ui-proxy']['depends_on']
 assert {item['source'] for item in s['hermes-api-conformance']['secrets']} == {'hermes_api_keys'}
 for name, service in s.items():
     secrets = {item['source'] for item in service.get('secrets', [])}
@@ -33,6 +41,9 @@ for pair in \
   grep -Fq "server_name $host;" docker/ui-proxy.conf
   grep -Fq "proxy_pass $upstream;" docker/ui-proxy.conf
 done
+grep -Fq 'location /signal/ {' docker/ui-proxy.conf
+grep -Fq 'proxy_pass http://signal:8080/;' docker/ui-proxy.conf
+grep -Fq 'if ($http_origin != "") { return 403; }' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host $http_host;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header X-Fleet-Local-Proxy 1;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Origin $http_origin;' docker/ui-proxy.conf
