@@ -1,21 +1,21 @@
 # Operator grant of repo space for the host-native Hermes fleet.
 #
 # This is scope-of-attention, NOT security. The real boundary is the hermes-agent OS account, the
-# repo-scoped deploy key, the read-only API token, and GitHub branch protection — those enforce which
-# repos and what actions server-side. This file only lists the repositories you have granted the
-# fleet permission to spend effort on. Producers read it before enqueuing repo-scoped work.
+# repo-scoped deploy key, service GH_TOKEN (copied with the same scope to producers), and GitHub
+# branch protection. Those constrain server-side actions. This file lists repositories where the
+# fleet may spend effort. PR-safety can also admit an approved author's PR via PR_SAFETY_ALLOWED_ORGS.
 #
 # Copy to the operator authority path (outside CODE_ROOT and git), e.g.:
 #   /usr/local/etc/ai-pr-automation/authority.yaml   (root-owned, world-readable, root-writable)
-# and point HERMES_AUTHORITY_FILE at it. Use owner/* to grant one GitHub organization. Remove a
-# repo or organization grant to stop the fleet spending effort there.
+# and export HERMES_AUTHORITY_SOURCE_FILE for fleet.sh if not using the default path. Use owner/*
+# to grant one GitHub organization. Review PR_SAFETY_ALLOWED_ORGS too; removing a repository grant
+# alone does not necessarily prevent PR-safety discovery in that organization.
 #
 # Local roles (doc-write, memory-curate) are not repo-scoped and need no entry here.
 repos:
-  # Wildcard entries below intentionally grant owner-wide PR discovery so the
-  # fleet picks up unassigned personal PRs via PR_REVIEW_DISCOVER_ALL_OWNERS.
-  # Use a specific repo (e.g. Zhachory1/ai-pr-automation) to limit scope to a
-  # single repository instead.
+  # These wildcards grant broad authority; default discovery still searches
+  # --assignee @me or --author @me. PR_*_DISCOVER_ALL_OWNERS is not wired from
+  # .env to Compose or host launchd. Prefer a specific repo grant for a pilot.
   - Zhachory1/*
   - zhach1/*
   - ROKT/*

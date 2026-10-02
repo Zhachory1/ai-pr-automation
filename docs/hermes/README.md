@@ -29,8 +29,9 @@ Compose runs:
 - Postgres, Fleet Controller, and support services.
 
 No controller mount exposes Hermes service home, provider OAuth, SSH keys, browser profile, Docker
-socket, or GitHub write credentials. Controller receives profile API key bundle, dedicated bridge
-HMAC key, and deterministic artifact paths. GitHub discovery producers receive only read-only token.
+socket, or GitHub effect credentials. Controller receives profile API key bundle, dedicated bridge
+HMAC key, and deterministic artifact paths. At install, the service account's `GH_TOKEN` is copied
+into the discovery-producer token file: its actual scope is **not** reduced by the copy.
 The bridge has no Postgres, GitHub, or effect credentials. It is trusted only within this single-host
 Docker Desktop-to-loopback deployment.
 
@@ -86,9 +87,10 @@ Default `single` keeps existing Runs API path and request bytes and never calls 
 safety claim. A persisted `kanban:<workflow_id>` marker still recovers through the always-running bridge
 when current configuration is `single`; recovery does not create another model run or council.
 
-Review, maintain, and SWE are direct-effect kinds. Missing/interrupted/malformed or otherwise uncertain
-results enter `reconcile`; matching operation key remains blocked until human disposition. They never
-start a second run automatically.
+Review, maintain, and SWE are direct-effect kinds. Missing/interrupted/malformed maintain or SWE
+results enter `reconcile`; review failures generally settle `failed`. Neither state proves whether a
+GitHub effect landed: inspect the remote PR before manually retrying a failed review or resolving an
+uncertain operation. Unresolved `reconcile` blocks another attempt with the same operation key.
 
 ## Deterministic kind handling
 
@@ -144,10 +146,12 @@ Each published snapshot is recursively changed to read/execute-only. Other share
 directories remain service-owned, `staff`-group-writable `0770`. Memory producer enqueues
 hourly-deduped schedule trigger. Producers make no model calls.
 
-Set in `.env`:
+Configure Compose file paths in `.env`; **export host overrides** when invoking `fleet.sh` or
+`hermes-native.sh`, which do not source `.env`:
 
-- `HERMES_AUTHORITY_FILE`;
-- `GITHUB_READ_TOKEN_FILE`;
+- `HERMES_AUTHORITY_SOURCE_FILE` for `fleet.sh`; it writes the Docker-readable
+  `HERMES_AUTHORITY_FILE` mirror;
+- `GITHUB_READ_TOKEN_FILE` (same token value copied from the service account's `GH_TOKEN` during install);
 - `PR_SAFETY_MERGED_PR_AUTHORS`, policy digest, shared snapshot path, and
   `PR_SAFETY_ANALYSIS_ENGINE=single|kanban`;
 - `HERMES_KANBAN_BRIDGE_KEY_FILE` for host bridge authentication;
@@ -228,9 +232,10 @@ then Compose, then native bridge, dashboard, and gateway. A same-version `down`/
 restart is supported, including recovery of a persisted Kanban marker under `single`.
 
 The state-file guard protects support/profile replacement, but it does not determine engine behavior or
-query Postgres. Before pulling an upgrade, the operator must drain every open Kanban attempt in Postgres;
-do not pull or run `install`, `sync-support`, or `sync-profiles` while one exists. After drain, all bridge
-workflow markers must be archived before support sync. `PR_SAFETY_ANALYSIS_ENGINE=single` still blocks
+query Postgres. Before pulling an upgrade, stop discovery and drain every open Kanban attempt in Postgres **and**
+host-direct review/maintenance cards and journals; the latter are not visible in Postgres. Do not pull or
+run `install`, `sync-support`, or `sync-profiles` while a direct-effect card/attempt remains active or
+uncertain. After drain, all bridge workflow markers must be archived before support sync. `PR_SAFETY_ANALYSIS_ENGINE=single` still blocks
 new Kanban claims even though bridge and key remain available for recovery.
 
 Direct bridge commands remain available for diagnostics:
@@ -263,24 +268,27 @@ Kanban analysis. Final cutover owns policy approval, `ONCALL.md`, SLOs, alerts, 
 
 ## Restricted Kanban council profiles
 
-After validation, stop Hermes and create six restricted workflow clones as the service user:
+This is an **offline profile change**, not a live reload. First stop *all* Compose and host producers, drain/reconcile open Postgres attempts **and host-direct review/maintenance cards/journals**, confirm bridge markers are archived, and record which queue engines/jobs were enabled. Postgres queries alone cannot prove the host-direct work is settled. Only after that verified drain should an operator shut down both control planes; stopping only native Hermes leaves the Compose controller and producers active. `fleet.sh down` removes host Kanban-mode markers and stops memory cron, alerts, safety producer, bridge, dashboard, and gateway. It does not restore them later.
 
 ```bash
-sudo scripts/hermes-native.sh down
+scripts/fleet.sh down
 sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
   /Users/hermes-agent/.hermes/hermes-agent/venv/bin/python \
   scripts/configure-hermes-kanban-profiles.py \
   --hermes-home /Users/hermes-agent/.hermes --service-user hermes-agent \
   --contract agent-config/hermes/workflows/pr-risk-council-kanban.json --apply
-sudo scripts/hermes-native.sh up
 ```
+
+Leave the fleet stopped after this command. In a separate approved activation, inspect the new profiles and choose whether to run `scripts/fleet.sh up`, which starts **all default** producers and may replace support bytes if native preflight fails. Restore previously enabled host producer modes only after reviewing their effect scope and any old persisted attempts.
 
 Original profiles remain unchanged. Clones use Sonnet 5/Haiku 4.5 with no fallback, credentials,
 MCP, plugins, background review, memory, delegation, or regular-session tools. Dispatcher-owned
 workers receive only task-scoped Kanban lifecycle tools. Roll back while stopped with the same command
 using `--restore`.
 
-Create the isolated canary task after restart:
+The following `setup` commands are **live provider-backed workflow creation**, not read-only validation. Use them only in an approved isolated environment with explicit model-spend authorization; tasks can become runnable as soon as the gateway is active.
+
+After separately approved host startup, create the isolated canary task:
 
 ```bash
 sudo -u hermes-agent env HOME=/Users/hermes-agent HERMES_HOME=/Users/hermes-agent/.hermes \
