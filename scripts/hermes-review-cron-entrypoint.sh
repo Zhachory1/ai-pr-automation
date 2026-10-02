@@ -2,6 +2,7 @@
 set -euo pipefail
 schedule="${PR_REVIEW_CRON_SCHEDULE:-*/5 * * * *}"
 [[ "$schedule" =~ ^([0-9*/,-]+\ ){4}[0-9*/,-]+$ ]] || { echo "invalid PR_REVIEW_CRON_SCHEDULE" >&2; exit 2; }
-printf '%s root GH_TOKEN="$(cat /run/secrets/github_discovery_token)" HERMES_AUTHORITY_FILE=/config/authority.yaml HERMES_AUTHORITY_BIN=/app/scripts/hermes-authority.py PR_REVIEW_QUEUE_ENGINE=api /app/bin/hermes-pr-producer review >> /proc/1/fd/1 2>> /proc/1/fd/2\n' "$schedule" > /etc/cron.d/hermes-review
+printf 'PATH=/usr/local/bin:/usr/bin:/bin\n' > /etc/cron.d/hermes-review
+printf '%s root GH_TOKEN="$(cat /run/secrets/github_discovery_token)" HERMES_AUTHORITY_FILE=/config/authority.yaml HERMES_AUTHORITY_BIN=/app/scripts/hermes-authority.py PR_REVIEW_QUEUE_ENGINE=api /app/bin/hermes-pr-producer review >> /proc/1/fd/1 2>> /proc/1/fd/2\n' "$schedule" >> /etc/cron.d/hermes-review
 chmod 0644 /etc/cron.d/hermes-review
 exec cron -f
