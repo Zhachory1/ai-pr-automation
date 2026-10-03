@@ -353,10 +353,6 @@ grep -Fq 'com.example.ai-pr-automation-dispatcher' scripts/hermes-native.sh
 ! grep -Fq 'install -m 0555 "$ROOT/bin/hermes-doc-write-runner"' scripts/hermes-native.sh
 grep -Fq 'provider: anthropic' agent-config/hermes/profiles/doc-write-v1/config.yaml
 grep -Fq 'cli: []' agent-config/hermes/profiles/doc-write-v1/config.yaml
-grep -Fq 'DOC_WRITER_STAGE_DIR: /doc-stage' docker-compose.yml
-grep -Fq 'DOC_WRITER_STAGE_HOST' docker-compose.yml
-grep -Fq 'HANDOFF_ROOT:' docker-compose.yml
-grep -Fq 'DOC_WRITER_STAGE_HOST=' .env.example
 # LaunchDaemon log files must exist before bootstrap; hermes-agent cannot create files in root-owned
 # LOG_ROOT and launchd otherwise exits EX_CONFIG before running the program.
 grep -Fq 'install -m 0600 -o "$SERVICE_USER" -g staff /dev/null "$LOG_ROOT/$logfile.log"' scripts/hermes-native.sh
@@ -368,27 +364,6 @@ grep -Fq 'producer-start)' scripts/hermes-native.sh
 grep -Fq 'producer-stop)' scripts/hermes-native.sh
 grep -Fq 'install -m 0555 -o root -g wheel "$ROOT/bin/hermes-pr-safety-producer" "$SAFETY_PRODUCER_BIN"' scripts/hermes-native.sh
 grep -Fq 'com.example.ai-pr-automation-producer-pr-safety.plist' scripts/hermes-native.sh
-grep -Fq 'sudo env PR_SAFETY_QUEUE_ENGINE="$PR_SAFETY_QUEUE_ENGINE"' scripts/fleet.sh
-grep -Fq 'PR_SAFETY_ALLOWED_ORGS="$PR_SAFETY_ALLOWED_ORGS" "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
-grep -Fq 'sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" up' scripts/fleet.sh
-grep -Fq 'HERMES_DOCKER_AUTHORITY_FILE:-/Users/Shared/zhach-ai-pr-automation/authority.yaml' scripts/fleet.sh
-grep -Fq 'export HERMES_AUTHORITY_FILE="$DOCKER_AUTHORITY"' scripts/fleet.sh
-grep -Fq 'cat "$AUTHORITY_SOURCE" > "$DOCKER_AUTHORITY"' scripts/fleet.sh
-! grep -Fq 'mv "$temporary" "$DOCKER_AUTHORITY"' scripts/fleet.sh
-python3 - <<'PY'
-from pathlib import Path
-source=Path('scripts/fleet.sh').read_text()
-up=source[source.index('  up)'):source.index('  down)')]
-down=source[source.index('  down)'):source.index('  status)')]
-assert 'export HERMES_KANBAN_BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"' in source
-assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" up') == 1
-assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE" "$ROOT/scripts/hermes-native.sh" bridge-start') == 1
-assert up.index('hermes-native.sh" up') < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up') < up.index('hermes-native.sh" producer-start')
-assert 'bridge-recovery-state' not in source and 'read_safety_engine' not in source and 'resume' not in source
-assert down.index('hermes-native.sh" producer-stop') < down.index('compose.sh" down') < down.index('hermes-native.sh" down')
-PY
-grep -Fq 'export HANDOFF_ROOT=' scripts/fleet.sh
-grep -Fq 'HERMES_SHARED_RUNTIME_ROOT:-/Users/Shared/ai-pr-automation-runtime' scripts/fleet.sh
 grep -Fq 'MEMORY_CURATOR_STATE_DIR=$MEMORY_STATE' scripts/configure-hermes-role-env.sh
 grep -Fq 'install -d -m 0770 -o "$SERVICE_USER" -g staff "$DOC_STAGE" "$HANDOFF" "$MEMORY_STATE"' scripts/configure-hermes-role-env.sh
 grep -Fq 'install -d -m 0750 -o root -g staff "$SNAPSHOTS"' scripts/configure-hermes-role-env.sh

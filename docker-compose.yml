@@ -1,50 +1,8 @@
-# Agent fleet substrate. See docker/README.md.
-# Bring up:  cp .env.example .env  && edit  && scripts/compose.sh up -d --build  && scripts/m0-verify.sh
-#
-# Optional local sidecars: coderag serves its graph UI and swarmvault watches its mounted vault.
-# Both use local-only storage and build from pinned upstream commits in docker/.
+# Compose support services and direct PR cron producers. See docker/README.md.
 
 name: agent-fleet
 
 services:
-  # --- our request tracking ---
-  db-requests:
-    image: postgres:16
-    container_name: fleet-db-requests
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${REQUESTS_DB_USER:-fleet}
-      POSTGRES_PASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      POSTGRES_DB: ${REQUESTS_DB_NAME:-fleet}
-    ports:
-      - "${REQUESTS_DB_PORT:-5432}:5432"
-    volumes:
-      - requests_pgdata:/var/lib/postgresql/data
-      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
-    networks:
-      - default
-      - status-internal
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet}"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  # Re-runs additive upgrade migrations for existing database volumes.
-  schema-migrate:
-    image: postgres:16
-    restart: "no"
-    environment:
-      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-    volumes:
-      - ./docker/initdb:/migrations:ro
-    # 01-schema.sql is the immutable fresh-install baseline; existing volumes receive upgrades only.
-    # $$f is escaped so the shell (not compose) expands the loop var; ${REQUESTS_DB_*} stay for compose.
-    command: ["sh", "-ec", "for f in /migrations/0[2-9]-*.sql /migrations/1[0-9]-*.sql; do echo \"applying $$f\"; psql -h db-requests -U ${REQUESTS_DB_USER:-fleet} -d ${REQUESTS_DB_NAME:-fleet} -v ON_ERROR_STOP=1 -f \"$$f\"; done"]
-    depends_on:
-      db-requests:
-        condition: service_healthy
-
   # --- hindsight: agent memory (network service, HTTP :8888 / UI :9999) ---
   # Structure adopted from vectorize-io/hindsight docker/docker-compose/external-pg.
   hindsight-db:
@@ -84,7 +42,6 @@ services:
         condition: service_healthy
     networks:
       - default
-      - status-internal
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=3).close()"]
       interval: 10s
@@ -150,168 +107,6 @@ services:
     volumes:
       - signal_state:/home/.local/share/signal-cli
 
-  # Lexical guard for direct Compose use; scripts/compose.sh also resolves host symlinks.
-  swarmvault-preflight:
-    image: busybox:1.36
-    restart: "no"
-    environment:
-      CODE_ROOT: ${CODE_ROOT:?set CODE_ROOT}
-      SWARMVAULT_VAULT: ${SWARMVAULT_VAULT:?set SWARMVAULT_VAULT outside CODE_ROOT}
-    volumes:
-      - ./docker/swarmvault-preflight.sh:/usr/local/bin/swarmvault-preflight:ro
-    command: ["/usr/local/bin/swarmvault-preflight"]
-
-  # --- swarmvault: shared doc vault + continuous inbox watcher ---
-  swarmvault-watch:
-    image: agent-fleet/swarmvault:${SWARMVAULT_VERSION:-latest}
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.swarmvault
-      args:
-        SWARMVAULT_REF: ${SWARMVAULT_REF:-815412d24298e59e5073ded1ddd6c0e6aee9b91b}
-    container_name: fleet-swarmvault-watch
-    restart: unless-stopped
-    volumes:
-      - ${SWARMVAULT_VAULT:?set SWARMVAULT_VAULT outside CODE_ROOT}:/vault
-    working_dir: /vault
-    healthcheck:
-      test: ["CMD-SHELL", "test -f /vault/swarmvault.config.json && test -s /vault/state/watcher.pid && kill -0 $$(cat /vault/state/watcher.pid)"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 20s
-    depends_on:
-      swarmvault-preflight:
-        condition: service_completed_successfully
-
-  # --- swarmvault: read-only Streamable HTTP MCP bridge ---
-  swarmvault-mcp:
-    image: agent-fleet/swarmvault:${SWARMVAULT_VERSION:-latest}
-    container_name: fleet-swarmvault-mcp
-    restart: unless-stopped
-    environment:
-      SWARMVAULT_MCP_PORT: "9760"
-    volumes:
-      - ${SWARMVAULT_VAULT:?set SWARMVAULT_VAULT outside CODE_ROOT}:/vault:ro
-    working_dir: /vault
-    command: ["serve-mcp"]
-    expose:
-      - "9760"
-    networks:
-      - default
-    healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:9760/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-      start_period: 10s
-    depends_on:
-      swarmvault-watch:
-        condition: service_healthy
-
-  # --- status: local web view (M3) ---
-  # Renders running/queued/recent plus human-review queues. Operator session, CSRF, Origin, Host,
-  # and localhost binding protect every control action.
-  status:
-    image: agent-fleet/status:${STATUS_VERSION:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile.status
-    container_name: fleet-status
-    restart: unless-stopped
-    expose:
-      - "8080"
-    environment:
-      REQUESTS_DB_HOST: db-requests
-      REQUESTS_DB_PORT: "5432"
-      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
-      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
-      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      PR_PRODUCER_REPOSITORIES: ${PR_PRODUCER_REPOSITORIES:-}
-      PR_PRODUCER_ORGS: ${PR_PRODUCER_ORGS:-}
-      PR_PRODUCER_ALLOW_ALL_REPOS: ${PR_PRODUCER_ALLOW_ALL_REPOS:-false}
-      DOC_WRITE_DAILY_CAP: ${DOC_WRITE_DAILY_CAP:-30}
-      DOC_WRITER_STAGE_DIR: /work
-      HINDSIGHT_URL: http://hindsight:8888
-      HANDOFF_ROOT: ${HANDOFF_ROOT:-/var/empty}   # validate swe-implement handoff submissions against PR-safety server paths
-      STATUS_BIND: 0.0.0.0
-      FLEET_CONTROLLER_PUBLIC_PORT: ${STATUS_PORT:-8080}
-      FLEET_CONTROLLER_USERNAME: ${FLEET_CONTROLLER_USERNAME:-fleet}
-      FLEET_CONTROLLER_TRUST_LOCAL_PROXY: "true"
-      FLEET_CONTROLLER_SESSION_SECRET_FILE: /run/secrets/fleet_controller_session_secret
-      FLEET_CONTROLLER_TLS_CERT_FILE: /run/secrets/fleet_controller_tls_cert
-      FLEET_CONTROLLER_TLS_KEY_FILE: /run/secrets/fleet_controller_tls_key
-      FLEET_CONTROLLER_SESSION_SECONDS: ${FLEET_CONTROLLER_SESSION_SECONDS:-43200}
-    secrets:
-      - fleet_controller_tls_ca_cert
-      - fleet_controller_session_secret
-      - fleet_controller_tls_cert
-      - fleet_controller_tls_key
-    volumes:
-      - ${DOC_WRITER_STAGE_HOST:?set DOC_WRITER_STAGE_HOST to the native Hermes stage directory}:/work:ro
-      - ${HANDOFF_ROOT:?set HANDOFF_ROOT to the native Hermes handoff directory}:${HANDOFF_ROOT}:ro
-    networks:
-      - status-internal
-    depends_on:
-      db-requests:
-        condition: service_healthy
-      schema-migrate:
-        condition: service_completed_successfully
-
-  hermes-controller:
-    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile.hermes-controller
-    container_name: fleet-hermes-controller
-    restart: unless-stopped
-    environment:
-      PGHOST: db-requests
-      PGPORT: "5432"
-      PGUSER: ${REQUESTS_DB_USER:-fleet}
-      PGDATABASE: ${REQUESTS_DB_NAME:-fleet}
-      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      HERMES_API_KEYS_FILE: /run/secrets/hermes_api_keys
-      HERMES_API_BASE_URL: http://host.docker.internal:8642
-      HERMES_KANBAN_BRIDGE_KEY_FILE: /run/secrets/hermes_kanban_bridge_key
-      HERMES_KANBAN_BRIDGE_URL: http://host.docker.internal:8766
-      HERMES_KANBAN_BRIDGE_HOST: hermes-council.localhost:8766
-      PR_SAFETY_ANALYSIS_ENGINE: ${PR_SAFETY_ANALYSIS_ENGINE:-single}
-      HERMES_CONTROLLER_LEASE_SECONDS: ${HERMES_CONTROLLER_LEASE_SECONDS:-120}
-      HERMES_CONTROLLER_POLL_SECONDS: ${HERMES_CONTROLLER_POLL_SECONDS:-2}
-      DOC_WRITER_STAGE_DIR: /doc-stage
-      DOC_WRITER_INBOX_DIR: /doc-inbox
-      DOC_WRITER_PUBLICATION_BIN: /app/doc-writer-publication
-      DOC_ALERT_SPOOL_DIR: ${DOC_ALERT_SPOOL_DIR:-}
-      PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}
-      PR_SAFETY_POLICY_PATH: ${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}
-      PR_SAFETY_POLICY_VERSION: ${PR_SAFETY_POLICY_VERSION:-v1}
-      PR_SAFETY_POLICY_DIGEST: ${PR_SAFETY_POLICY_DIGEST:-}
-      HANDOFF_ROOT: ${HANDOFF_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-handoffs}
-      MEMORY_SOURCE_ROOT: /memory-sources
-      MEMORY_CURATOR_STATE_DIR: /memory-state
-      HERMES_MEMORY_TEAM_URL: ${HERMES_MEMORY_TEAM_URL:-https://rokt-agent-memory.eng.roktinternal.com/mcp/team-ads-success/}
-      HERMES_MEMORY_ORG_URL: ${HERMES_MEMORY_ORG_URL:-https://rokt-agent-memory.eng.roktinternal.com/mcp/Rokt%20Builders/}
-      HERMES_MEMORY_ORG_NAME_BLOCKLIST: ${HERMES_MEMORY_ORG_NAME_BLOCKLIST:-}
-    secrets:
-      - hermes_api_keys
-      - hermes_kanban_bridge_key
-    volumes:
-      - ${DOC_WRITER_STAGE_HOST:-/Users/Shared/ai-pr-automation-runtime/doc-writer}:/doc-stage
-      - ${DOC_WRITER_INBOX_HOST:-/Users/zhach/private-docs/inbox}:/doc-inbox
-      - ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}:${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}:ro
-      - ./policy/pr-safety-policy-v1.md:${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}:ro
-      - ${HANDOFF_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-handoffs}:${HANDOFF_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-handoffs}
-      - ${MEMORY_SOURCE_HOST:-/Users/zhach/private-docs}:/memory-sources:ro
-      - ${MEMORY_CURATOR_STATE_HOST:-/Users/Shared/ai-pr-automation-runtime/memory-curator}:/memory-state
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      db-requests:
-        condition: service_healthy
-      schema-migrate:
-        condition: service_completed_successfully
-
   pr-producer-review:
     image: agent-fleet/hermes-pr-review-cron:latest
     build:
@@ -323,31 +118,11 @@ services:
       HERMES_API_BASE_URL: http://host.docker.internal:8642
     secrets: [github_discovery_token, hermes_review_key]
     volumes:
-      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
+      - ${HERMES_AUTHORITY_FILE:?set HERMES_AUTHORITY_FILE to the Docker-readable operator authority file}:/config/authority.yaml:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
   pr-producer-maintain:
-    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
-    restart: unless-stopped
-    command: ["/app/hermes-compose-producer.sh", "maintain"]
-    environment:
-      REQUESTS_DB_HOST: db-requests
-      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
-      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
-      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      HERMES_AUTHORITY_FILE: /config/authority.yaml
-      GITHUB_TOKEN_FILE: /run/secrets/github_read_token
-      PRODUCER_INTERVAL_SECONDS: ${PR_PRODUCER_INTERVAL_SECONDS:-300}
-      PR_MAINTAIN_QUEUE_ENGINE: ${PR_MAINTAIN_QUEUE_ENGINE:-postgres}
-    secrets: [github_read_token]
-    volumes:
-      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
-    depends_on:
-      schema-migrate: {condition: service_completed_successfully}
-
-  pr-producer-maintain-direct:
-    profiles: ["direct-maintain"]
     image: agent-fleet/hermes-pr-review-cron:latest
     build:
       context: .
@@ -359,62 +134,7 @@ services:
       HERMES_API_BASE_URL: http://host.docker.internal:8642
     secrets: [github_discovery_token, hermes_maintain_key]
     volumes:
-      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  pr-safety-producer:
-    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
-    restart: unless-stopped
-    user: "0:0"
-    command: ["/app/hermes-compose-producer.sh", "pr-safety"]
-    environment:
-      REQUESTS_DB_HOST: db-requests
-      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
-      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
-      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      HERMES_AUTHORITY_FILE: /config/authority.yaml
-      GITHUB_TOKEN_FILE: /run/secrets/github_read_token
-      PRODUCER_INTERVAL_SECONDS: ${PR_SAFETY_PRODUCER_INTERVAL_SECONDS:-60}
-      PR_SAFETY_QUEUE_ENGINE: ${PR_SAFETY_QUEUE_ENGINE:-postgres}
-      PR_SAFETY_MERGED_PR_AUTHORS: ${PR_SAFETY_MERGED_PR_AUTHORS:-roktfleet,brucerokt}
-      PR_SAFETY_ALLOWED_ORGS: ${PR_SAFETY_ALLOWED_ORGS:-ROKT}
-      PR_SAFETY_SNAPSHOT_ROOT: ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}
-      PR_SAFETY_POLICY_ROOT: /usr/local/etc/ai-pr-automation
-      PR_SAFETY_POLICY_PATH: ${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}
-      PR_SAFETY_POLICY_VERSION: ${PR_SAFETY_POLICY_VERSION:-v1}
-      PR_SAFETY_POLICY_DIGEST: ${PR_SAFETY_POLICY_DIGEST:-}
-    secrets: [github_read_token]
-    volumes:
-      - ${HERMES_AUTHORITY_FILE:-./agent-config/hermes/authority.example.yaml}:/config/authority.yaml:ro
-      - ${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}:${PR_SAFETY_SNAPSHOT_ROOT:-/Users/Shared/ai-pr-automation-runtime/safety-snapshots}
-      - ./policy/pr-safety-policy-v1.md:${PR_SAFETY_POLICY_PATH:-/usr/local/etc/ai-pr-automation/pr-safety-policy-v1.md}:ro
-    depends_on:
-      schema-migrate: {condition: service_completed_successfully}
-
-  memory-curate-producer:
-    image: agent-fleet/hermes-controller:${HERMES_CONTROLLER_VERSION:-latest}
-    restart: unless-stopped
-    command: ["/app/hermes-compose-producer.sh", "memory"]
-    environment:
-      REQUESTS_DB_HOST: db-requests
-      REQUESTS_DB_USER: ${REQUESTS_DB_USER:-fleet}
-      REQUESTS_DB_NAME: ${REQUESTS_DB_NAME:-fleet}
-      PGPASSWORD: ${REQUESTS_DB_PASSWORD:?set REQUESTS_DB_PASSWORD}
-      PRODUCER_INTERVAL_SECONDS: ${HERMES_MEMORY_CURATE_INTERVAL_SECONDS:-21600}
-      MEMORY_CURATE_QUEUE_ENGINE: ${MEMORY_CURATE_QUEUE_ENGINE:-postgres}
-    depends_on:
-      schema-migrate: {condition: service_completed_successfully}
-
-  hermes-api-conformance:
-    profiles: ["hermes-api-conformance"]
-    image: python:3.11-alpine@sha256:0495f5559318affa673172ec7e35cd0a5213e4aaf4c76d0a66554c0af97b157e
-    restart: "no"
-    command: ["python3", "/app/hermes-api-conformance.py", "--base-url", "http://host.docker.internal:8642", "--keys-file", "/run/secrets/hermes_api_keys", "--wait-seconds", "60"]
-    volumes:
-      - ./scripts/hermes-api-conformance.py:/app/hermes-api-conformance.py:ro
-    secrets:
-      - hermes_api_keys
+      - ${HERMES_AUTHORITY_FILE:?set HERMES_AUTHORITY_FILE to the Docker-readable operator authority file}:/config/authority.yaml:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -428,27 +148,19 @@ services:
       - ./docker/ui-proxy.conf:/etc/nginx/conf.d/default.conf:ro
       - ./docker/ui-index.html:/usr/share/nginx/html/index.html:ro
     secrets:
-      - fleet_controller_tls_ca_cert
       - fleet_controller_tls_cert
       - fleet_controller_tls_key
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - default
-      - status-internal
     depends_on:
-      status:
-        condition: service_started
       hindsight:
         condition: service_healthy
       coderag:
         condition: service_healthy
       signal:
         condition: service_started
-
-networks:
-  status-internal:
-    internal: true
 
 volumes:
   requests_pgdata:
@@ -457,23 +169,13 @@ volumes:
   signal_state:
 
 secrets:
-  fleet_controller_tls_ca_cert:
-    file: ${FLEET_CONTROLLER_TLS_CA_CERT_FILE:?set FLEET_CONTROLLER_TLS_CA_CERT_FILE}
-  fleet_controller_session_secret:
-    file: ${FLEET_CONTROLLER_SESSION_SECRET_FILE:?set FLEET_CONTROLLER_SESSION_SECRET_FILE}
   fleet_controller_tls_cert:
     file: ${FLEET_CONTROLLER_TLS_CERT_FILE:?set FLEET_CONTROLLER_TLS_CERT_FILE}
   fleet_controller_tls_key:
     file: ${FLEET_CONTROLLER_TLS_KEY_FILE:?set FLEET_CONTROLLER_TLS_KEY_FILE}
-  hermes_api_keys:
-    file: ${HERMES_API_KEYS_FILE:?set HERMES_API_KEYS_FILE}
-  hermes_kanban_bridge_key:
-    file: ${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:?set HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE}
-  github_read_token:
-    file: ${GITHUB_READ_TOKEN_FILE:-/dev/null}
   github_discovery_token:
-    file: ${GITHUB_DISCOVERY_TOKEN_FILE:-/dev/null}
+    file: ${GITHUB_DISCOVERY_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-discovery-token}
   hermes_review_key:
-    file: ${HERMES_REVIEW_API_KEY_FILE:-/dev/null}
+    file: ${HERMES_REVIEW_API_KEY_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-review-key}
   hermes_maintain_key:
-    file: ${HERMES_MAINTAIN_API_KEY_FILE:-/dev/null}
+    file: ${HERMES_MAINTAIN_API_KEY_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/hermes-maintain-key}

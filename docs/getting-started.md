@@ -1,88 +1,34 @@
-# From zero to a running fleet (macOS)
+# Getting started (macOS)
 
-This is the **host-native Hermes** deployment: Docker Compose holds the queue, producers, controller, and support services; a dedicated non-admin `hermes-agent` macOS account runs Hermes and its model/tool profiles. It is **not** the older Compose-embedded Hermes worker setup. Start only on a new host; upgrades and existing queued work need the drain/reconcile guidance in [Hermes operations](hermes/README.md#operations).
+This runtime uses the **current user's** `~/.hermes` installation. The separate `hermes-agent` service-account installer, Fleet Controller, request database, and host Kanban bridge are retired from default startup. Do not invoke `sudo scripts/hermes-native.sh install` or use cross-user Hermes calls to set up this fleet.
 
-**Activation boundary:** `scripts/fleet.sh up` starts the host gateway and bridge, then the Compose controller and *review, maintenance, PR-safety, and memory* producers. Discovery may immediately enqueue existing eligible work; the controller can invoke a paid model and the host profiles can make GitHub changes. It is not a dry run or a review-only switch. Bare `scripts/compose.sh up -d --build` likewise starts the default producers/controller. Do not run either until the repository, provider, credential, and data-boundary checks below are approved. There is no documented/tested full-fleet idle `up` command that enables only one workflow.
+## Prerequisites
 
-## 1. Host and permissions
+- Docker Desktop with Compose, Git, Python 3, Bash, and the Hermes CLI installed for your macOS account.
+- A user-level Hermes gateway, with `pr-review-v1` and `pr-maintain-v1` installed under `~/.hermes/profiles/`. Use the version-compatible profile definitions in `agent-config/hermes/profiles/` and configure each profile's `API_SERVER_KEY` in its owner-only `.env`. The gateway must enable the profile-scoped Runs API on `127.0.0.1:8642`. Installing these profiles does not authorize a model run.
+- A repository authority YAML file with only approved `owner/repo` entries. The wildcard [example](../agent-config/hermes/authority.example.yaml) is **not** an operator grant. `fleet.sh` validates the source file and mirrors it into a Docker-readable private directory. It reads non-default `HERMES_AUTHORITY_SOURCE_FILE` and `HERMES_DOCKER_AUTHORITY_FILE` from exported shell variables, not from Compose `.env`; export both when overriding their default paths. Bare Compose requires `HERMES_AUTHORITY_FILE` explicitly and will not fall back to the example.
+- TLS leaf certificate and key for the loopback HTTPS proxy, configured through `FLEET_CONTROLLER_TLS_CERT_FILE` and `FLEET_CONTROLLER_TLS_KEY_FILE` (legacy variable names). Existing valid material can be reused; [`scripts/generate-ui-tls.sh`](../scripts/generate-ui-tls.sh) creates a new set without overwriting one.
 
-Install Docker Desktop with `docker compose`, Git, Python 3, Bash, `jq`, `psql`, `openssl`, and `gh` (the installer configures `gh` under the service account); you need administrator access for the Hermes installer and launchd. Create a dedicated **standard, non-admin** macOS account named `hermes-agent` using your organization's approved account procedure, with home `/Users/hermes-agent`. Verify `id hermes-agent` before installing. The install script checks this account; it does not create it. No `systemd` or Linux deployment is documented for this runtime.
+Copy [`.env.example`](../.env.example) to `.env`, set `CODE_ROOT`, the Hindsight database password and provider settings, and the TLS paths. Keep `.env` and credential files outside commits. From a separate worktree, set `COMPOSE_ENV_FILES` to the operator `.env` before using `fleet.sh` or Compose.
 
-Get a fresh repository checkout and work from its root:
+## Support-only startup
 
-```bash
-git clone https://github.com/Zhachory1/ai-pr-automation.git
-cd ai-pr-automation
-docker compose version
-```
-
-After creating the service account, `id hermes-agent` must succeed. The privileged `sudo scripts/hermes-native.sh install` command downloads a pinned installer, writes root-owned support files and launchd plists, provisions profiles, and **removes retired host jobs/files**. Use it only after reviewing those effects; it is not a harmless validation command. Do not run it against an existing fleet with open Kanban attempts. See [host-native lifecycle](hermes/README.md#operations).
-
-## 2. Choose scope, provider, and secrets before installing
-
-Select repositories you may process. Repository authority YAML is a **scope-of-attention allowlist**, not the security boundary: configure just the approved `owner/repo` entries under `/usr/local/etc/ai-pr-automation/authority.yaml` rather than copying the wildcard entries in [`authority.example.yaml`](../agent-config/hermes/authority.example.yaml). Check it with `scripts/hermes-authority.py --file /usr/local/etc/ai-pr-automation/authority.yaml --check owner/repo`. The `fleet.sh up` command validates this file and mirrors it to a Docker-readable location. **PR-safety discovery has an additional OR condition**: an allowed `PR_SAFETY_ALLOWED_ORGS` match can admit merged PRs outside the authority's repository list when their author matches `PR_SAFETY_MERGED_PR_AUTHORS`. Do not assume a one-repo authority file limits PR-safety to one repository; approve the effective authors *and* organizations before any live `up`. If that scope is too broad, do not run `fleet.sh up` until a narrower activation path is built. GitHub branch protection, deploy-key scope, provider policy, and the service-account boundary remain necessary.
-
-The host service account needs its **private** `/Users/hermes-agent/.hermes/.env` with a `GH_TOKEN` of at least 20 characters **before** `hermes-native.sh install`; [`configure-hermes-api.py`](../scripts/configure-hermes-api.py) reads that value, provisions the service account's GitHub CLI, and copies it to the Compose producer token file. `HERMES_API_KEYS_FILE` and `GITHUB_READ_TOKEN_FILE` must share the same private parent directory; the template defaults meet that requirement. Give that token only the approved repository permissions; do not assume the producer copy is independently read-only if the service token is write-scoped. Host Hermes provider credentials/OAuth and repository deploy keys are separate service-account setup; do not put those host secrets in this checkout or the Compose `.env` (Hindsight's *container* provider key belongs in `.env`). Confirm your organization permits selected repository/PR content and local private sources to reach each enabled provider and memory destination. Do not start the fleet until the required profiles can authenticate with approved provider credentials.
-
-## 3. Configure Compose and Fleet Controller TLS
+Stop old effect-producing controller/producers before switching an existing fleet; `support-up` does not stop orphans. Do not delete its request volume or unresolved rows. Then:
 
 ```bash
-cp .env.example .env
-chmod 600 .env
-```
-
-Replace machine-specific examples in [`.env.example`](../.env.example): `CODE_ROOT` (host-absolute directory), request/Hindsight DB passwords, keyed `HINDSIGHT_API_LLM_PROVIDER`/`HINDSIGHT_API_LLM_API_KEY` (the substrate retain test calls a paid provider), `SWARMVAULT_VAULT` (outside `CODE_ROOT`), UI identity, authority source/mirror, doc/handoff/snapshot/private-source paths, and file paths for the Hermes API key bundle, bridge keys, and producer token. For a first install, keep the template's `/Users/Shared/ai-pr-automation-runtime` and `/usr/local/etc/ai-pr-automation` host paths: `hermes-native.sh` and `fleet.sh` use defaults or *exported shell variables*, not your Compose `.env`, for their own host paths. If customizing those paths, supply matching variables to each host command (use explicit `sudo env NAME=value` for privileged commands; `sudo` may drop shell exports) and verify the resulting files before startup; a `.env` edit alone will not redirect the host installer. Do not put secret values in command-line arguments. Review now runs from Compose cron directly through Hermes; keep `PR_MAINTAIN_QUEUE_ENGINE=postgres`, `PR_SAFETY_QUEUE_ENGINE=postgres`, and `PR_SAFETY_ANALYSIS_ENGINE=single` for the other default paths. Inspect the PR-safety authors/orgs and memory sources as well; `fleet.sh up` starts their producers, not just the PR workflows. `fleet.sh` exports default PR-safety authors/orgs (`roktfleet,brucerokt` / `ROKT`) from its **shell environment**, overriding conflicting `.env` values in Compose. To customize those values, export approved nonempty values for the `fleet.sh up` invocation and inspect the effective configuration; an empty value is replaced by the script's default. Do not commit `.env`.
-
-Before any `scripts/compose.sh up`, create Fleet Controller's session secret and CA/leaf TLS files **outside `CODE_ROOT` and any Git tree**. The repository already supplies a no-overwrite TLS generator; do not hand-roll a second CA:
-
-```bash
-install -d -m 700 "$HOME/.config/ai-pr-automation"
-umask 077
-openssl rand -hex 32 > "$HOME/.config/ai-pr-automation/fleet-controller-session-secret"
-scripts/generate-ui-tls.sh
-```
-
-The generator writes TLS material to `$HOME/.config/ai-pr-automation-ui`, the directory in `.env.example` once `/Users/YOU` is replaced. Set all four `FLEET_CONTROLLER_*_FILE` paths in `.env` to the generated CA, leaf certificate, private key, and session secret; the session secret is in the *other* directory. The private key and session file must be owned by the operator (or root), mode `0600`, under an owner-only directory. The generator destroys the CA signing key and **prints** (but does not execute) the login-Keychain trust command. Trusting a CA is a separate operator decision. The generator refuses to overwrite an existing TLS directory; do not delete an existing CA just to rerun setup.
-
-## 4. Install and inspect host runtime, without starting the fleet
-
-With the service-account environment and approved authority ready, perform the privileged installation, then its preflight:
-
-```bash
-sudo scripts/hermes-native.sh install
-sudo scripts/hermes-native.sh preflight
-```
-
-Installation provisions profile-scoped API keys and the bridge key at the host script's default paths (or matching *exported* path overrides); `.env` alone does not redirect the installer. The host account owns runtime credentials while Compose gets controller-readable copies. It does **not** authorize model calls or prove a full end-to-end PR. `scripts/hermes-native.sh sync-support` is not a dry run: it also replaces host support files and retires old jobs. If preflight fails, inspect the error rather than falling back to a broad `up`.
-
-Before starting Compose, create the two review cron files named by `GITHUB_DISCOVERY_TOKEN_FILE` and `HERMES_REVIEW_API_KEY_FILE` in `.env`: a repository-scoped discovery token, and only the `pr-review-v1` key from the generated Hermes bundle. Keep both files owner-only and nonempty; review cron exits if either is missing. The old review producer is replaced, not an additional service.
-
-After installation has created the API-key bundle and you have separately provisioned the two review cron files referenced in `.env`, inspect Compose configuration **without dumping rendered secrets**:
-
-```bash
-scripts/compose.sh config --quiet
-python3 scripts/validate-fleet-controller-secrets.py --env-file .env --repo .
-```
-
-The second command checks ownership, non-symlink paths, modes, certificate extensions and trust chain. `scripts/compose.sh` also runs this preflight on *all* `up`/`start`/`restart`/`run` actions, even when you select a single service.
-
-## 5. Explicitly authorize live activation
-
-Before running `scripts/fleet.sh up`, confirm all of the following:
-
-- The authority file contains **only** intended repos **and** `PR_SAFETY_ALLOWED_ORGS` / `PR_SAFETY_MERGED_PR_AUTHORS` cover only an approved merged-PR population. Repository authority alone does not narrow PR-safety discovery. GitHub branch protection and deploy keys restrict effect scope. The `hermes-agent` account has provider and GitHub credentials approved for their roles.
-- Review/maintenance PRs, merged-PR safety authors, memory source paths, and document inbox/stage destinations have been reviewed. Default producers are not optional merely because you did not visit their UI.
-- Fleet Controller TLS files, the review cron's discovery token and API key files, the other producers' token, API-key bundle, and bridge keys are in the configured locations; database and Hindsight credentials are set.
-- You accept discovery, provider billing, and potential GitHub writes now. Have an operator plan to watch the first requests and stop/reconcile unexpected effects.
-
-Only then run the **live** command from the root checkout:
-
-```bash
-scripts/fleet.sh up
+scripts/fleet.sh support-up
 scripts/fleet.sh status
-scripts/fleet.sh logs
 ```
 
-`fleet.sh up` starts the host gateway/dashboard/bridge, runs an API conformance check, and starts default Compose controller/producers; it may also create or refresh service-account configuration and the Docker-readable authority/key copies. Open <https://fleet.localhost:8080> for the authenticated Fleet Controller (or <https://localhost:8080> for the UI landing page). Check the review cron logs/Hermes run and the selected PR on GitHub; review no longer enters the Fleet Controller queue. That queue remains for other workflows until their cutover. To stop the fleet **without deleting named volumes**, use `scripts/fleet.sh down` after considering active attempts; verify remote effects before replaying any `reconcile` row. Never use `docker compose down -v` as routine shutdown.
+This starts Hindsight, Coderag, Signal, and nginx, **not** the PR cron producers. The personal Hermes gateway runs independently and remains up when `scripts/fleet.sh down` stops Compose. Check <https://hermes.localhost:8080/health> without using a model or GitHub call. Neither startup nor the proxy sends a Signal message.
 
-For a first test, use a deliberately scoped repository and authorized PR in an environment approved for provider calls and GitHub writes. Continue with [configuration](configuration.md) for paths/credentials, [architecture](architecture.md) for trust boundaries, and [operations](operations.md) for recovery. The [documentation plan](documentation-plan.md) leaves an independent clean-host trial unchecked; this prose has not been validated by a live installation.
+## Opt into live PR discovery
+
+Place a read-only GitHub discovery token and the separate `pr-review-v1` / `pr-maintain-v1` Runs API keys at the three file paths in `.env.example`. Each must be nonempty, owned by your user, mode `0600`, in an owner-only directory. Configure Hermes provider and GitHub-effect credentials in your personal installation, not in the Compose producer containers. Review repository authority, token scope, provider/data policy, and the current PR population before starting:
+
+```bash
+scripts/fleet.sh up     # starts both cron producers; can incur model costs and GitHub effects
+scripts/fleet.sh pause  # stops PR discovery without stopping support services
+```
+
+Do not use `fleet.sh up`, a bare `docker compose up`, or a real PR submission as a read-only validation command. For inspection and preserved old request state, use the [operator runbook](operations.md). Document publication, memory writes, and PR-safety handoffs remain parked; this setup does not revive them.
