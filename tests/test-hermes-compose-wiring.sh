@@ -1,69 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-services=(hermes-controller pr-producer-review pr-producer-maintain pr-safety-producer memory-curate-producer)
-for service in "${services[@]}"; do grep -Eq "^  ${service}:" docker-compose.yml || { echo "missing $service" >&2; exit 1; }; done
-grep -Fq 'HERMES_API_BASE_URL: http://host.docker.internal:8642' docker-compose.yml
-grep -Fq 'HERMES_KANBAN_BRIDGE_URL: http://host.docker.internal:8766' docker-compose.yml
-grep -Fq 'HERMES_KANBAN_BRIDGE_HOST: hermes-council.localhost:8766' docker-compose.yml
-grep -Fq 'PR_SAFETY_ANALYSIS_ENGINE: ${PR_SAFETY_ANALYSIS_ENGINE:-single}' docker-compose.yml
-grep -Fq 'hermes_api_keys' docker-compose.yml
-[[ "$(grep -c 'hermes_kanban_bridge_key' docker-compose.yml)" == 3 ]]
-grep -Fq 'GITHUB_TOKEN_FILE: /run/secrets/github_read_token' docker-compose.yml
-grep -A5 '^  pr-safety-producer:' docker-compose.yml | grep -Fq 'user: "0:0"'
-grep -Fq 'GITHUB_READ_TOKEN_FILE=' scripts/fleet.sh
-grep -Fq -- '-h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT"' scripts/hermes-compose-producer.sh
-grep -Fq 'gh auth setup-git' scripts/hermes-compose-producer.sh
-! grep -A35 '^  hermes-controller:' docker-compose.yml | grep -Eq '(/Users/.*/\.hermes|\.ssh|OAuth|docker.sock)'
-! grep -Eq 'dispatcher-start' scripts/fleet.sh
-grep -Fq 'hermes-native.sh" producer-start' scripts/fleet.sh
-grep -Eq '^  producer-(start|stop)\)' scripts/hermes-native.sh
-grep -Fq 'PR_SAFETY_QUEUE_ENGINE: ${PR_SAFETY_QUEUE_ENGINE:-postgres}' docker-compose.yml
-grep -Fq '[[ "${PR_SAFETY_QUEUE_ENGINE:-postgres}" == kanban ]]' scripts/hermes-compose-producer.sh
-grep -Fq '"$ROOT/scripts/compose.sh" up -d --build' scripts/fleet.sh
-grep -Fq 'export HERMES_KANBAN_BRIDGE_KEY_FILE="${HERMES_KANBAN_BRIDGE_KEY_FILE:-$SHARED_RUNTIME/hermes-bridge-secrets/key.json}"' scripts/fleet.sh
-grep -Fq 'export HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE="${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:-$SHARED_RUNTIME/secrets/hermes-kanban-bridge-key.json}"' scripts/fleet.sh
-grep -Fq 'export PR_SAFETY_QUEUE_ENGINE="${PR_SAFETY_QUEUE_ENGINE:-postgres}"' scripts/fleet.sh
-grep -Fq 'sudo env PR_SAFETY_QUEUE_ENGINE="$PR_SAFETY_QUEUE_ENGINE"' scripts/fleet.sh
-grep -Fq 'PR_SAFETY_MERGED_PR_AUTHORS="$PR_SAFETY_MERGED_PR_AUTHORS"' scripts/fleet.sh
-grep -Fq 'PR_SAFETY_ALLOWED_ORGS="$PR_SAFETY_ALLOWED_ORGS" "$ROOT/scripts/configure-hermes-role-env.sh"' scripts/fleet.sh
-grep -Fq 'PR_SAFETY_QUEUE_ENGINE=${PR_SAFETY_QUEUE_ENGINE:-postgres}' scripts/configure-hermes-role-env.sh
-grep -Fq '. "$HERMES_HOME/.env"' launchd/com.example.ai-pr-automation-pr-safety-producer.plist.template
-grep -Fq 'file: ${HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE:?set HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE}' docker-compose.yml
-! grep -Eq 'bridge-recovery-state|read_safety_engine|resume|/dev/null' scripts/fleet.sh
-! grep -Fq 'bridge-recovery-state)' scripts/hermes-native.sh
-! grep -Fq 'resume)' scripts/hermes-native.sh
-! grep -Eq 'bridge-recovery-state|uses `/dev/null`|hermes-native\.sh resume' docs/hermes/README.md
-grep -Fq 'A same-version `down`/`up`' docs/hermes/README.md
-grep -Fq 'restart is supported' docs/hermes/README.md
-grep -Fq 'must drain every open Kanban attempt in Postgres' docs/hermes/README.md
-grep -Fq 'HERMES_KANBAN_BRIDGE_KEY_FILE=' .env.example
-grep -Fq 'HERMES_KANBAN_BRIDGE_CONTROLLER_KEY_FILE=' .env.example
-grep -Fq 'PR_SAFETY_ANALYSIS_ENGINE=single' .env.example
-! grep -Fq 'hermes-kanban-safety-bridge' Dockerfile.hermes-controller
-grep -Fq 'COPY scripts/hermes_pr_safety_result.py /app/hermes_pr_safety_result.py' Dockerfile.hermes-controller
-python3 - <<'PY'
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/code"
+printf 'repos: []\n' > "$tmp/authority.yaml"
+env CODE_ROOT="$tmp/code" HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HINDSIGHT_DB_PASSWORD=test \
+  GITHUB_DISCOVERY_TOKEN_FILE="$tmp/token" HERMES_REVIEW_API_KEY_FILE="$tmp/review" \
+  HERMES_MAINTAIN_API_KEY_FILE="$tmp/maintain" \
+  FLEET_CONTROLLER_TLS_CERT_FILE=/dev/null FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null \
+  docker compose config --format json > "$tmp/config.json"
+python3 - "$tmp/config.json" <<'PY'
+import json, sys
 from pathlib import Path
-source=Path('docker-compose.yml').read_text()
-controller=source[source.index('  hermes-controller:'):source.index('\n  pr-producer-review:')]
-assert 'hermes_kanban_bridge_key' in controller
-fleet=Path('scripts/fleet.sh').read_text()
-up=fleet[fleet.index('  up)'):fleet.index('  down)')]
-down=fleet[fleet.index('  down)'):fleet.index('  status)')]
-assert up.index('hermes-native.sh" producer-stop') < up.index('compose.sh" stop pr-safety-producer') < up.index('configure-hermes-role-env.sh')
-assert up.count('sudo env HERMES_KANBAN_BRIDGE_KEY_FILE="$HERMES_KANBAN_BRIDGE_KEY_FILE"') == 2
-copy='sudo install -m 0600 -o "$(id -u)" -g "$(id -g)"'
-assert copy in up
-assert up.index('hermes-native.sh" up') < up.index(copy) < up.index('hermes-native.sh" bridge-start') < up.index('hermes-api-conformance') < up.index('compose.sh" up') < up.index('hermes-native.sh" producer-start')
-assert down.index('hermes-native.sh" producer-stop') < down.index('compose.sh" down') < down.index('hermes-native.sh" down')
-assert 'eval ' not in fleet and 'source "$ROOT/.env"' not in fleet and '. "$ROOT/.env"' not in fleet
-native=Path('scripts/hermes-native.sh').read_text()
-native_up=native[native.index('  up)'):native.index('  down)')]
-assert 'bridge-start' not in native_up
-for name in ('pr-producer-review','pr-producer-maintain','pr-safety-producer','memory-curate-producer','hermes-api-conformance'):
-    start=source.index(f'  {name}:')
-    end=source.find('\n  ',start+3)
-    assert 'hermes_kanban_bridge_key' not in source[start:end if end >= 0 else None], name
+config = json.load(open(sys.argv[1]))
+from pathlib import Path
+assert '\n  requests_pgdata:\n' in Path('docker-compose.yml').read_text()
+services = config['services']
+assert set(services) == {'hindsight-db', 'hindsight', 'hindsight-bank-init', 'coderag', 'signal',
+                         'pr-producer-review', 'pr-producer-maintain', 'ui-proxy'}
+assert {'hindsight_pgdata', 'coderag_cache', 'signal_state'} == set(config['volumes'])
+assert set(config['secrets']) == {'fleet_controller_tls_cert', 'fleet_controller_tls_key',
+                                  'github_discovery_token', 'hermes_review_key', 'hermes_maintain_key'}
+for name, path in (('github_discovery_token', 'token'),
+                   ('hermes_review_key', 'review'),
+                   ('hermes_maintain_key', 'maintain')):
+    assert config['secrets'][name]['file'] == str(Path(sys.argv[1]).parent / path)
+for name, key in (('pr-producer-review', 'hermes_review_key'),
+                  ('pr-producer-maintain', 'hermes_maintain_key')):
+    service = services[name]
+    assert not service.get('profiles') and not service.get('depends_on')
+    assert service['volumes'][0]['source'] == str(Path(sys.argv[1]).parent / 'authority.yaml')
+    assert {secret['source'] for secret in service['secrets']} == {'github_discovery_token', key}
+    assert service['environment']['HERMES_API_BASE_URL'] == 'http://host.docker.internal:8642'
+assert services['pr-producer-maintain']['entrypoint'] == ['/app/bin/hermes-maintain-cron-entrypoint.sh']
+assert set(services['ui-proxy']['depends_on']) == {'hindsight', 'coderag', 'signal'}
+assert set(services['ui-proxy']['networks']) == {'default'}
 PY
-! grep -Fq 'eval ' scripts/fleet.sh
-echo 'PASS: bridge recovery and direct-Kanban producer ownership are wired'
+bash -n scripts/compose.sh scripts/fleet.sh
+! grep -Eq 'validate-swarmvault|validate-fleet-controller-secrets|hermes-native\.sh|sudo' scripts/compose.sh scripts/fleet.sh
+printf '%s\n' 'PASS: default Compose support services and direct PR crons only'

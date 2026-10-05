@@ -3,10 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 native=scripts/hermes-native.sh
-fleet=scripts/fleet.sh
 producer=scripts/hermes-compose-producer.sh
 wrapper=scripts/hermes-memory-curate-direct.sh
-bash -n "$native" "$fleet" "$producer" "$wrapper" "$0"
+bash -n "$native" "$producer" "$wrapper" "$0"
 
 python3 - <<'PY'
 from pathlib import Path
@@ -49,18 +48,9 @@ compose = Path("scripts/hermes-compose-producer.sh").read_text()
 idle = compose[compose.index("while true; do"):compose.index('  case "$mode" in')]
 assert '"$mode" == memory' in idle and '${MEMORY_CURATE_QUEUE_ENGINE:-postgres}' in idle
 assert idle.index('sleep "$interval"') < idle.index("continue")
-yaml = Path("docker-compose.yml").read_text()
-memory = yaml[yaml.index("  memory-curate-producer:"):yaml.index("  hermes-api-conformance:")]
-assert "MEMORY_CURATE_QUEUE_ENGINE: ${MEMORY_CURATE_QUEUE_ENGINE:-postgres}" in memory
-env = Path(".env.example").read_text()
-for text in ("MEMORY_CURATE_QUEUE_ENGINE=postgres # postgres|cron", "memory-cron-up", "memory-postgres-up"):
-    assert text in env
-fleet = Path("scripts/fleet.sh").read_text()
-cron_up = fleet[fleet.index("  memory-cron-up)"):fleet.index("  memory-postgres-up)")]
-postgres = fleet[fleet.index("  memory-postgres-up)"):fleet.index("  status)")]
-assert cron_up.index("recreate_producer memory memory-curate-producer MEMORY_CURATE_QUEUE_ENGINE cron") < cron_up.index("memory-cron-start")
-assert "memory-cron-stop" in cron_up
-assert postgres.index("memory-cron-stop") < postgres.index("recreate_producer memory memory-curate-producer MEMORY_CURATE_QUEUE_ENGINE postgres")
+fleet = Path('scripts/fleet.sh').read_text()
+assert 'memory-cron-up)' not in fleet and 'memory-postgres-up)' not in fleet
+assert 'memory-curate-producer:' not in Path('docker-compose.yml').read_text()
 PY
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -110,54 +100,6 @@ rm "$MOCK_STATE/job"; : > "$MOCK_STATE/actions"
 memory_cron_stop
 [[ ! -s "$MOCK_STATE/actions" ]]
 
-mkdir -p "$tmp/repo/scripts" "$tmp/repo/policy"
-cp "$fleet" "$tmp/repo/scripts/fleet.sh"
-cp policy/pr-safety-policy-v1.md "$tmp/repo/policy/"
-cat > "$tmp/repo/scripts/compose.sh" <<'SH'
-#!/usr/bin/env bash
-printf 'compose engine=%s %s\n' "${MEMORY_CURATE_QUEUE_ENGINE:-unset}" "$*" >> "$MOCK_LOG"
-[[ "${MOCK_FAIL_COMPOSE:-false}" != true || "$*" != up\ * ]] || exit 1
-[[ "$*" != 'ps -q memory-curate-producer' ]] || printf 'memory-container\n'
-SH
-cat > "$tmp/bin/docker" <<'SH'
-#!/usr/bin/env bash
-printf 'docker %s\n' "$*" >> "$MOCK_LOG"
-if [[ "$*" == *State.Running* ]]; then printf 'true\n'; else printf 'MEMORY_CURATE_QUEUE_ENGINE=%s\n' "$MOCK_INSPECT_ENGINE"; fi
-SH
-cat > "$tmp/bin/sudo" <<'SH'
-#!/usr/bin/env bash
-printf 'sudo %s\n' "$*" >> "$MOCK_LOG"
-[[ "${MOCK_FAIL_START:-false}" != true || "$*" != *memory-cron-start* ]]
-SH
-chmod +x "$tmp/repo/scripts/compose.sh" "$tmp/bin/docker" "$tmp/bin/sudo"
-export MOCK_LOG="$tmp/fleet.log"
-: > "$MOCK_LOG"
-MOCK_INSPECT_ENGINE=cron bash "$tmp/repo/scripts/fleet.sh" memory-cron-up
-python3 - "$MOCK_LOG" <<'PY'
-from pathlib import Path
-import sys
-lines = Path(sys.argv[1]).read_text().splitlines()
-assert lines[0].startswith("compose engine=cron up -d --no-deps --force-recreate memory-curate-producer")
-assert lines[1] == "compose engine=unset ps -q memory-curate-producer"
-assert "State.Running" in lines[2] and "Config.Env" in lines[3]
-assert lines[4].endswith("hermes-native.sh memory-cron-start")
-PY
-: > "$MOCK_LOG"
-if MOCK_INSPECT_ENGINE=cron MOCK_FAIL_START=true bash "$tmp/repo/scripts/fleet.sh" memory-cron-up; then
-  echo 'memory-cron-up survived native start failure' >&2; exit 1
-fi
-grep -Fq 'hermes-native.sh memory-cron-stop' "$MOCK_LOG"
-: > "$MOCK_LOG"
-if MOCK_FAIL_COMPOSE=true bash "$tmp/repo/scripts/fleet.sh" memory-cron-up; then
-  echo 'memory-cron-up survived Compose failure' >&2; exit 1
-fi
-grep -Fq 'hermes-native.sh memory-cron-stop' "$MOCK_LOG"
-! grep -Fq 'hermes-native.sh memory-cron-start' "$MOCK_LOG"
-: > "$MOCK_LOG"
-MOCK_INSPECT_ENGINE=postgres bash "$tmp/repo/scripts/fleet.sh" memory-postgres-up
-[[ "$(head -1 "$MOCK_LOG")" == *'hermes-native.sh memory-cron-stop' ]]
-grep -Fq 'compose engine=postgres up -d --no-deps --force-recreate memory-curate-producer' "$MOCK_LOG"
-
 cat > "$tmp/bin/sleep" <<'SH'
 #!/usr/bin/env bash
 exit 23
@@ -174,4 +116,4 @@ rc=$?
 set -e
 [[ "$rc" == 23 && ! -e "$tmp/psql-called" ]]
 
-echo 'PASS: memory curate cron is installed paused, switched atomically, and leaves Compose idle'
+echo 'PASS: standalone native memory cron stays paused on install and legacy producer helper stays idle'

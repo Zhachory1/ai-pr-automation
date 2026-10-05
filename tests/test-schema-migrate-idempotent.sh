@@ -5,8 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 fail=0; check(){ if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1" >&2; fail=1; fi; }
 
-check "migrate command globs all numbered upgrades except 01" \
-  "grep -Fq 'for f in /migrations/0[2-9]-*.sql /migrations/1[0-9]-*.sql' docker-compose.yml"
+check "legacy schema files stay available without a default migration service" \
+  "test -f docker/initdb/01-schema.sql && ! grep -Fq '  schema-migrate:' docker-compose.yml"
 
 CID="schema97-guard-$$"
 docker run --rm -d --name "$CID" -e POSTGRES_PASSWORD=t -e POSTGRES_DB=fleet -e POSTGRES_USER=fleet postgres:16 >/dev/null

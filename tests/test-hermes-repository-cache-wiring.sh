@@ -19,9 +19,8 @@ for text in (
     'repo-cache-materialize) shift; repository_cache materialize',
     'repo-cache-status) shift; repository_cache status',
 ): assert text in native, text
-fleet = Path("scripts/fleet.sh").read_text()
-for text in ('repo-cache-install)', 'repo-cache-enroll)', 'repo-cache-sync|repo-cache-materialize|repo-cache-status)', 'sudo "$ROOT/scripts/hermes-native.sh" repo-cache-install'):
-    assert text in fleet, text
+fleet = Path('scripts/fleet.sh').read_text()
+assert 'repo-cache-install)' not in fleet and 'repo-cache-enroll)' not in fleet
 PY
 
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -67,4 +66,4 @@ printf 'token-value' >"$tmp/token"
 [[ "$(GITHUB_READ_TOKEN_FILE="$tmp/token" bin/hermes-git-read-askpass 'Password for github')" == token-value ]]
 if GITHUB_READ_TOKEN_FILE="$tmp/token" bin/hermes-git-read-askpass other >/dev/null 2>&1; then exit 1; fi
 
-echo 'PASS: repository cache host wiring is scoped and token-isolated'
+echo 'PASS: standalone native repository cache is scoped and token-isolated'
