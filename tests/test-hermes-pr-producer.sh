@@ -321,4 +321,29 @@ after="$(wc -l < "$tmp/direct.log" | tr -d ' ')"
 echo "$batch_out" | grep -q 'admitted=1 failed=1 skipped=0' || { echo "FAIL: API failure summary: $batch_out" >&2; exit 1; }
 [[ "$(grep -c '^api user ' "$tmp/gh.log")" == 1 && ! -s "$tmp/psql.log" ]] || { echo 'FAIL: direct maintain login/psql behavior' >&2; exit 1; }
 
-echo 'PASS: hermes-pr-producer postgres, direct review, and direct maintain modes'
+# Compose bridge keeps discovery/feedback and never invokes psql, Hermes CLI, or Runs API.
+cat > "$tmp/bin/bridge-submit" <<'PY'
+import json, os, pathlib, sys
+with pathlib.Path(os.environ["TEST_STATE"], "bridge.log").open("a") as stream:
+    stream.write(json.dumps(sys.argv[1:]) + "\n")
+if os.environ.get("FAIL_BRIDGE") == sys.argv[3]: raise SystemExit(1)
+kind,repo,number,title,head,*feedback=sys.argv[1:]
+print(json.dumps({"kind":kind,"board":kind,"operation_id":kind+"-"+"a"*64,
+  "task_id":"t_12345678","status":"ready"}))
+PY
+: > "$tmp/bridge.log"; : > "$tmp/psql.log"
+bridge_review_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=bridge \
+  HERMES_KANBAN_SUBMIT_BIN="$tmp/bin/bridge-submit" HERMES_AUTHORITY_FILE="$tmp/authority.yaml" \
+  HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" bin/hermes-pr-producer review 2>&1)"
+[[ ! -s "$tmp/psql.log" && "$(wc -l < "$tmp/bridge.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: bridge review touched DB or skipped PR' >&2; exit 1; }
+echo "$bridge_review_out" | grep -q 'admitted=2 failed=0 skipped=1'
+: > "$tmp/bridge.log"
+bridge_maintain_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" GH_SCENARIO=maintain FEEDBACK_VERSION=v1 \
+  PR_MAINTAIN_QUEUE_ENGINE=bridge HERMES_KANBAN_SUBMIT_BIN="$tmp/bin/bridge-submit" \
+  HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
+  bin/hermes-pr-producer maintain 2>&1)"
+[[ "$(wc -l < "$tmp/bridge.log" | tr -d ' ')" == 1 ]] || { echo 'FAIL: bridge maintain not submitted' >&2; exit 1; }
+jq -e '.[0] == "pr-maintain" and .[3] == "Granted PR" and (.[5]|length) == 64' "$tmp/bridge.log" >/dev/null
+echo "$bridge_maintain_out" | grep -q 'admitted=1 failed=0 skipped=0'
+
+echo 'PASS: hermes-pr-producer postgres, direct, API, and Compose Kanban bridge modes'

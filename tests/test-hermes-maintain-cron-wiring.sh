@@ -8,14 +8,14 @@ compose = Path("docker-compose.yml").read_text()
 direct = compose.split("  pr-producer-maintain:\n", 1)[1].split("\n  ui-proxy:", 1)[0]
 assert 'profiles:' not in direct and 'pr-producer-maintain-direct:' not in compose
 assert 'entrypoint: ["/app/bin/hermes-maintain-cron-entrypoint.sh"]' in direct
-assert 'github_discovery_token, hermes_maintain_key' in direct
+assert 'github_discovery_token, pr_maintain_ingress_key' in direct
 assert 'REQUESTS_DB_HOST' not in direct and 'schema-migrate' not in direct
 image = Path("Dockerfile.hermes-pr-review-cron").read_text()
 assert 'hermes-maintain-submit.py' in image and 'hermes-maintain-cron-entrypoint.sh' in image
 cron = Path("scripts/hermes-maintain-cron-entrypoint.sh").read_text()
 assert 'PATH=/usr/local/bin:/usr/bin:/bin' in cron
-assert 'PR_MAINTAIN_QUEUE_ENGINE=api' in cron
+assert 'PR_MAINTAIN_QUEUE_ENGINE=bridge' in cron
 assert '$(cat /run/secrets/github_discovery_token)' in cron
-assert 'HERMES_MAINTAIN_API_KEY_FILE=/Users/Shared/ai-pr-automation-runtime/secrets/hermes-maintain-key' in Path('.env.example').read_text()
+assert 'PR_MAINTAIN_INGRESS_KEY_FILE=/Users/Shared/ai-pr-automation-runtime/secrets/pr-maintain-ingress-key' in Path('.env.example').read_text()
 PY
 printf '%s\n' 'PASS: default maintenance cron wiring'

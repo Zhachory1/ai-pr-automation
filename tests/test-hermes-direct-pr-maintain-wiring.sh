@@ -49,7 +49,7 @@ compose = Path('docker-compose.yml').read_text()
 maintain = compose.split('  pr-producer-maintain:\n', 1)[1].split('\n  ui-proxy:', 1)[0]
 assert 'profiles:' not in maintain and 'pr-producer-maintain-direct:' not in compose
 assert 'entrypoint: ["/app/bin/hermes-maintain-cron-entrypoint.sh"]' in maintain
-assert 'github_discovery_token, hermes_maintain_key' in maintain
+assert 'github_discovery_token, pr_maintain_ingress_key' in maintain
 assert 'PR_MAINTAIN_QUEUE_ENGINE:' not in maintain and 'schema-migrate' not in maintain
 fleet = Path('scripts/fleet.sh').read_text()
 assert 'maintain-kanban-up)' not in fleet and 'maintain-postgres-up)' not in fleet

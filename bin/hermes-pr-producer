@@ -29,8 +29,8 @@ AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
 if [[ "$MODE" == review ]]; then QUEUE_VAR=PR_REVIEW_QUEUE_ENGINE; else QUEUE_VAR=PR_MAINTAIN_QUEUE_ENGINE; fi
 QUEUE_ENGINE="${!QUEUE_VAR:-postgres}"
-[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api ]] \
-  || { echo "$QUEUE_VAR must be postgres, kanban, or api" >&2; exit 2; }
+[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge ]] \
+  || { echo "$QUEUE_VAR must be postgres, kanban, api, or bridge" >&2; exit 2; }
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) hermes-pr-producer[$MODE] $*" >&2; }
@@ -40,6 +40,10 @@ TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
 if [[ "$QUEUE_ENGINE" == postgres ]]; then
   need psql
+elif [[ "$QUEUE_ENGINE" == bridge ]]; then
+  HERMES_KANBAN_SUBMIT_BIN="${HERMES_KANBAN_SUBMIT_BIN:-$HERE/scripts/hermes-kanban-submit.py}"
+  [[ -f "$HERMES_KANBAN_SUBMIT_BIN" ]] || { echo "Kanban ingress client unavailable" >&2; exit 2; }
+  HERMES_PYTHON=python3
 elif [[ "$QUEUE_ENGINE" == api ]]; then
   if [[ "$KIND" == pr-maintain ]]; then
     HERMES_MAINTAIN_SUBMIT_BIN="${HERMES_MAINTAIN_SUBMIT_BIN:-$HERE/scripts/hermes-maintain-submit.py}"
@@ -210,7 +214,7 @@ prs="$(awk -F '\t' 'NF && !seen[$1 FS $2]++' <<<"$prs")"
 if [[ -z "$prs" ]]; then log "no matching open PRs"; exit 0; fi
 
 DISCOVERY_TMP=""; login=""; login_attempted=0; login_ok=0
-if [[ ( "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api ) && "$KIND" == pr-maintain ]]; then
+if [[ ( "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge ) && "$KIND" == pr-maintain ]]; then
   DISCOVERY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/hermes-pr-producer.XXXXXX")"
   trap 'rm -rf "$DISCOVERY_TMP"' EXIT
 fi
@@ -237,6 +241,20 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
       failed=$((failed+1)); log "feedback API failed for $repo#$number@$sha"; continue
     fi
     if [[ "$feedback" == empty ]]; then skip=$((skip+1)); log "skip $repo#$number@$sha: no actionable feedback"; continue; fi
+  fi
+  if [[ "$QUEUE_ENGINE" == bridge ]]; then
+    submit=("$HERMES_KANBAN_SUBMIT_BIN" "$KIND" "$repo" "$number" "$title" "$sha")
+    if [[ "$KIND" == pr-maintain ]]; then submit+=("$feedback"); fi
+    if result="$("$TIMEOUT_BIN" --kill-after=5s 135s python3 "${submit[@]}")"; then
+      if jq -e '.status == "capped"' <<<"$result" >/dev/null; then
+        skip=$((skip+1)); log "skip $repo#$number@$sha: maintenance round cap reached"
+      else
+        enq=$((enq+1)); log "Kanban $KIND $repo#$number@$sha: $result"
+      fi
+    else
+      failed=$((failed+1)); log "Kanban ingress failed for $repo#$number@$sha"
+    fi
+    continue
   fi
   if [[ "$QUEUE_ENGINE" == api ]]; then
     if [[ "$KIND" == pr-maintain ]]; then
@@ -287,7 +305,7 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   if [[ "$inserted" =~ ^[0-9]+$ ]]; then enq=$((enq+1)); log "enqueued $KIND $dedupe_key (#$inserted)"; else dedupe=$((dedupe+1)); fi
 done <<< "$prs"
 
-if [[ "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api ]]; then
+if [[ "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge ]]; then
   log "done: admitted=$enq failed=$failed skipped=$skip"
   (( failed == 0 )) || exit 1
 else
