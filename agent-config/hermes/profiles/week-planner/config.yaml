@@ -1,0 +1,26 @@
+gateway:
+  api_server:
+    enabled: false
+model:
+  provider: openai-codex
+  default: gpt-5.6-terra
+  base_url: https://chatgpt.com/backend-api/codex
+plugins:
+  enabled: []
+mcp_servers:
+  week-calendar:
+    command: "${env:HERMES_WEEK_CALENDAR_PYTHON}"
+    args: ["-B", "${env:HERMES_WEEK_CALENDAR_SCRIPT}"]
+    env:
+      HERMES_HOME: "${env:HERMES_WEEK_PLANNER_HOME}"
+_config_version: 44
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+skills:
+  creation_nudge_interval: 0
+agent:
+  disabled_toolsets: [terminal, file, code_execution, browser, computer_use, web, skills, delegation, memory, session_search, cronjob, vision, image_gen, tts, todo, connections]
+  max_turns: 120
+  run_budget_seconds: 2400
+  api_max_retries: 0

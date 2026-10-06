@@ -21,6 +21,10 @@ Once both profile API key files and a **read-only** GitHub discovery token are p
 
 The historical `requests_pgdata` volume contains unresolved request state. Do not requeue or discard it during cutover. See [operations](docs/operations.md) for inspection and [container setup](docker/README.md) for persistent-volume details. Older controller and service-account design documents describe the previous runtime, not active startup commands.
 
+## Optional Hermes week planner
+
+A separate Hermes profile can plan one private Google Calendar through restricted calendar tools and a profile-local weekly agent cron. See [week planner setup](docs/hermes-week-planner.md). It is not enabled by default.
+
 ## Validation
 
 Focused, fake-network tests cover the cron submission contract, profile MCP configuration, and Compose/nginx wiring. `scripts/m0-verify.sh` is **not** read-only: it writes a synthetic Hindsight fact. A real PR run, Signal message, or Hindsight recall requires separate authorization; static tests do not prove those effects.
