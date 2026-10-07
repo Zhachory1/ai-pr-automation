@@ -78,12 +78,17 @@ direct_enqueue() {
 }
 
 feedback_snapshot() {
-  local repo="$1" number="$2" login="$3" dir owner name
+  local repo="$1" number="$2" login="$3" dir owner name checks_error
   dir="$DISCOVERY_TMP/${repo//\//_}-$number"; owner="${repo%%/*}"; name="${repo#*/}"; mkdir -p "$dir"
   gh_read api --paginate "repos/$repo/pulls/$number/reviews?per_page=100" >"$dir/reviews" 2>/dev/null || return
   gh_read api graphql --paginate -F owner="$owner" -F name="$name" -F number="$number" -f query='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){nodes{id isResolved isOutdated comments(last:100){nodes{id databaseId author{login} body createdAt updatedAt}}} pageInfo{hasNextPage endCursor}}}}}' >"$dir/threads" 2>/dev/null || return
-  if ! gh_read pr checks "$number" -R "$repo" --json name,bucket,state,link >"$dir/checks" 2>/dev/null; then
-    jq -e 'type=="array"' "$dir/checks" >/dev/null 2>&1 || return
+  if ! checks_error="$(gh_read pr checks "$number" -R "$repo" --json name,bucket,state,link 2>&1 >"$dir/checks")"; then
+    # gh exits 1 with empty output when a PR has no checks; other errors still fail closed.
+    if [[ ! -s "$dir/checks" && "$checks_error" == no\ checks\ reported* ]]; then
+      printf '[]\n' > "$dir/checks"
+    else
+      jq -e 'type=="array"' "$dir/checks" >/dev/null 2>&1 || return
+    fi
   fi
   jq -ecnSj --arg login "${login,,}" --slurpfile rp "$dir/reviews" \
     --slurpfile tp "$dir/threads" --slurpfile kp "$dir/checks" '
