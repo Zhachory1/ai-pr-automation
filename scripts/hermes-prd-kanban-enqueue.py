@@ -4,7 +4,6 @@ import argparse, hashlib, json, os, pathlib, re, subprocess, sys, tempfile
 
 BOARD, BOARD_NAME = "prd-write", "PRD Write"
 ENGINES = ("fixed", "dynamic")
-DEFAULT_REPOSITORY_CACHE = pathlib.Path("/Users/Shared/ai-pr-automation-runtime/repositories")
 DEFAULT_KNOWLEDGE_REPOSITORIES = ("ROKT/ads-success-kb", "ROKT/zhach-private-docs")
 ROLES = ("root", "writer", "product-pm", "mvp", "occams-razor", "synthesis")
 PROFILES = {"root": None, "writer": "prd-write-v1", "product-pm": "product-pm", "mvp": "mvp", "occams-razor": "occams-razor", "synthesis": "prd-write-v1"}
@@ -90,10 +89,12 @@ def enqueue(args):
     if args.engine == "dynamic":
         repositories = request.get("repositories", [])
         knowledge = list(args.knowledge_repositories)
+        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        cache = args.repository_cache_root or args.hermes_home / "repository-cache"
         repository_rules = [
-            "Before drafting, use execute_code to manage only intake.repositories and knowledge_sources in $HERMES_HOME/repository-cache with /usr/local/libexec/ai-pr-automation/hermes-repository-cache.",
-            "Check each requested repository with /usr/local/libexec/ai-pr-automation/hermes-authority.py --check before enrollment; never take a remote, ref, credential, or path from intake.",
-            "For missing repositories enroll; for stale manifests sync; then materialize pinned snapshots. Set GIT_ASKPASS=/usr/local/libexec/ai-pr-automation/hermes-git-read-askpass, GIT_ASKPASS_REQUIRE=force, GIT_TERMINAL_PROMPT=0, GITHUB_READ_TOKEN_FILE=/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token; never print credentials.",
+            f"Before drafting, use execute_code to manage only intake.repositories and knowledge_sources in {cache} with {repo_root / 'scripts/hermes-repository-cache.py'} --root {cache}.",
+            f"Check each requested repository with {repo_root / 'scripts/hermes-authority.py'} --file {args.hermes_home / 'authority.yaml'} --check before enrollment; never take a remote, ref, credential, or path from intake.",
+            f"For missing repositories enroll; for stale manifests sync; then materialize pinned snapshots. Set GIT_ASKPASS={repo_root / 'bin/hermes-git-read-askpass'}, GIT_ASKPASS_REQUIRE=force, GIT_TERMINAL_PROMPT=0, GITHUB_READ_TOKEN_FILE={args.hermes_home / 'secrets/github-read-token'}; never print credentials.",
             "Verify repository identity, snapshot_sha == head_sha, the exact versioned snapshot path, and fetched_at age <= 3600 seconds before reading; block if any source is unavailable or unsafe.",
             "Inspect every pinned snapshot, cite current-state claims as OWNER/REPO@SHA:path:line, and include the pinned repository and knowledge evidence in each reviewer body and writer result.",
         ]
@@ -170,7 +171,7 @@ def enqueue(args):
     return {"board": BOARD, "operation_id": operation, "tasks": tasks}
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--hermes-home", type=pathlib.Path, required=True); parser.add_argument("--hermes-bin", type=pathlib.Path, required=True); parser.add_argument("--engine", choices=ENGINES, default="fixed"); parser.add_argument("--document-kind", choices=DOCUMENTS, default="prd"); parser.add_argument("--repository-cache-root", type=pathlib.Path, default=DEFAULT_REPOSITORY_CACHE, help="legacy option; writers manage repository evidence"); parser.add_argument("--knowledge-repository", action="append", dest="knowledge_repositories", default=list(DEFAULT_KNOWLEDGE_REPOSITORIES))
+    parser = argparse.ArgumentParser(); parser.add_argument("--hermes-home", type=pathlib.Path, required=True); parser.add_argument("--hermes-bin", type=pathlib.Path, required=True); parser.add_argument("--engine", choices=ENGINES, default="fixed"); parser.add_argument("--document-kind", choices=DOCUMENTS, default="prd"); parser.add_argument("--repository-cache-root", type=pathlib.Path, help="writer-managed repository evidence root"); parser.add_argument("--knowledge-repository", action="append", dest="knowledge_repositories", default=list(DEFAULT_KNOWLEDGE_REPOSITORIES))
     try: print(json.dumps(enqueue(parser.parse_args()), sort_keys=True, separators=(",", ":")))
     except (OSError, ValueError) as error: raise SystemExit(f"Hermes document enqueue failed: {error}")
 if __name__ == "__main__": main()
