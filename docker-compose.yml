@@ -131,7 +131,7 @@ services:
     entrypoint: ["/app/bin/hermes-maintain-cron-entrypoint.sh"]
     restart: unless-stopped
     environment:
-      PR_MAINTAIN_CRON_SCHEDULE: ${PR_MAINTAIN_CRON_SCHEDULE:-*/5 * * * *}
+      PR_MAINTAIN_CRON_SCHEDULE: ${PR_MAINTAIN_CRON_SCHEDULE:-2-59/5 * * * *}
       HERMES_KANBAN_INGRESS_URL: http://host.docker.internal:8767
     secrets: [github_discovery_token, pr_maintain_ingress_key]
     volumes:

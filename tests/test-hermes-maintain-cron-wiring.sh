@@ -16,6 +16,10 @@ cron = Path("scripts/hermes-maintain-cron-entrypoint.sh").read_text()
 assert 'PATH=/usr/local/bin:/usr/bin:/bin' in cron
 assert 'PR_MAINTAIN_QUEUE_ENGINE=bridge' in cron
 assert '$(cat /run/secrets/github_discovery_token)' in cron
-assert 'PR_MAINTAIN_INGRESS_KEY_FILE=/Users/Shared/ai-pr-automation-runtime/secrets/pr-maintain-ingress-key' in Path('.env.example').read_text()
+assert 'schedule="${PR_MAINTAIN_CRON_SCHEDULE:-2-59/5 * * * *}"' in cron
+assert 'PR_MAINTAIN_CRON_SCHEDULE: ${PR_MAINTAIN_CRON_SCHEDULE:-2-59/5 * * * *}' in direct
+sample = Path('.env.example').read_text()
+assert 'PR_MAINTAIN_CRON_SCHEDULE="2-59/5 * * * *"' in sample
+assert 'PR_MAINTAIN_INGRESS_KEY_FILE=/Users/YOU/.hermes/secrets/pr-maintain-ingress-key' in sample
 PY
 printf '%s\n' 'PASS: default maintenance cron wiring'
