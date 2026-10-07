@@ -104,12 +104,27 @@ def admit(config, kind, key, payload):
     repo = payload["repo"]
     if repo not in grants and f"{repo.split('/', 1)[0]}/*" not in grants:
         raise ValueError("repository is not granted")
-    if not LOCK.acquire(blocking=False):
+    if not LOCK.acquire(timeout=5):
         raise ValueError("ingress busy")
     try:
         ENQUEUE.safe_dir(config.work)
-        request = ({"operation_id": operation["operation_id"], **payload} if kind == "pr-review"
-                   else round_request(config, payload))
+        if kind == "pr-review":
+            request = {"operation_id": operation["operation_id"], **payload}
+            workspace = config.work / operation["operation_id"]
+            if workspace.exists() or workspace.is_symlink():
+                ENQUEUE.safe_dir(workspace)
+                path = workspace / "request.json"
+                if path.exists() or path.is_symlink():
+                    raw = ENQUEUE.read_immutable(path)
+                    previous = json.loads(raw)
+                    if (type(previous) is not dict or set(previous) != set(request)
+                            or raw != ENQUEUE.canonical(previous)
+                            or validate({key: previous[key] for key in payload}, kind)["operation_id"] != operation["operation_id"]
+                            or previous != {**request, "title": previous["title"]}):
+                        raise ValueError("invalid review history")
+                    request = previous
+        else:
+            request = round_request(config, payload)
         if request is None:
             return {"kind": kind, "board": kind, "operation_id": operation["operation_id"],
                     "task_id": None, "status": "capped"}

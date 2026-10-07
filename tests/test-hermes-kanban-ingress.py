@@ -50,6 +50,35 @@ class IngressTest(unittest.TestCase):
                     ingress.admit(self.config, kind, key, payload)
             helper.assert_not_called()
 
+    def test_overlapping_kinds_wait_for_the_admission_lock(self):
+        entered = threading.Event()
+        release = threading.Event()
+        results = []
+
+        def helper(config, kind, payload):
+            if kind == "pr-review":
+                entered.set()
+                self.assertTrue(release.wait(2))
+            return {"kind": kind, "board": kind, "operation_id": payload["operation_id"],
+                    "task_id": "t_12345678", "status": "ready"}
+
+        with mock.patch.object(ingress, "invoke", side_effect=helper) as invoked:
+            first = threading.Thread(target=lambda: results.append(ingress.admit(
+                self.config, "pr-review", "a" * 64, self.review)), daemon=True)
+            first.start()
+            self.assertTrue(entered.wait(2))
+            timer = threading.Timer(0.2, release.set)
+            timer.start()
+            try:
+                second = ingress.admit(self.config, "pr-maintain", "b" * 64,
+                                       {**self.review, "feedback_digest": "1" * 64})
+            finally:
+                release.set()
+                first.join(2)
+                timer.join(2)
+            self.assertFalse(first.is_alive())
+            self.assertEqual((second["kind"], len(results), invoked.call_count), ("pr-maintain", 1, 2))
+
     def test_review_replay_is_exact_and_maintenance_round_is_capped(self):
         responses = []
         def helper(config, kind, payload):
@@ -75,6 +104,21 @@ class IngressTest(unittest.TestCase):
             self.assertEqual(capped["status"], "capped")
             self.assertIsNone(capped["task_id"])
             self.assertEqual(len(responses), 6)
+
+    def test_review_title_edit_reuses_stored_request(self):
+        operation = ingress.identity("pr-review", "owner/repo", 7, "a" * 40)["operation_id"]
+        previous = {"operation_id": operation, **self.review}
+        workspace = self.work / operation
+        workspace.mkdir(mode=0o700)
+        request_path = workspace / "request.json"
+        request_path.write_bytes(ingress.ENQUEUE.canonical(previous))
+        request_path.chmod(0o440)
+        with mock.patch.object(ingress, "invoke", return_value={"kind": "pr-review", "board": "pr-review",
+                "operation_id": operation, "task_id": "t_12345678", "status": "done"}) as helper:
+            result = ingress.admit(self.config, "pr-review", "a" * 64, {**self.review, "title": "Renamed"})
+        self.assertEqual(result["operation_id"], operation)
+        self.assertEqual(helper.call_args.args[2], previous)
+        self.assertEqual(request_path.read_bytes(), ingress.ENQUEUE.canonical(previous))
 
     def test_http_auth_and_origin_reject_before_admission(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), ingress.Handler)
