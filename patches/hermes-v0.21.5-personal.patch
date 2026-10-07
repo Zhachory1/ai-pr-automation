@@ -1,0 +1,18 @@
+diff --git a/hermes_cli/kanban.py b/hermes_cli/kanban.py
+index 70b136b2f0..ab7d6696fe 100644
+--- a/hermes_cli/kanban.py
++++ b/hermes_cli/kanban.py
+@@ -1412,0 +1413,3 @@ def run_slash(rest: str) -> str:
++    if getattr(args, "kanban_action", None) == "create" and getattr(args, "body_file", None) is not None:
++        return "⚠ /kanban --body-file is for the local CLI only"
++
+diff --git a/tools/mcp_tool_config.py b/tools/mcp_tool_config.py
+index 954de1830c..34ed9f901a 100644
+--- a/tools/mcp_tool_config.py
++++ b/tools/mcp_tool_config.py
+@@ -365,0 +366 @@ def _load_mcp_config() -> Dict[str, dict]:
++        from agent.delegation_context import owned_kanban_task
+@@ -381,0 +383,3 @@ def _load_mcp_config() -> Dict[str, dict]:
++        if not owned_kanban_task():
++            safe_servers = {name: cfg for name, cfg in safe_servers.items()
++                            if cfg.get("worker_only", False) is False}

@@ -1,0 +1,8 @@
+# Copy this entry into an operator-owned profile config.yaml; replace placeholders locally.
+# The bridge changes MCP framing only. ZBrain installation and document index stay outside Git.
+mcp_servers:
+  zbrain:
+    command: node
+    args: [__REPO_ROOT__/bin/hermes-mcp-jsonl-bridge.mjs, __ZBRAIN_MCP_BIN__]
+    env:
+      ZBRAIN_ROOT: __PRIVATE_DOCS_ROOT__
