@@ -410,6 +410,29 @@ def complete_task(conn,key,**kw):
                     with mock.patch.dict(os.environ,env,clear=False), self.assertRaisesRegex(ValueError,"workflow root"):
                         council.v2_context(home,request,CONTRACT_V2)
 
+    def test_v2_personal_profile_check_requires_worker_scoped_helper(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td); home,_=self.fixture(root,CONTRACT_V2)
+            tool=home/"bin/hermes-council-tools"
+            tool.parent.mkdir(mode=0o700)
+            tool.write_bytes((ROOT/"bin/hermes-council-tools").read_bytes())
+            tool.chmod(0o500)
+            for role,name in {**council.V2_SPECIALISTS,"synthesis":council.V2_SYNTHESIS}.items():
+                (home/"profiles"/name/"config.yaml").write_text(json.dumps(
+                    council.v2_profile_config(council.V2_MODELS[role],tool,True)))
+            council.profile_check_v2(home)
+            path=home/"profiles/council-reviewer-v2/config.yaml"
+            config=json.loads(path.read_text())
+            del config["mcp_servers"]["council-tools"]["worker_only"]
+            path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError,"policy mismatch"):
+                council.profile_check_v2(home)
+            tool.chmod(0o700)
+            tool.write_text("changed\n")
+            tool.chmod(0o500)
+            with self.assertRaisesRegex(ValueError,"differs from repository source"):
+                council.profile_check_v2(home)
+
     def test_v2_profile_check_rejects_extra_config_and_mcp_json(self):
         for name,mutate in (
             ("extra config",lambda root: (root/"config.yaml").write_text(
