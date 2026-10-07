@@ -15,7 +15,7 @@ scripts/fleet.sh support-up  # Hindsight, Coderag, nginx; no PR discovery
 scripts/fleet.sh status
 ```
 
-Open <http://localhost/>. `hermes.localhost` redirects its root page to the Kanban UI at <http://dashboard.localhost/>; its `/health` and Runs API routes still reach the gateway. `memory.localhost` routes to Hindsight and `code.localhost` to Coderag. The retired `/signal/` proxy path returns 410. The proxy publishes only on loopback ports 80 (HTTP) and 8080 (existing HTTPS).
+Open <http://localhost/>. The local Hermes Kanban dashboard is at <https://fleet.localhost:8080/>; the old `dashboard.localhost` HTTP alias redirects there. `hermes.localhost/health` and Runs API routes still reach the gateway; `memory.localhost` routes to Hindsight and `code.localhost` to Coderag. The retired `/signal/` proxy path returns 410. The proxy publishes only on loopback ports 80 (HTTP redirects and APIs) and 8080 (HTTPS).
 
 Once the host ingress is running and both ingress key files and a **read-only** GitHub discovery token are present, `scripts/fleet.sh up` starts review and maintenance cron. **This can invoke paid models and make GitHub changes.** It is not a health probe. `scripts/fleet.sh pause` stops both crons; `scripts/fleet.sh down` stops Compose services, not the personal Hermes gateway. Neither command deletes volumes; never use `docker compose down -v`.
 

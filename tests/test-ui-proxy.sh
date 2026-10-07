@@ -34,7 +34,6 @@ for pair in \
   'hermes.localhost http://host.docker.internal:8642' \
   'memory.localhost http://hindsight:9999' \
   'code.localhost http://coderag:9749' \
-  'dashboard.localhost http://host.docker.internal:9119' \
   'memory-api.localhost http://hindsight:8888'; do
   host="${pair%% *}"; upstream="${pair#* }"
   grep -Fq "server_name $host;" docker/ui-proxy.conf
@@ -45,23 +44,33 @@ from pathlib import Path
 proxy = Path('docker/ui-proxy.conf').read_text()
 dashboard = proxy.split('server_name dashboard.localhost;', 1)[1].split('\n}\n', 1)[0]
 assert 'access_log off;' in dashboard
+assert 'proxy_pass ' not in dashboard
+assert 'if ($request_method !~ ^(GET|HEAD)$) { return 405; }' in dashboard
+assert 'return 302 https://fleet.localhost:8080/;' in dashboard
+assert '$request_uri' not in dashboard
 PY
 grep -Fq 'location /signal/ { return 410; }' docker/ui-proxy.conf
 ! grep -Fq 'proxy_pass http://signal:8080/;' docker/ui-proxy.conf
 grep -Fq 'if ($http_origin != "") { return 403; }' docker/ui-proxy.conf
 ! grep -Fq 'proxy_set_header Host $http_host;' docker/ui-proxy.conf
-! grep -Fq 'server_name fleet.localhost;' docker/ui-proxy.conf
+grep -Fq 'server_name fleet.localhost;' docker/ui-proxy.conf
 grep -Fq 'listen 80 default_server;' docker/ui-proxy.conf
 grep -Fq 'return 444;' docker/ui-proxy.conf
+grep -Fq 'server_name dashboard.localhost;' docker/ui-proxy.conf
+grep -Fq 'return 302 https://fleet.localhost:8080/;' docker/ui-proxy.conf
+grep -Fq 'location = / { return 302 https://fleet.localhost:8080/; }' docker/ui-proxy.conf
+grep -Fq 'proxy_pass http://host.docker.internal:9119;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9119;' docker/ui-proxy.conf
-grep -Fq "'http://dashboard.localhost' 'http://127.0.0.1:9119';" docker/ui-proxy.conf
-grep -Fq 'if ($dashboard_origin = invalid) { return 403; }' docker/ui-proxy.conf
-grep -Fq 'location = / { return 302 http://dashboard.localhost/; }' docker/ui-proxy.conf
+grep -Fq "'https://fleet.localhost:8080' 'http://127.0.0.1:9119';" docker/ui-proxy.conf
+grep -Fq 'if ($fleet_dashboard_origin = invalid) { return 403; }' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header Origin $fleet_dashboard_origin;' docker/ui-proxy.conf
+grep -Fq 'proxy_set_header X-Forwarded-Proto https;' docker/ui-proxy.conf
+! grep -Fq 'proxy_set_header Origin http://127.0.0.1:9119;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:8642;' docker/ui-proxy.conf
 grep -Fq 'http://hermes.localhost/health' docker/ui-index.html
-grep -Fq 'http://dashboard.localhost/' docker/ui-index.html
+grep -Fq 'https://fleet.localhost:8080/' docker/ui-index.html
 ! grep -Fq '/signal/' docker/ui-index.html
-! grep -Fq 'fleet.localhost' docker/ui-index.html
+! grep -Fq 'Fleet Controller' docker/ui-index.html
 grep -Fq 'proxy_set_header Host 127.0.0.1:9999;' docker/ui-proxy.conf
 grep -Fq 'proxy_set_header Host 127.0.0.1:9749;' docker/ui-proxy.conf
 grep -Fq 'location = /mcp {' docker/ui-proxy.conf
