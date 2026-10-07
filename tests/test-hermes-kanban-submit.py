@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -43,6 +44,31 @@ class SubmitTest(unittest.TestCase):
                 with self.assertRaises(ValueError): client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40)
                 with mock.patch.dict(client.os.environ, {"HERMES_KANBAN_INGRESS_URL": "http://example.com:8767"}):
                     with self.assertRaises(ValueError): client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40)
+
+
+    def test_unresolved_create_error_identifies_fenced_operation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key = pathlib.Path(directory) / "key"
+            key.write_text("a" * 64)
+            error = client.urllib.error.HTTPError("http://host.docker.internal:8767", 400, "admission failed", None,
+                                                  io.BytesIO(b'{"error":"unresolved create outcome"}'))
+            opener = mock.Mock()
+            opener.open.side_effect = error
+            operation = client.identity("pr-review", "owner/repo", 7, "b" * 40)["operation_id"]
+            with mock.patch.dict(client.os.environ, {"HERMES_KANBAN_INGRESS_KEY_FILE": str(key)}, clear=False), \
+                 mock.patch.object(client.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaisesRegex(ValueError, f"{operation}.*unresolved create outcome"):
+                    client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40)
+            opener.open.assert_called_once()
+            opener.open.reset_mock()
+            opener.open.side_effect = client.urllib.error.HTTPError(
+                "http://host.docker.internal:8767", 503, "admission busy", None,
+                io.BytesIO(b'{"error":"ingress busy"}'))
+            with mock.patch.dict(client.os.environ, {"HERMES_KANBAN_INGRESS_KEY_FILE": str(key)}, clear=False), \
+                 mock.patch.object(client.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaisesRegex(ValueError, f"{operation}.*ingress busy"):
+                    client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40)
+            opener.open.assert_called_once()
 
 
 if __name__ == "__main__": unittest.main()

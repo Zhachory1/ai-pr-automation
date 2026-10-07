@@ -79,6 +79,15 @@ class IngressTest(unittest.TestCase):
             self.assertFalse(first.is_alive())
             self.assertEqual((second["kind"], len(results), invoked.call_count), ("pr-maintain", 1, 2))
 
+    def test_unresolved_create_outcome_is_visible_without_replaying(self):
+        operation = ingress.identity("pr-review", "owner/repo", 7, "a" * 40)["operation_id"]
+        request = {"operation_id": operation, **self.review}
+        failure = ingress.subprocess.CompletedProcess([], 1, b"", b"Hermes PR enqueue failed: unresolved create outcome\n")
+        with mock.patch.object(ingress.subprocess, "run", return_value=failure) as cli:
+            with self.assertRaisesRegex(ValueError, "unresolved create outcome"):
+                ingress.invoke(self.config, "pr-review", request)
+        cli.assert_called_once()
+
     def test_review_replay_is_exact_and_maintenance_round_is_capped(self):
         responses = []
         def helper(config, kind, payload):

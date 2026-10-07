@@ -39,6 +39,11 @@ def submit(kind, repo, number, title, head, feedback=None):
             if response.status != 200:
                 raise ValueError("Kanban ingress admission failed")
             raw = response.read(4097)
+    except urllib.error.HTTPError as error:
+        for code, message in ((400, "unresolved create outcome"), (503, "ingress busy")):
+            if error.code == code and error.read(4097) == json.dumps({"error": message}, sort_keys=True, separators=(",", ":")).encode():
+                raise ValueError(f"Kanban {operation['operation_id']}: {message}; inspect admission before retry") from None
+        raise ValueError("Kanban ingress unavailable or rejected the request") from error
     except (urllib.error.URLError, TimeoutError) as error:
         raise ValueError("Kanban ingress unavailable or rejected the request") from error
     if len(raw) > 4096:

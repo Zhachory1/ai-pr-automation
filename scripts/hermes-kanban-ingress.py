@@ -85,6 +85,8 @@ def invoke(config, kind, payload):
                "--workspace-root", str(config.work)]
     result = subprocess.run(command, input=ENQUEUE.canonical(payload), stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=120, cwd=config.work)
+    if result.returncode and result.stderr.strip() == b"Hermes PR enqueue failed: unresolved create outcome":
+        raise ValueError("unresolved create outcome")
     if result.returncode or len(result.stdout) > 4096:
         raise ValueError("Kanban CLI admission failed; inspect host logs and journal before retry")
     value = json.loads(result.stdout)
