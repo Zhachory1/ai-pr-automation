@@ -60,6 +60,7 @@ class BootstrapTest(unittest.TestCase):
             tool = hermes_home / "bin/hermes-council-tools"
             self.assertEqual(stat.S_IMODE(tool.stat().st_mode), 0o500)
             self.assertEqual(tool.read_bytes(), (ROOT / "bin/hermes-council-tools").read_bytes())
+            self.assertFalse((hermes_home / "profiles/week-planner/.env.example").exists())
             profile = hermes_home / "profiles/pr-review-v1"
             self.assertIn(str(ROOT / "bin/hermes-memory-recall-shim"),
                           (profile / "config.yaml").read_text())

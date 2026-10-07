@@ -61,6 +61,9 @@ def profile_files(profile, source=None):
             raise ValueError(f"profile still points at retired system helper: {path}")
     if source:
         for item in source.rglob("*"):
+            # Templates are not installed runtime state; the planner's private .env is supplied separately.
+            if item.name == ".env.example":
+                continue
             if item.is_symlink():
                 raise ValueError(f"unsafe public profile source: {item}")
             if item.is_file():
@@ -95,6 +98,8 @@ def install_public(hermes_home, hermes_bin):
         owned_dir(target)
         target.chmod(0o700)
         for item in sorted(source.rglob("*")):
+            if item.name == ".env.example":
+                continue
             if item.is_symlink():
                 raise ValueError(f"refusing profile source link: {item}")
             output = target / item.relative_to(source)
