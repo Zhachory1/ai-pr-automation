@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC = ROOT / "agent-config/hermes/profiles"
+SKILLS = ("design-workflow", "prd-workflow", "roadmap-workflow")
 PRIVATE = (
     "council-architect-v2", "council-orchestrator-v2", "council-reliability-v2",
     "council-reviewer-v2", "council-security-v2", "design-write-v1", "mvp",
@@ -26,8 +27,9 @@ OLD_COUNCIL = "/usr/local/libexec/ai-pr-automation/hermes-council-tools"
 
 def owned_dir(path):
     info = path.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or path.is_symlink():
-        raise ValueError(f"not a user-owned directory: {path}")
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or path.is_symlink()
+            or stat.S_IMODE(info.st_mode) & 0o022):
+        raise ValueError(f"not a user-owned, non-writable-by-others directory: {path}")
 
 
 def prepare_dir(path):
@@ -38,12 +40,17 @@ def prepare_dir(path):
 
 def profile_files(profile, source=None):
     owned_dir(profile)
+    if stat.S_IMODE(profile.lstat().st_mode) != 0o700:
+        raise ValueError(f"profile directory must be owner-only: {profile}")
     required = ("SOUL.md", "profile.yaml") if profile.name in SOURCE_ONLY and source is None else ("SOUL.md", "config.yaml")
-    for name in required:
+    for name in (*required, ".env", "mcp.json"):
         path = profile / name
+        if name not in required and not path.exists() and not path.is_symlink():
+            continue
         info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or path.is_symlink():
-            raise ValueError(f"unsafe profile file: {path}")
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                or not info.st_mode & stat.S_IRUSR or stat.S_IMODE(info.st_mode) & 0o077 or path.is_symlink()):
+            raise ValueError(f"profile file must be owner-only: {path}")
     if profile.name in SOURCE_ONLY and source is None:
         owned_dir(profile / "skills")
     for name in ("config.yaml", "mcp.json"):
@@ -86,6 +93,7 @@ def install_public(hermes_home, hermes_bin):
             continue
         subprocess.run([str(hermes_bin), "profile", "create", source.name, "--no-skills", "--no-alias"], check=True)
         owned_dir(target)
+        target.chmod(0o700)
         for item in sorted(source.rglob("*")):
             if item.is_symlink():
                 raise ValueError(f"refusing profile source link: {item}")
@@ -107,6 +115,18 @@ def verify_council_tool(path):
             or stat.S_IMODE(info.st_mode) != 0o500 or path.is_symlink()
             or path.read_bytes() != (ROOT / "bin/hermes-council-tools").read_bytes()):
         raise ValueError(f"user-owned Council helper differs; inspect before changing: {path}")
+
+
+def check_skill(hermes_home, name):
+    source = ROOT / "agent-config/skills" / name / "SKILL.md"
+    dest = hermes_home / "skills" / name
+    owned_dir(dest)
+    path = dest / "SKILL.md"
+    info = path.lstat()
+    if (stat.S_IMODE(dest.lstat().st_mode) != 0o700 or not stat.S_ISREG(info.st_mode)
+            or path.is_symlink() or info.st_uid != os.getuid() or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) & 0o077 or path.read_bytes() != source.read_bytes()):
+        raise ValueError(f"public workflow skill differs; inspect before changing: {path}")
 
 
 def definitions(home, hermes_home, hermes_bin, signal_bin):
@@ -149,10 +169,21 @@ def main():
     if version.stdout.strip() != "signal-cli 0.14.8":
         raise ValueError("signal-cli 0.14.8 required for this fleet")
     owned_dir(hermes_home)
+    if stat.S_IMODE(hermes_home.lstat().st_mode) != 0o700:
+        raise ValueError("~/.hermes must be owner-only (0700)")
     if args.prepare:
         for path in (hermes_home / "profiles", hermes_home / "logs", hermes_home / "kanban-admission"):
             prepare_dir(path)
         install_public(hermes_home, hermes_bin)
+        prepare_dir(hermes_home / "skills")
+        for name in SKILLS:
+            dest = hermes_home / "skills" / name
+            if not dest.exists() and not dest.is_symlink():
+                dest.mkdir(mode=0o700)
+                source = ROOT / "agent-config/skills" / name / "SKILL.md"
+                (dest / "SKILL.md").write_bytes(source.read_bytes())
+                (dest / "SKILL.md").chmod(0o600)
+            check_skill(hermes_home, name)
     expected = definitions(home, hermes_home, hermes_bin, Path(signal_bin))
     agents = home / "Library/LaunchAgents"
     if args.prepare:
@@ -184,6 +215,11 @@ def main():
                 raise ValueError("private Hermes config must be owner-only")
         except (OSError, ValueError) as error:
             issues.append(f"private Hermes config missing or unsafe: {error}")
+    for name in SKILLS:
+        try:
+            check_skill(hermes_home, name)
+        except (OSError, ValueError) as error:
+            issues.append(f"{name}: {error}")
     pending_private = []
     for name in sorted({path.name for path in PUBLIC.iterdir() if path.is_dir()} | set(PRIVATE)):
         path = hermes_home / "profiles" / name

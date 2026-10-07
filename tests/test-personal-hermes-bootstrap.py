@@ -40,10 +40,23 @@ class BootstrapTest(unittest.TestCase):
             self.assertIn("signal-cli 0.14.8 required", run("--prepare").stderr)
             self.assertFalse((home / "Library").exists())
             signal.write_text("#!/bin/sh\n[ \"$1\" = --version ] || exit 99\nprintf 'signal-cli 0.14.8\\n'\n")
+            hermes_home.chmod(0o755)
+            self.assertIn("~/.hermes must be owner-only", run("--prepare").stderr)
+            self.assertFalse((home / "Library").exists())
+            hermes_home.chmod(0o700)
+            logs = hermes_home / "logs"
+            logs.mkdir(mode=0o700)
+            logs.chmod(0o770)
+            self.assertIn("non-writable-by-others", run("--prepare").stderr)
+            logs.chmod(0o700)
             prepared = run("--prepare")
             self.assertEqual(prepared.returncode, 0, prepared.stderr)
             self.assertIn("restore owner-supplied private profiles", prepared.stdout)
             self.assertEqual(len((home / "profile-create.log").read_text().splitlines()), 8)
+            for name in ("design-workflow", "prd-workflow", "roadmap-workflow"):
+                installed = hermes_home / "skills" / name / "SKILL.md"
+                self.assertEqual(installed.read_bytes(), (ROOT / "agent-config/skills" / name / "SKILL.md").read_bytes())
+                self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o600)
             tool = hermes_home / "bin/hermes-council-tools"
             self.assertEqual(stat.S_IMODE(tool.stat().st_mode), 0o500)
             self.assertEqual(tool.read_bytes(), (ROOT / "bin/hermes-council-tools").read_bytes())
@@ -64,14 +77,23 @@ class BootstrapTest(unittest.TestCase):
                 target = hermes_home / "profiles" / name
                 target.mkdir(mode=0o700)
                 (target / "SOUL.md").write_text("operator supplied\n")
+                (target / "SOUL.md").chmod(0o600)
                 if name in {"orchestrator", "reviewer", "security-engineer",
                             "site-reliability-engineer", "technical-architect"}:
                     (target / "profile.yaml").write_text("description: operator supplied\n")
+                    (target / "profile.yaml").chmod(0o600)
                     (target / "skills").mkdir(mode=0o700)
                 else:
                     (target / "config.yaml").write_text("operator supplied\n")
+                    (target / "config.yaml").chmod(0o600)
             (hermes_home / "config.yaml").write_text("private operator config\n")
             (hermes_home / "config.yaml").chmod(0o600)
+            self.assertEqual(run().returncode, 0)
+            private_env = hermes_home / "profiles/design-write-v1/.env"
+            private_env.write_text("TEST_VALUE=fixture\n")
+            private_env.chmod(0o644)
+            self.assertIn("profile file must be owner-only", run().stderr)
+            private_env.chmod(0o600)
             self.assertEqual(run().returncode, 0)
             config_path = profile / "config.yaml"
             original_config = config_path.read_bytes()
