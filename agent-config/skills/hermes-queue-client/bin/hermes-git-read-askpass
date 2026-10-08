@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  *Username*) printf '%s\n' x-access-token ;;
+  *Password*) [[ -r "${GITHUB_READ_TOKEN_FILE:-}" ]] || exit 2; exec /bin/cat "$GITHUB_READ_TOKEN_FILE" ;;
+  *) exit 2 ;;
+esac
