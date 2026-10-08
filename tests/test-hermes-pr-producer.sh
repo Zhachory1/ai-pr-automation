@@ -343,8 +343,12 @@ with pathlib.Path(os.environ["TEST_STATE"], "bridge.log").open("a") as stream:
     stream.write(json.dumps(sys.argv[1:]) + "\n")
 if os.environ.get("FAIL_BRIDGE") == sys.argv[3]: raise SystemExit(1)
 kind,repo,number,title,head,*feedback=sys.argv[1:]
-print(json.dumps({"kind":kind,"board":kind,"operation_id":kind+"-"+"a"*64,
-  "task_id":"t_12345678","status":"ready"}))
+if kind == "pr-maintain" and os.environ.get("DEFER_BRIDGE") == "1":
+    print(json.dumps({"kind":kind,"board":kind,"operation_id":kind+"-"+"a"*64,
+      "task_id":None,"status":"deferred"}))
+else:
+    print(json.dumps({"kind":kind,"board":kind,"operation_id":kind+"-"+"a"*64,
+      "task_id":"t_12345678","status":"ready"}))
 PY
 : > "$tmp/bridge.log"; : > "$tmp/psql.log"
 bridge_review_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=bridge \
@@ -360,5 +364,11 @@ bridge_maintain_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" GH_SCENARIO=maint
 [[ "$(wc -l < "$tmp/bridge.log" | tr -d ' ')" == 1 ]] || { echo 'FAIL: bridge maintain not submitted' >&2; exit 1; }
 jq -e '.[0] == "pr-maintain" and .[3] == "Granted PR" and (.[5]|length) == 64' "$tmp/bridge.log" >/dev/null
 echo "$bridge_maintain_out" | grep -q 'admitted=1 failed=0 skipped=0'
+bridge_deferred_out="$(DEFER_BRIDGE=1 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" GH_SCENARIO=maintain FEEDBACK_VERSION=v1 \
+  PR_MAINTAIN_QUEUE_ENGINE=bridge HERMES_KANBAN_SUBMIT_BIN="$tmp/bin/bridge-submit" \
+  HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
+  bin/hermes-pr-producer maintain 2>&1)"
+echo "$bridge_deferred_out" | grep -q 'admitted=0 failed=0 skipped=1' \
+  || { echo 'FAIL: active maintenance round was not deferred' >&2; exit 1; }
 
 echo 'PASS: hermes-pr-producer postgres, direct, API, and Compose Kanban bridge modes'

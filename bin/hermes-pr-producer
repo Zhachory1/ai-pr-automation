@@ -251,11 +251,11 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
     submit=("$HERMES_KANBAN_SUBMIT_BIN" "$KIND" "$repo" "$number" "$title" "$sha")
     if [[ "$KIND" == pr-maintain ]]; then submit+=("$feedback"); fi
     if result="$("$TIMEOUT_BIN" --kill-after=5s 135s python3 "${submit[@]}")"; then
-      if jq -e '.status == "capped"' <<<"$result" >/dev/null; then
-        skip=$((skip+1)); log "skip $repo#$number@$sha: maintenance round cap reached"
-      else
-        enq=$((enq+1)); log "Kanban $KIND $repo#$number@$sha: $result"
-      fi
+      case "$(jq -r '.status' <<<"$result")" in
+        capped) skip=$((skip+1)); log "skip $repo#$number@$sha: maintenance round cap reached" ;;
+        deferred) skip=$((skip+1)); log "skip $repo#$number@$sha: earlier maintenance round still active" ;;
+        *) enq=$((enq+1)); log "Kanban $KIND $repo#$number@$sha: $result" ;;
+      esac
     else
       failed=$((failed+1)); log "Kanban ingress failed for $repo#$number@$sha"
     fi

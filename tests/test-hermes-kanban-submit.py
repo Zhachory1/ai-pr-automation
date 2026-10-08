@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import hashlib
+import hmac
 import importlib.util
 import io
 import json
@@ -37,11 +39,24 @@ class SubmitTest(unittest.TestCase):
                 self.assertEqual(client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40), response)
                 request = opener.open.call_args.args[0]
                 self.assertEqual(request.full_url, "http://host.docker.internal:8767/v1/pr-tasks/pr-review")
-                self.assertEqual(request.get_header("Authorization"), "Bearer " + "a" * 64)
+                headers = {name.lower(): value for name, value in request.header_items()}
+                self.assertNotIn("authorization", headers)
+                stamp = headers["x-hermes-timestamp"]
+                signature = hmac.new(bytes.fromhex("a" * 64),
+                    b"POST\n/v1/pr-tasks/pr-review\n" + stamp.encode() + b"\n" + request.data, hashlib.sha256).hexdigest()
+                self.assertEqual(headers["x-hermes-signature"], signature)
                 self.assertEqual(json.loads(request.data), {"repo": "owner/repo", "number": 7,
                                  "url": "https://github.com/owner/repo/pull/7", "title": "Fix", "head_sha": "b" * 40})
                 opener.open.return_value = Response({**response, "task_id": None})
                 with self.assertRaises(ValueError): client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40)
+                deferred = {"kind": "pr-maintain", "board": "pr-maintain", "operation_id":
+                            client.identity("pr-maintain", "owner/repo", 7, "b" * 40, "1" * 64)["operation_id"],
+                            "status": "deferred", "task_id": None}
+                opener.open.return_value = Response(deferred)
+                self.assertEqual(client.submit("pr-maintain", "owner/repo", 7, "Fix", "b" * 40, "1" * 64), deferred)
+                opener.open.return_value = Response({**deferred, "operation_id": "pr-maintain-" + "0" * 64})
+                with self.assertRaisesRegex(ValueError, "invalid Kanban ingress result"):
+                    client.submit("pr-maintain", "owner/repo", 7, "Fix", "b" * 40, "1" * 64)
                 with mock.patch.dict(client.os.environ, {"HERMES_KANBAN_INGRESS_URL": "http://example.com:8767"}):
                     with self.assertRaises(ValueError): client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40)
 
@@ -59,6 +74,25 @@ class SubmitTest(unittest.TestCase):
                  mock.patch.object(client.urllib.request, "build_opener", return_value=opener):
                 with self.assertRaisesRegex(ValueError, f"{operation}.*unresolved create outcome"):
                     client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40)
+            opener.open.assert_called_once()
+            opener.open.reset_mock()
+            prior = "pr-maintain-" + "c" * 64
+            opener.open.side_effect = client.urllib.error.HTTPError(
+                "http://host.docker.internal:8767", 400, "prior create uncertain", None,
+                io.BytesIO(json.dumps({"error": "unresolved create outcome for " + prior}).encode()))
+            with mock.patch.dict(client.os.environ, {"HERMES_KANBAN_INGRESS_KEY_FILE": str(key)}, clear=False), \
+                 mock.patch.object(client.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaisesRegex(ValueError, prior):
+                    client.submit("pr-maintain", "owner/repo", 7, "Fix", "b" * 40, "1" * 64)
+            opener.open.assert_called_once()
+            opener.open.reset_mock()
+            opener.open.side_effect = client.urllib.error.HTTPError(
+                "http://host.docker.internal:8767", 400, "prior request incomplete", None,
+                io.BytesIO(json.dumps({"error": "prior maintenance request incomplete for " + prior}).encode()))
+            with mock.patch.dict(client.os.environ, {"HERMES_KANBAN_INGRESS_KEY_FILE": str(key)}, clear=False), \
+                 mock.patch.object(client.urllib.request, "build_opener", return_value=opener):
+                with self.assertRaisesRegex(ValueError, prior):
+                    client.submit("pr-maintain", "owner/repo", 7, "Fix", "b" * 40, "1" * 64)
             opener.open.assert_called_once()
             opener.open.reset_mock()
             opener.open.side_effect = client.urllib.error.HTTPError(

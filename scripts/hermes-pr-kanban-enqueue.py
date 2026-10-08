@@ -111,14 +111,14 @@ def binding(path):
     if not isinstance(task_id, str) or not TASK_ID.fullmatch(task_id) or data != canonical(value): fail("invalid task binding")
     return task_id
 
-def run(command, env, json_output=False, cwd=None):
-    completed = subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True, timeout=30, pass_fds=() if LOCK_FD is None else (LOCK_FD,))
+def run(command, env, json_output=False, cwd=None, timeout=30):
+    completed = subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout, pass_fds=() if LOCK_FD is None else (LOCK_FD,))
     if completed.returncode: fail(f"Hermes CLI failed: {completed.stderr.strip()[-300:]}")
     if not json_output: return completed.stdout.strip()
     try: return json.loads(completed.stdout)
     except json.JSONDecodeError as error: raise ValueError("Hermes CLI returned invalid JSON") from error
 
-def show(command, env, cwd, board, task_id): return run([*command,"kanban","--board",board,"show",task_id,"--json"], env, True, cwd)
+def show(command, env, cwd, board, task_id, timeout=30): return run([*command,"kanban","--board",board,"show",task_id,"--json"], env, True, cwd, timeout)
 def closed(runs): return all(run["ended_at"] is not None and run["worker_pid"] is None and run["status"] not in {"claimed","running"} for run in runs)
 
 def history(value):

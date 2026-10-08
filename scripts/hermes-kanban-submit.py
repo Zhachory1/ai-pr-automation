@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Submit one discovered PR to the host's authenticated Kanban admission endpoint."""
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,8 +34,13 @@ def submit(kind, repo, number, title, head, feedback=None):
     if feedback is not None:
         payload["feedback_digest"] = feedback
     data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    request = urllib.request.Request(url.rstrip("/") + "/v1/pr-tasks/" + kind, data=data, method="POST",
-                                     headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+    path = "/v1/pr-tasks/" + kind
+    timestamp = str(int(time.time()))
+    signed = b"POST\n" + path.encode() + b"\n" + timestamp.encode() + b"\n" + data
+    signature = hmac.new(bytes.fromhex(key), signed, hashlib.sha256).hexdigest()
+    request = urllib.request.Request(url.rstrip("/") + path, data=data, method="POST",
+                                     headers={"X-Hermes-Timestamp": timestamp,
+                                              "X-Hermes-Signature": signature, "Content-Type": "application/json"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
         with opener.open(request, timeout=130) as response:
@@ -40,9 +48,16 @@ def submit(kind, repo, number, title, head, feedback=None):
                 raise ValueError("Kanban ingress admission failed")
             raw = response.read(4097)
     except urllib.error.HTTPError as error:
-        for code, message in ((400, "unresolved create outcome"), (503, "ingress busy")):
-            if error.code == code and error.read(4097) == json.dumps({"error": message}, sort_keys=True, separators=(",", ":")).encode():
-                raise ValueError(f"Kanban {operation['operation_id']}: {message}; inspect admission before retry") from None
+        raw_error = error.read(4097) if error.code in {400, 503} else b""
+        try:
+            problem = json.loads(raw_error) if len(raw_error) <= 4096 else None
+        except (ValueError, UnicodeError):
+            problem = None
+        reason = problem["error"] if type(problem) is dict and set(problem) == {"error"} else None
+        if ((error.code == 400 and isinstance(reason, str) and
+             (reason == "unresolved create outcome" or re.fullmatch(r"(?:unresolved create outcome|prior maintenance request incomplete) for pr-maintain-[0-9a-f]{64}", reason)))
+                or (error.code == 503 and reason == "ingress busy")):
+            raise ValueError(f"Kanban {operation['operation_id']}: {reason}; inspect admission before retry") from None
         raise ValueError("Kanban ingress unavailable or rejected the request") from error
     except (urllib.error.URLError, TimeoutError) as error:
         raise ValueError("Kanban ingress unavailable or rejected the request") from error
@@ -53,9 +68,11 @@ def submit(kind, repo, number, title, head, feedback=None):
             or value["kind"] != kind or value["board"] != kind
             or not isinstance(value["operation_id"], str)
             or (kind == "pr-review" and value["operation_id"] != operation["operation_id"])
-            or (kind == "pr-maintain" and not re.fullmatch(r"pr-maintain-[0-9a-f]{64}", value["operation_id"]))
-            or value["status"] not in {"ready", "active", "review", "done", "capped"}
-            or ((value["status"] == "capped") != (value["task_id"] is None))
+            or (kind == "pr-maintain" and (not re.fullmatch(r"pr-maintain-[0-9a-f]{64}", value["operation_id"])
+                or (value["status"] in {"capped", "deferred"} and value["operation_id"] != operation["operation_id"])))
+            or value["status"] not in {"ready", "active", "review", "done", "capped", "deferred"}
+            or (kind == "pr-review" and value["status"] in {"capped", "deferred"})
+            or ((value["status"] in {"capped", "deferred"}) != (value["task_id"] is None))
             or (value["task_id"] is not None and not re.fullmatch(r"t_[0-9a-f]{8}", value["task_id"]))):
         raise ValueError("invalid Kanban ingress result")
     return value

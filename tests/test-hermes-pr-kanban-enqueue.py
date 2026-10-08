@@ -15,7 +15,7 @@ class FakeCli:
     def board(self, slug, name, env):
         value={"slug":slug,"name":name,"description":"","icon":"","color":"","default_workdir":None,"project_id":None,"created_at":1,"archived":False,"db_path":str(pathlib.Path(env["HERMES_HOME"])/"kanban/boards"/slug/"kanban.db"),"is_current":False,"counts":{},"total":0}
         value.update(self.board_drift); return value
-    def __call__(self, command, env, json_output=False, cwd=None):
+    def __call__(self, command, env, json_output=False, cwd=None, timeout=30):
         self.commands.append(command); self.envs.append((env,cwd))
         if command[1:4] == ["kanban","boards","list"]: return [self.board(slug,name,env) for slug,name in self.boards.items()]
         if command[1:4] == ["kanban","boards","create"]: self.boards[command[4]]=command[6]; return "created"
@@ -66,6 +66,13 @@ class EnqueueTest(unittest.TestCase):
         self.assertFalse({"boards.create","create","assign","unblock","request-review"} & set(self.actions(cli)))
     @staticmethod
     def terminal(shown,status,assignee=None): shown["task"].update(status=status,assignee=assignee,completed_at=2 if status in {"done","archived"} else None,result="ok" if status in {"done","archived"} else None,last_failure_error=None)
+    def test_read_only_status_lookup_honors_admission_deadline(self):
+        result = enqueue.subprocess.CompletedProcess([], 0, "{}", "")
+        with mock.patch.object(enqueue.subprocess, "run", return_value=result) as cli:
+            self.assertEqual(enqueue.show(["hermes"], {}, self.fixture()[0].workspace_root,
+                                          "pr-maintain", "t_12345678", timeout=1.5), {})
+        self.assertEqual(cli.call_args.kwargs["timeout"], 1.5)
+
     def test_board_separation_two_operations_replay_fixed_schema_and_no_task_list(self):
         args,cli=self.fixture(); first=self.admit(args,cli); replay=self.admit(args,cli); second=self.admit(args,cli,self.request(head="b"))
         maintain=copy.copy(args); maintain.kind="pr-maintain"; maintained=self.admit(maintain,cli,self.request("pr-maintain"))

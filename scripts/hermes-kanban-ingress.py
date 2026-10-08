@@ -2,16 +2,19 @@
 """Authenticated loopback ingress for Compose PR discovery into the host's Kanban CLI."""
 import argparse
 from collections import namedtuple
+import hashlib
 import hmac
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import stat
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -28,10 +31,11 @@ def load_module(name, path):
 HERE = Path(__file__).resolve().parent
 AUTHORITY = load_module("hermes_authority", HERE / "hermes-authority.py")
 ENQUEUE = load_module("hermes_pr_enqueue", HERE / "hermes-pr-kanban-enqueue.py")
-Config = namedtuple("Config", "work authority home hermes_bin keys")
+Config = namedtuple("Config", "work authority home hermes_bin keys history history_dirs history_error", defaults=(None, None, None))
 LOCK = threading.Lock()
 STATE = None
 KINDS = {"pr-review", "pr-maintain"}
+DEFERRED = object()
 
 
 def validate(payload, kind):
@@ -46,35 +50,120 @@ def validate(payload, kind):
     return operation
 
 
+def history_entry(entry):
+    ENQUEUE.safe_dir(entry)
+    path = entry / "request.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    raw = ENQUEUE.read_immutable(path)
+    previous = json.loads(raw)
+    if (raw != ENQUEUE.canonical(previous) or type(previous) is not dict
+            or set(previous) != {"operation_id", "repo", "number", "url", "title", "head_sha", "feedback_digest", "round"}
+            or type(previous["round"]) is not int or previous["round"] not in range(1, 4)
+            or validate({key: previous[key] for key in ("repo", "number", "url", "title", "head_sha", "feedback_digest")}, "pr-maintain")["operation_id"] != previous["operation_id"]
+            or entry.name != previous["operation_id"]):
+        raise ValueError("invalid maintenance history")
+    return previous
+
+
+def add_history(history, entry):
+    previous = history_entry(entry)
+    if previous is None:
+        return
+    seen = history.setdefault((previous["repo"].lower(), previous["number"]), {})
+    digest = previous["feedback_digest"]
+    if digest in seen and seen[digest][0]["operation_id"] != previous["operation_id"]:
+        raise ValueError("conflicting maintenance history")
+    seen[digest] = (previous, entry)
+    if len(seen) > 3:
+        raise ValueError("maintenance round cap exceeded")
+
+
+def load_history(work, known=None):
+    history = {}
+    for entry in work.iterdir():
+        if re.fullmatch(r"pr-maintain-[0-9a-f]{64}", entry.name):
+            if known is not None:
+                known.add(entry.name)
+            add_history(history, entry)
+    return history
+
+
+def prepare_history(config):
+    known = set()
+    try:
+        history = load_history(config.work, known)
+    except (OSError, ValueError):
+        print("maintenance history invalid; maintenance admissions disabled until reconciliation", file=sys.stderr)
+        return config._replace(history={}, history_dirs=set(), history_error=[True])
+    return config._replace(history=history, history_dirs=known, history_error=[])
+
+
+def prior_binding(previous, entry):
+    intent = entry / "create-intent.json"
+    if not intent.exists() and not intent.is_symlink():
+        raise ValueError("prior maintenance request incomplete for " + previous["operation_id"])
+    expected = ENQUEUE.canonical({"operation_id": previous["operation_id"],
+                                  "request_digest": hashlib.sha256(ENQUEUE.canonical(previous)).hexdigest()})
+    if ENQUEUE.read_immutable(intent) != expected:
+        raise ValueError("invalid prior maintenance intent")
+    binding = entry / "task-id.json"
+    if not binding.exists() and not binding.is_symlink():
+        raise ValueError("unresolved create outcome for " + previous["operation_id"])
+    return ENQUEUE.binding(binding)
+
+
 def round_request(config, payload):
     repo, number, digest = payload["repo"].lower(), payload["number"], payload["feedback_digest"]
-    seen = {}
-    entries = [entry for entry in config.work.iterdir() if re.fullmatch(r"pr-maintain-[0-9a-f]{64}", entry.name)]
-    if len(entries) > 1000:
-        raise ValueError("too much maintenance history")
-    for entry in entries:
-        path = entry / "request.json"
-        if not path.exists():
-            continue
-        raw = ENQUEUE.read_immutable(path)
-        previous = json.loads(raw)
-        if (raw != ENQUEUE.canonical(previous) or type(previous) is not dict
-                or set(previous) != {"operation_id", "repo", "number", "url", "title", "head_sha", "feedback_digest", "round"}
-                or type(previous["round"]) is not int or previous["round"] not in range(1, 4)
-                or validate({key: previous[key] for key in ("repo", "number", "url", "title", "head_sha", "feedback_digest")}, "pr-maintain")["operation_id"] != previous["operation_id"]
-                or entry.name != previous["operation_id"]):
-            raise ValueError("invalid maintenance history")
-        if previous["repo"].lower() == repo and previous["number"] == number:
-            prior_digest = previous["feedback_digest"]
-            if prior_digest in seen and seen[prior_digest]["operation_id"] != previous["operation_id"]:
-                raise ValueError("conflicting maintenance history")
-            seen[prior_digest] = previous
-            if len(seen) > 3:
-                raise ValueError("maintenance round cap exceeded")
+    deadline = time.monotonic() + 3
+    if config.history_dirs is not None:
+        current = set()
+        for entry in config.work.iterdir():
+            if time.monotonic() >= deadline:
+                raise TimeoutError("maintenance inventory timed out")
+            if re.fullmatch(r"pr-maintain-[0-9a-f]{64}", entry.name):
+                current.add(entry.name)
+        if current != config.history_dirs:
+            raise ValueError("maintenance history changed outside ingress")
+    history = config.history if config.history is not None else load_history(config.work)
+    seen = history.get((repo, number), {})
+    if config.history is not None:
+        for previous, entry in seen.values():
+            if history_entry(entry) != previous:
+                raise ValueError("maintenance history changed outside ingress")
+    if time.monotonic() >= deadline:
+        raise TimeoutError("maintenance inventory timed out")
     if digest in seen:
-        return seen[digest]
+        previous, entry = seen[digest]
+        prior_binding(previous, entry)
+        return previous
     if len(seen) == 3:
         return None
+    pending = [(previous, entry, prior_binding(previous, entry)) for previous, entry in seen.values()]
+    env = {"HOME": str(config.home.parent), "HERMES_HOME": str(config.home), "PATH": os.environ.get("PATH", ""),
+           "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "HERMES_SAFE_MODE": "1"}
+    for previous, entry, task_id in pending:
+        remaining = min(2, deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("prior maintenance status timed out")
+        shown = ENQUEUE.show([str(config.hermes_bin)], env, config.work, "pr-maintain", task_id, timeout=remaining)
+        ENQUEUE.history(shown)
+        task = shown["task"]
+        status = task.get("status") if isinstance(task, dict) else None
+        if status not in {"blocked", "ready", "running", "review", "done", "archived"}:
+            raise ValueError("invalid prior maintenance task")
+        _, _, profile, runtime = ENQUEUE.CONFIG["pr-maintain"]
+        ENQUEUE.verify_task(task, task_id, ENQUEUE.canonical(previous).decode(),
+                            f"{previous['repo']}#{previous['number']} @ {previous['head_sha'][:8]}",
+                            entry, previous["operation_id"], runtime, status, {profile, None}, True)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("prior maintenance status timed out")
+        if status not in {"done", "archived"}:
+            return DEFERRED
+        if not ENQUEUE.closed(shown["runs"]):
+            raise ValueError("prior maintenance card has open run")
+    if time.monotonic() >= deadline:
+        raise TimeoutError("maintenance inventory timed out")
     operation = validate(payload, "pr-maintain")
     return {"operation_id": operation["operation_id"], **payload, "round": len(seen) + 1}
 
@@ -106,6 +195,8 @@ def admit(config, kind, key, payload):
     repo = payload["repo"]
     if repo not in grants and f"{repo.split('/', 1)[0]}/*" not in grants:
         raise ValueError("repository is not granted")
+    if kind == "pr-maintain" and config.history_error:
+        raise ValueError("maintenance history invalid; reconcile before retry")
     if not LOCK.acquire(timeout=5):
         raise ValueError("ingress busy")
     try:
@@ -127,29 +218,71 @@ def admit(config, kind, key, payload):
                     request = previous
         else:
             request = round_request(config, payload)
-        if request is None:
+        if request is None or request is DEFERRED:
             return {"kind": kind, "board": kind, "operation_id": operation["operation_id"],
-                    "task_id": None, "status": "capped"}
+                    "task_id": None, "status": "capped" if request is None else "deferred"}
+        if kind == "pr-maintain":
+            try:
+                return invoke(config, kind, request)
+            finally:
+                if config.history is not None:
+                    entry = config.work / request["operation_id"]
+                    if entry.exists() or entry.is_symlink():
+                        try:
+                            add_history(config.history, entry)
+                        except (OSError, ValueError):
+                            if config.history_error is not None:
+                                config.history_error.append(True)
+                            raise
+                        if config.history_dirs is not None:
+                            config.history_dirs.add(entry.name)
         return invoke(config, kind, request)
     finally:
         LOCK.release()
 
 
 class Handler(BaseHTTPRequestHandler):
+    _preauth_seconds = 10
+
+    def handle_one_request(self):
+        self._preauth_deadline = time.monotonic() + self._preauth_seconds
+        def expire():
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        self._preauth_timer = threading.Timer(self._preauth_seconds, expire)
+        self._preauth_timer.daemon = True
+        self._preauth_timer.start()
+        try:
+            self.connection.settimeout(self._preauth_seconds)
+            super().handle_one_request()
+        finally:
+            self._preauth_timer.cancel()
+
     def do_POST(self):
         kind = self.path.removeprefix("/v1/pr-tasks/")
         if self.path != f"/v1/pr-tasks/{kind}" or kind not in KINDS:
             return self.reply(404, {"error": "not found"})
         if self.headers.get("Host") not in {"127.0.0.1:8767", "host.docker.internal:8767"} or self.headers.get("Origin"):
             return self.reply(403, {"error": "invalid origin"})
-        key = self.headers.get("Authorization", "").removeprefix("Bearer ")
-        if not hmac.compare_digest(key, STATE.keys[kind]):
+        timestamp = self.headers.get("X-Hermes-Timestamp", "")
+        signature = self.headers.get("X-Hermes-Signature", "")
+        if (not re.fullmatch(r"[0-9]{10,12}", timestamp) or abs(time.time() - int(timestamp)) > 60
+                or not re.fullmatch(r"[0-9a-f]{64}", signature)):
             return self.reply(401, {"error": "unauthorized"})
         try:
             length = int(self.headers.get("Content-Length", ""))
             if length < 1 or length > 8192 or self.headers.get("Content-Type") != "application/json":
                 raise ValueError("invalid request")
             body = self.rfile.read(length)
+            signed = b"POST\n" + self.path.encode() + b"\n" + timestamp.encode() + b"\n" + body
+            expected = hmac.new(bytes.fromhex(STATE.keys[kind]), signed, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                return self.reply(401, {"error": "unauthorized"})
+            self._preauth_timer.cancel()
+            if time.monotonic() >= self._preauth_deadline:
+                return self.reply(408, {"error": "request timeout"})
             def unique(pairs):
                 value = {}
                 for field, item in pairs:
@@ -158,9 +291,11 @@ class Handler(BaseHTTPRequestHandler):
                     value[field] = item
                 return value
             payload = json.loads(body, object_pairs_hook=unique, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid number")))
-            result = admit(STATE, kind, key, payload)
+            result = admit(STATE, kind, STATE.keys[kind], payload)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
             return self.reply(503 if str(error) == "ingress busy" else 400, {"error": str(error)})
+        except TimeoutError:
+            return self.reply(408, {"error": "request timeout"})
         except (OSError, subprocess.TimeoutExpired) as error:
             return self.reply(503, {"error": "Kanban CLI unavailable"})
         return self.reply(200, result)
@@ -178,18 +313,42 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class BoundedHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self.slots = threading.BoundedSemaphore(16)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 def read_key(path):
     path = Path(path)
     info, parent = path.lstat(), path.parent.lstat()
     if (not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size != 65
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size not in {64, 65}
             or not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid()
             or stat.S_IMODE(parent.st_mode) & 0o077):
         raise ValueError("bridge key must be owner-only")
-    value = path.read_text().strip()
-    if not re.fullmatch(r"[0-9a-f]{64}", value):
+    value = path.read_bytes()
+    if not re.fullmatch(rb"[0-9a-f]{64}\n?", value):
         raise ValueError("invalid bridge key")
-    return value
+    return value.decode().rstrip("\n")
 
 
 def main():
@@ -201,9 +360,10 @@ def main():
     STATE = Config(Path(args.work), Path(args.authority), Path(args.hermes_home), Path(args.hermes_bin),
                    {"pr-review": read_key(args.review_key), "pr-maintain": read_key(args.maintain_key)})
     ENQUEUE.safe_dir(STATE.work, True)
+    STATE = prepare_history(STATE)
     if not STATE.home.is_dir() or not os.access(STATE.hermes_bin, os.X_OK) or not (HERE / "hermes-pr-kanban-enqueue.py").is_file():
         raise SystemExit("host Hermes CLI not configured")
-    ThreadingHTTPServer(("127.0.0.1", 8767), Handler).serve_forever()
+    BoundedHTTPServer(("127.0.0.1", 8767), Handler).serve_forever()
 
 
 if __name__ == "__main__":
