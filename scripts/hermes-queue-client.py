@@ -55,8 +55,9 @@ def intake(raw):
         return value
     if set(value) != {"version", "kind", "title", "requirements", "repositories"} or value["kind"] not in DOCUMENTS:
         fail("unsupported request contract")
-    if not isinstance(value["title"], str) or not 0 < len(value["title"]) <= 256 or \
-            not isinstance(value["requirements"], str) or not 0 < len(value["requirements"].encode()) <= 2048:
+    if not isinstance(value["title"], str) or not value["title"].strip() or len(value["title"]) > 256 or \
+            not isinstance(value["requirements"], str) or not value["requirements"].strip() or \
+            len(value["requirements"].encode()) > 2048:
         fail("invalid title or requirements")
     repos = value["repositories"]
     if not isinstance(repos, list) or not 0 < len(repos) <= 5 or any(

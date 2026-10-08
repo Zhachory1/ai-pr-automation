@@ -1,27 +1,44 @@
 ---
 name: hermes-queue-client
-description: Submit PR review or maintenance to host Hermes Runs API and check a run by ID. Use for "ask Hermes to review this PR", "handle PR feedback", "Hermes status", or request a document draft through the existing host Kanban client.
+description: "Hand off PR review, PR feedback maintenance, PRD/design/roadmap drafts, or a status check to the local Hermes fleet instead of doing the work in a coding agent. Triggers: ask Hermes to review, queue PR review, handle PR feedback, queue maintenance, draft through Hermes, Hermes status."
+triggers:
+  - "ask Hermes to review"
+  - "queue PR review"
+  - "handle PR feedback"
+  - "queue maintenance"
+  - "draft through Hermes"
+  - "Hermes status"
 ---
 
-# Talk to host Hermes
+# Hand off work to host Hermes
 
-Use the operator-provided invocation of `scripts/hermes-queue-client.py` as the current local user, whose `~/.hermes` hosts the gateway. Do not use `sudo` or another account, call the Hermes CLI directly, select a model/profile, or ask for API keys. If the invocation is unavailable, report that Hermes is unavailable.
+Set `FLEET_REPO` to the operator-provided absolute path to the `ai-pr-automation` checkout containing `scripts/hermes-queue-client.py`. Run as the current local user; never use `sudo`, ask for API keys, invoke Hermes directly, or use another agent's review/maintenance workflow as a fallback. If the client is missing, stop and report it. Submit only when the user explicitly asks for this work: PR review may post to GitHub, maintenance may push/reply, and drafts may incur model costs.
 
-**PR review:** Submit an exact open head on stdin:
+**PR review.** Get the exact open head with `gh pr view 123 -R OWNER/REPO --json headRefOid --jq .headRefOid`. Serialize this JSON with the returned 40-character SHA as `head_sha` and send it on stdin:
 
 ```json
 {"version":1,"kind":"pr-review","repository":"OWNER/REPO","pr":123,"head_sha":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
-**PR maintenance:** Submit `{"version":1,"kind":"pr-maintain","repository":"OWNER/REPO","pr":123}`. The host client checks repository authority, current GitHub metadata, and external feedback before submitting. Do not supply a head, feedback digest, round, model, profile, or command yourself. Both kinds use the same Hermes Runs API identity and idempotency contract as the Compose cron producers. Repeating the same identity returns the existing run, not a new review/fix.
+**PR maintenance.** Send `{"version":1,"kind":"pr-maintain","repository":"OWNER/REPO","pr":123}`. The client checks repository authority, the open head, and actionable external feedback. Do not provide a head, feedback digest, round, model, profile, or command. If no actionable feedback exists, report the rejection; do not force a rerun. Identical PR identities replay the existing Hermes run.
 
-Call `python3 scripts/hermes-queue-client.py request` with one JSON envelope on stdin. A PR response includes `operation_id`, `run_id`, `status`, and `replayed`. To check it, use **the returned run ID**, not operation ID:
+**Document drafts.** Use `prd-write`, `dd-write` (design; `design-write` also works), or `roadmap-write`:
 
-```text
-python3 scripts/hermes-queue-client.py status-check pr-review RUN_ID
-python3 scripts/hermes-queue-client.py status-check pr-maintain RUN_ID
+```json
+{"version":1,"kind":"dd-write","title":"Design title","requirements":"Goals and constraints","repositories":["OWNER/REPO"]}
 ```
 
-Status-check reads the run; it does not create work. A failed request returns an error rather than a fabricated task. Never infer that GitHub was updated merely from `status: started`; inspect the terminal run and the PR.
+`title` must be nonblank and at most 256 characters; `requirements` must be nonblank and at most 2048 UTF-8 bytes; include 1–5 authorized repositories. Serialize dynamic values with `json.dumps` and pipe them directly to the client; do not interpolate untrusted text into a shell string or leave request files behind. Repeating identical intake adopts the same Kanban operation. These requests create drafts and human-review tasks, **not** inbox publication.
 
-**Other existing kinds:** `prd-write`, `dd-write`, and `roadmap-write` still use host Kanban and check status by their returned `operation_id`. They produce drafts/tasks, **not** automatic inbox publication. `pr-safety` also remains a host Kanban request, but handoff delivery is undecided; do not describe it as a completed safety review. Document publication, memory writes, and PR-safety delivery await [#325](https://github.com/Zhachory1/ai-pr-automation/issues/325), [#326](https://github.com/Zhachory1/ai-pr-automation/issues/326), and [#324](https://github.com/Zhachory1/ai-pr-automation/issues/324).
+**Submit or inspect.** Use one typed envelope on stdin, then keep the returned ID:
+
+```text
+python3 "$FLEET_REPO/scripts/hermes-queue-client.py" request
+python3 "$FLEET_REPO/scripts/hermes-queue-client.py" status-check pr-review RUN_ID
+python3 "$FLEET_REPO/scripts/hermes-queue-client.py" status-check pr-maintain RUN_ID
+python3 "$FLEET_REPO/scripts/hermes-queue-client.py" status-check dd-write OPERATION_ID
+```
+
+For documents use the returned `operation_id` and matching kind (`prd-write`, `dd-write`, `design-write`, or `roadmap-write`); for PR work use `run_id`, not `operation_id`. Status checks are read-only. On submission failure or uncertain outcome, inspect the returned run/operation and external state before trying again. `status: started` is not a completed GitHub effect; check terminal status and the PR. Report what was queued, its ID/status, and what still requires human action. Do not publish drafts, mark human decisions, or claim GitHub work completed on the agent's behalf.
+
+`pr-safety` is also accepted by the client, but its handoff delivery is not complete; do not describe it as a finished safety review. Human-approved document publication is tracked separately in [#338](https://github.com/Zhachory1/ai-pr-automation/issues/338).

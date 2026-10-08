@@ -36,6 +36,11 @@ class QueueClientTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "8 KiB"):
             client.intake(b"x" * 8193)
 
+    def test_document_intake_rejects_blank_title_or_requirements(self):
+        for change in ({"title": "  \n "}, {"requirements": " \t "}):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "invalid title or requirements"):
+                client.intake(client.canonical({**self.value, **change}))
+
     def test_all_six_request_kinds_are_typed(self):
         for kind in ("pr-review", "pr-safety"):
             value = {"version": 1, "kind": kind, "repository": "Owner/Repo", "pr": 7, "head_sha": "a" * 40}
