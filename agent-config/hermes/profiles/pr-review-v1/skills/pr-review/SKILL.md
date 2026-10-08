@@ -5,12 +5,13 @@ description: "Agent PR review workflow for correctness, safety, maintainability,
 
 # PR Review
 
-> **HERMES RUNS API OVERRIDE:** submit exactly one head-pinned GitHub review yourself for every
-> verdict. Clean reviews use `APPROVE`; self-authored PRs use `COMMENT`; blocking reviews use
-> `REQUEST_CHANGES` when GitHub permits. Use `<!-- ai-pr-automation head=<sha> -->` for idempotency.
-> After delivery, ignore the Markdown output format below and return only the strict JSON envelope
-> supplied by the Runs API prompt. For `status="done"`, `posted_ref` must be that exact marker—not a
-> review ID, URL, or bare SHA.
+> **KANBAN WORKER CONTRACT:** the task body identifies one exact PR head. Verify that head before
+> posting. Clean reviews use `APPROVE`; self-authored PRs use `COMMENT`; blocking reviews use
+> `REQUEST_CHANGES` when GitHub permits. Check for `<!-- ai-pr-automation head=<sha> -->` before
+> posting and verify the marker after an uncertain outcome. On confirmed delivery, call
+> `kanban_complete` with summary and metadata containing `operation_id`, `head_sha`, `verdict`, and
+> `posted_ref` set to the exact marker. A final chat response is not task completion. If delivery
+> cannot be verified, use `kanban_block` with `kind=needs_input`; never guess or post twice.
 
 Review a pull request against real intent, not guesswork. Produce prioritized, actionable feedback and preserve human accountability for merge.
 
@@ -77,8 +78,8 @@ Use agent-fleet council levels. Most PRs should use no council. Use `single-lens
 - **Prior-feedback ledger / avoid duplicates:** before analysis, retrieve every paginated issue comment, review, inline review comment, thread reply, and thread resolution/outdated state. Normalize them into a private ledger by concern, file/line, author response, and status. Treat every prior concern as covered—resolved, dismissed, replied to, or open—and do not repeat it. Revisit an area only when code changed or materially new evidence/risk exists; state what changed and reference the earlier feedback. Prefer one submitted review containing all new inline findings over several separate comments.
 - **Idempotency:** add exactly `<!-- ai-pr-automation head=<sha> -->` (NOT an autopraxis-pr-review marker). Search all paginated reviews/comments authored by this account for that exact marker before posting and again after an ambiguous API failure; return the existing marker instead of retrying.
 - **Preview before publish:** write the exact review body to a file or structured API payload and preview it before posting. Preserve Markdown literally; never build multi-line bodies through shell interpolation.
-- **Head safety:** capture the reviewed head SHA. Immediately before publishing, fetch the head again. If it changed, re-review the delta before posting. Submit the review with `commit_id` pinned to the verified reviewed SHA, verify the API response commit, then re-read the PR head and report if the posted review was superseded.
-- **Published result:** verify the GitHub review at the exact head, then return the exact marker in the Runs API `posted_ref` field.
+- **Head safety:** capture the task's exact head SHA. Immediately before publishing, fetch the head again. If it changed or the PR closed, make no GitHub write; complete this old task as `superseded` or `skipped` and let discovery admit a new-head task. Otherwise submit the review with `commit_id` pinned to the verified task head, verify the API response commit, then re-read the PR head. If it moved during posting, reconcile that one post by marker before settling; never post another verdict from the old task.
+- **Published result:** verify the GitHub review at the exact head, then call `kanban_complete` with the exact marker in metadata `posted_ref`. If the PR head moved or closed, complete the old task as `superseded` or `skipped` without posting; if verification is uncertain, call `kanban_block` instead.
 
 ## Execution
 
@@ -111,6 +112,8 @@ Use agent-fleet council levels. Most PRs should use no council. Use `single-lens
 **Council escalation.** Record skipped reason for ordinary PRs, one lens for a single domain concern, and use agent-fleet minimal/full council only for high-stakes or conflicting judgments.
 
 ## Output Contract
+
+For an owned Kanban task, the `kanban_complete` or `kanban_block` tool call is authoritative; this Markdown format is for the human-readable handoff only. Never end a worker run with a final message alone.
 
 ```markdown
 # PR Review
@@ -186,7 +189,7 @@ Use agent-fleet council levels. Most PRs should use no council. Use `single-lens
 
 **Chat-only review for a target PR URL.** Fix by treating the requested PR as `post` mode, publishing the verified verdict-appropriate review, and returning its URL unless the user explicitly opted out.
 
-**Stale-head posting.** Fix by delta-reviewing head changes, pinning submission with `commit_id`, verifying the response commit, and reporting a post-submit supersession.
+**Stale-head posting.** Complete an old-head Kanban task as `superseded` without posting; let discovery admit a new-head task. If the head moved during the post, reconcile the existing marker rather than sending a second verdict.
 
 **Duplicate review after ambiguous failure.** Fix by using a deterministic marker and searching all paginated reviews/comments before retrying.
 
