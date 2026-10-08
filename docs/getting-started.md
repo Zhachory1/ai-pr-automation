@@ -4,7 +4,7 @@ This runtime uses the **current user's** `~/.hermes` installation. The separate 
 
 ## Prerequisites
 
-- Colima (or Docker Desktop) with Compose, Git, Python 3, Bash, and the Hermes CLI installed for your macOS account.
+- Colima (or Docker Desktop) with Compose, Git, Python 3, Bash, host GitHub CLI (`gh`) authenticated for the personal review/maintenance profiles, and the Hermes CLI installed for your macOS account. The host `gh` credential is separate from the container's read-only discovery token.
 - A user-level Hermes gateway with `pr-review-v1` and `pr-maintain-v1` installed under `~/.hermes/profiles/`. Use the version-compatible definitions in `agent-config/hermes/profiles/`. The Kanban dispatcher runs within the gateway. The installed CLI must support `kanban create --body-file`, and `kanban show --json` must include `max_runtime_seconds`; this host uses v0.21.5 with the local-only body-file guard. Keep discovery paused if either contract is absent. Installing profiles does not authorize a model run.
 - A repository authority YAML file with only approved `owner/repo` entries. The wildcard [example](../agent-config/hermes/authority.example.yaml) is **not** an operator grant. `fleet.sh` validates the source file and mirrors it into a Docker-readable private directory. It reads non-default `HERMES_AUTHORITY_SOURCE_FILE` and `HERMES_DOCKER_AUTHORITY_FILE` from exported shell variables, not from Compose `.env`; export both when overriding their default paths. Bare Compose requires `HERMES_AUTHORITY_FILE` explicitly and will not fall back to the example.
 - TLS leaf certificate and key for the loopback HTTPS proxy, configured through `FLEET_CONTROLLER_TLS_CERT_FILE` and `FLEET_CONTROLLER_TLS_KEY_FILE` (legacy variable names). Existing valid material can be reused; [`scripts/generate-ui-tls.sh`](../scripts/generate-ui-tls.sh) creates a new set without overwriting one.
@@ -59,6 +59,8 @@ HERMES_AUTHORITY_FILE="$HERMES_DOCKER_AUTHORITY_FILE" scripts/compose.sh build c
 scripts/fleet.sh support-up
 # Fresh Mac only, after reviewing restored ready/running cards; can dispatch work:
 "$HERMES_BIN" gateway start
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/ai.hermes.dashboard.plist"
+launchctl kickstart "gui/$(id -u)/ai.hermes.dashboard"
 scripts/fleet.sh status
 ```
 
@@ -66,29 +68,51 @@ scripts/fleet.sh status
 
 ## Opt into live PR discovery
 
-Place a read-only GitHub discovery token and two different 64-hex per-kind ingress keys at the three file paths in `.env.example`. Keep each file owned by your user, mode `0600`, in an owner-only directory; `openssl rand -hex 32` generates one key without putting it in shell history. The personal bootstrap renders the host ingress LaunchAgent with paths under `~/.hermes/` (set `.env` to those same key paths). Set `HERMES_AUTHORITY_SOURCE_FILE` to `~/.hermes/authority.yaml` and `HERMES_DOCKER_AUTHORITY_FILE` to an operator-owned Docker-readable mirror before calling `fleet.sh`; these are exported shell variables, not parsed from `.env`. Review its plist and load it as a **user** LaunchAgent only after checking key paths and that no other ingress owns port 8767. The ingress listens on `127.0.0.1:8767` and accepts only authenticated, authority-scoped PR admission. Stop any legacy launchd PR producers before starting Compose crons. Configure provider and GitHub-effect credentials in your personal Hermes installation, not in the Compose containers. Review token scope, provider/data policy, and the current PR population before starting. On a fresh Mac, build the producer image and confirm the Docker-to-host route from **both** services without credentials or a PR payload. The overridden entrypoint does not run cron; HTTP 401 proves the request reached the ingress authentication check. Do not enable discovery if either probe fails.
+Place a read-only GitHub discovery token and two different 64-hex per-kind ingress keys at the three file paths in `.env.example`. Keep each file owned by your user, mode `0600`, in an owner-only directory; `openssl rand -hex 32` generates one key without putting it in shell history; a 64-hex key with or without one trailing newline is accepted. The personal bootstrap renders the host ingress LaunchAgent with paths under `~/.hermes/` (set `.env` to those same key paths). Set `HERMES_AUTHORITY_SOURCE_FILE` to `~/.hermes/authority.yaml` and `HERMES_DOCKER_AUTHORITY_FILE` to an operator-owned Docker-readable mirror before calling `fleet.sh`; these are exported shell variables, not parsed from `.env`. Review `~/Library/LaunchAgents/com.example.ai-pr-automation-kanban-ingress.plist` and load it with `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.example.ai-pr-automation-kanban-ingress.plist"` only after checking key paths and that no other ingress owns port 8767. The ingress listens on `127.0.0.1:8767` and accepts only signed, authority-scoped PR admission. Stop any legacy launchd PR producers before starting Compose crons. Requests use a short-lived HMAC over method, path, timestamp, and exact body; the key is never sent in an HTTP header. This protects the key in transit, not against compromise of a producer that already holds it. The host enforces repository scope and Kanban identity; the worker must recheck the live PR head before any GitHub write. For an existing fleet, wait for both producer scans to finish, pause them, and inspect unresolved create intents and ready/running cards before stopping the gateway. The installed `pr-review-v1` SOUL and `skills/pr-review/SKILL.md` must match this checkout's new Kanban contract **before** discovery resumes; the bootstrap refuses to overwrite existing profiles. Review any local prompt changes privately, then install only these two public files into the stopped profile with mode `0600` and verify with `cmp -s`. Restart the gateway and ingress from this checkout, rebuild the cron image, and run the signed probe below before resuming producers. Old bearer clients and signed ingress are not compatible. If rollback is needed, pause discovery and restore the previous ingress source, review profile, and producer image as one set; do not run either half alone or replay uncertain admissions. Configure provider and GitHub-effect credentials in your personal Hermes installation, not in the Compose containers. Review token scope, provider/data policy, and the current PR population before starting. On a fresh Mac or after a coordinated upgrade, build the producer image and verify the Docker-to-host signature from **both** services with an intentionally invalid `{}` body. HTTP 400 with `invalid request fields` proves authentication succeeded while creating no task. Do not enable discovery if either probe fails.
+
+Existing fleet only, after reviewing the installed prompts and stopping its gateway:
+
+```bash
+install -m 0600 agent-config/hermes/profiles/pr-review-v1/SOUL.md "$HOME/.hermes/profiles/pr-review-v1/SOUL.md"
+install -m 0600 agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md "$HOME/.hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md"
+cmp -s agent-config/hermes/profiles/pr-review-v1/SOUL.md "$HOME/.hermes/profiles/pr-review-v1/SOUL.md" && \
+  cmp -s agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md "$HOME/.hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md" || \
+  { echo 'review profile differs; keep discovery paused' >&2; false; }
+```
+
+Signed, non-effecting Docker-to-host probe:
 
 ```bash
 (
 set -e
 HERMES_AUTHORITY_FILE="$HERMES_DOCKER_AUTHORITY_FILE" scripts/compose.sh build pr-producer-review
-for service in pr-producer-review pr-producer-maintain; do
+for kind in pr-review pr-maintain; do
+  if [[ "$kind" == pr-review ]]; then service=pr-producer-review; key=/run/secrets/pr_review_ingress_key
+  else service=pr-producer-maintain; key=/run/secrets/pr_maintain_ingress_key; fi
   HERMES_AUTHORITY_FILE="$HERMES_DOCKER_AUTHORITY_FILE" scripts/compose.sh run --rm --no-deps \
     --entrypoint python3 "$service" -c '
-import urllib.error, urllib.request
-request = urllib.request.Request("http://host.docker.internal:8767/v1/pr-tasks/pr-review", data=b"")
+import hashlib, hmac, json, sys, time, urllib.error, urllib.request
+from pathlib import Path
+kind, keyfile = sys.argv[1:]
+path = "/v1/pr-tasks/" + kind
+body = b"{}"  # Signed but invalid: no PR identity, so no task can be created.
+stamp = str(int(time.time()))
+signed = b"POST\n" + path.encode() + b"\n" + stamp.encode() + b"\n" + body
+signature = hmac.new(bytes.fromhex(Path(keyfile).read_text().strip()), signed, hashlib.sha256).hexdigest()
+request = urllib.request.Request("http://host.docker.internal:8767" + path, data=body,
+    headers={"Content-Type": "application/json", "X-Hermes-Timestamp": stamp, "X-Hermes-Signature": signature})
 try:
     urllib.request.urlopen(request, timeout=3)
 except urllib.error.HTTPError as error:
-    assert error.code == 401, error.code
+    assert error.code == 400 and json.load(error) == {"error": "invalid request fields"}
 else:
-    raise SystemExit("unauthenticated probe unexpectedly succeeded")
-'
+    raise SystemExit("invalid payload unexpectedly admitted")
+' "$kind" "$key"
 done
 )
 ```
 
-Both running producer containers returned HTTP 401 through Colima's host gateway on this Mac; that does not prove another Mac's routing. If the new host fails the probe, keep discovery paused and use a working Docker Desktop route or an independently reviewed loopback relay. Do not widen the ingress listener beyond `127.0.0.1` as a shortcut.
+Both running producer containers reached ingress through Colima's host gateway on this Mac; that does not prove another Mac's routing or signed authentication until the probe above passes. If the new host fails the probe, keep discovery paused and use a working Docker Desktop route or an independently reviewed loopback relay. Do not widen the ingress listener beyond `127.0.0.1` as a shortcut.
 
 The sample maintenance schedule is offset by two minutes from review. Update any existing private `.env` still using the same schedule for both; a slow CLI can still exceed the five-second admission wait. If that happens, producer stderr names the operation and reports `ingress busy` without automatically retrying an uncertain submission. Only after reconciling old-machine ready/running cards and stopping its producers, start discovery:
 

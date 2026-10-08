@@ -1,6 +1,8 @@
-# Host-native fleet architecture
+# Historical host-native fleet architecture
 
-Current topology is **one macOS host**: Docker Desktop runs discovery, Postgres, the controller, UI, and support services; a dedicated non-admin `hermes-agent` account runs one pinned Hermes gateway with immutable per-kind profiles. The old Compose-embedded agent workers are historical. The [from-zero guide](getting-started.md) explains when this topology becomes live.
+> This service-account/controller design is retired. Do not use it to set up or operate the current personal Hermes fleet. Follow [getting started](getting-started.md) and [operations](operations.md) for the active Kanban path.
+
+The former topology used **one macOS host**: Docker Desktop ran discovery, Postgres, the controller, UI, and support services; a dedicated non-admin `hermes-agent` account ran one pinned Hermes gateway with immutable per-kind profiles.
 
 ```mermaid
 flowchart LR

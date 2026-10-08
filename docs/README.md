@@ -2,11 +2,11 @@
 
 - **[From-zero host-native setup](getting-started.md)** — prerequisites, credentials, TLS, and explicit live-activation gate.
 - **[Documentation rollout plan](documentation-plan.md)** — implementation status and remaining clean-host trial.
-- **[Configuration](configuration.md)** — credentials, ownership, host/Compose precedence, and scope switches.
-- **[Architecture](architecture.md)** — control plane, trust boundaries, and effects by workflow.
+- **[Historical configuration](configuration.md)** — retired service-account settings; use [getting started](getting-started.md) for the personal fleet.
+- **[Historical architecture](architecture.md)** — retired service-account/controller control plane; see [getting started](getting-started.md) for the current fleet.
 - **[Operations](operations.md)** — status, queue inspection, reconciliation, safe stop, and recovery limits.
 - **[Contributing](contributing.md)** — source map and focused checks.
-- **[Hermes runtime](hermes/README.md)** and **[Compose substrate](../docker/README.md)** — deeper current contracts.
+- **[Compose substrate](../docker/README.md)** — current container contracts. **[Historical Hermes runtime](hermes/README.md)** — retired controller/Runs API design.
 
 ## Historical design records
 
