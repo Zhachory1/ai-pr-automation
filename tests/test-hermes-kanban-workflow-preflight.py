@@ -186,6 +186,30 @@ def discover_mcp_tools(allowed_mcp_names=None):
         self.assertNotIn("profile_tool_policy", result["deferred_runtime_enforcement"])
         self.assertEqual((result["service_state_writes"], result["model_calls"]), (0, 0))
 
+    def test_personal_v2_requires_owner_only_worker_scoped_council_tools(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve()
+            home, install = self.fixture(root, V2_CONTRACT)
+            tool = home / "bin/hermes-council-tools"
+            tool.parent.mkdir(mode=0o700)
+            shutil.copyfile(SERVER, tool)
+            tool.chmod(0o500)
+            for name, (_, _, model) in preflight.V2_PROFILES.items():
+                (home / "profiles" / name / "config.yaml").write_text(
+                    yaml.safe_dump(preflight.v2_config(model, tool, True)))
+            report = preflight.preflight(home, install, V2_CONTRACT)
+            self.assertEqual(report["council_tools"]["command"], str(tool))
+            self.assertEqual(len(report["effective_worker_tools"]), 5)
+            config_path = home / "profiles/council-reviewer-v2/config.yaml"
+            config = yaml.safe_load(config_path.read_text())
+            del config["mcp_servers"]["council-tools"]["worker_only"]
+            config_path.write_text(yaml.safe_dump(config))
+            with self.assertRaisesRegex(ValueError, "dangerous runtime profile tools"):
+                preflight.preflight(home, install, V2_CONTRACT)
+            tool.chmod(0o555)
+            with self.assertRaisesRegex(ValueError, "council tools missing or unsafe"):
+                preflight.council_tools_report(tool, os.getuid(), home, personal=True)
+
     def test_installed_layout_without_repository_bin_uses_trusted_installed_binary(self):
         with tempfile.TemporaryDirectory() as td:
             root = pathlib.Path(td).resolve(); server, support = self.installed_council_tools(root)

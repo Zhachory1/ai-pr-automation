@@ -9,7 +9,7 @@ compose = Path("docker-compose.yml").read_text()
 review = compose.split("  pr-producer-review:\n", 1)[1].split("\n  pr-producer-maintain:", 1)[0]
 assert 'profiles:' not in review
 assert 'Dockerfile.hermes-pr-review-cron' in review
-assert 'github_discovery_token, hermes_review_key' in review
+assert 'github_discovery_token, pr_review_ingress_key' in review
 assert 'REQUESTS_DB_HOST' not in review and 'schema-migrate' not in review
 assert 'pr-producer-review-direct:' not in compose
 fleet = Path("scripts/fleet.sh").read_text()
@@ -31,7 +31,7 @@ printf '#!/bin/sh\nexit 0\n' > "$tmp/repo/scripts/hermes-authority.py"
 cat > "$tmp/repo/scripts/compose.sh" <<'SH'
 #!/bin/sh
 if [ "$*" = 'config --format json' ]; then
-  printf '{"secrets":{"github_discovery_token":{"file":"%s"},"hermes_review_key":{"file":"%s"},"hermes_maintain_key":{"file":"%s"}}}\n' \
+  printf '{"secrets":{"github_discovery_token":{"file":"%s"},"pr_review_ingress_key":{"file":"%s"},"pr_maintain_ingress_key":{"file":"%s"}}}\n' \
     "${MOCK_TOKEN_FILE:-/dev/null}" "${MOCK_KEY_FILE:-/dev/null}" "${MOCK_MAINTAIN_FILE:-/dev/null}"
 else
   printf 'compose %s\n' "$*" >> "$MOCK_LOG"
@@ -83,7 +83,7 @@ cmp "$tmp/authority.yaml" "$mirror"
 PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" HERMES_AUTHORITY_SOURCE_FILE="$tmp/authority.yaml" \
   HERMES_DOCKER_AUTHORITY_FILE="$mirror" MOCK_TOKEN_FILE=/dev/null MOCK_KEY_FILE=/dev/null \
   MOCK_MAINTAIN_FILE=/dev/null bash "$tmp/repo/scripts/fleet.sh" support-up
-[[ "$(cat "$tmp/ops.log")" == 'compose up -d --no-build hindsight-db hindsight coderag signal ui-proxy' ]]
+[[ "$(cat "$tmp/ops.log")" == 'compose up -d --no-build hindsight-db hindsight coderag ui-proxy' ]]
 : > "$tmp/ops.log"
 PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" HERMES_BIN="$tmp/bin/hermes" \
   bash "$tmp/repo/scripts/fleet.sh" status > "$tmp/status"

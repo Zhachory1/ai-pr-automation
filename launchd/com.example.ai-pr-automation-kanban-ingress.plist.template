@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.ai-pr-automation-kanban-ingress</string>
+  <key>ProgramArguments</key><array>
+    <string>__PYTHON__</string><string>-B</string><string>__REPO_ROOT__/scripts/hermes-kanban-ingress.py</string>
+    <string>--review-key</string><string>__SECRETS__/pr-review-ingress-key</string>
+    <string>--maintain-key</string><string>__SECRETS__/pr-maintain-ingress-key</string>
+    <string>--authority</string><string>__AUTHORITY__</string>
+    <string>--work</string><string>__WORK_ROOT__</string>
+    <string>--hermes-home</string><string>__HERMES_HOME__</string>
+    <string>--hermes-bin</string><string>__HERMES_BIN__</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__LOG_DIR__/kanban-ingress.out.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIR__/kanban-ingress.err.log</string>
+</dict></plist>

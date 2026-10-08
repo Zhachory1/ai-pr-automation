@@ -153,7 +153,10 @@ def safe_file(path, uid):
     if info.st_uid != uid or info.st_nlink != 1: fail(f"required file has unsafe ownership: {path}")
 
 
-def v2_config(model):
+def v2_config(model, council_tools=COUNCIL_TOOLS_COMMAND, personal=False):
+    server = {"command":str(council_tools),"args":[],"env":COUNCIL_ENV,
+              "enabled":True,"tools":{"include":list(COUNCIL_TOOLS)}}
+    if personal: server["worker_only"] = True
     return {
         "model":{"provider":"anthropic","default":model},
         "fallback_providers":[],
@@ -164,12 +167,11 @@ def v2_config(model):
         "memory":{"memory_enabled":False,"retention_enabled":False,"user_profile_enabled":False},
         "skills":{"creation_nudge_interval":0},
         "agent":{"disabled_toolsets":["delegation", "kanban"],"max_turns":80,"api_max_retries":0},
-        "mcp_servers":{"council-tools":{"command":str(COUNCIL_TOOLS_COMMAND),"args":[],"env":COUNCIL_ENV,
-                                         "enabled":True,"tools":{"include":list(COUNCIL_TOOLS)}}},
+        "mcp_servers":{"council-tools":server},
     }
 
 
-def profile_report(home, contract):
+def profile_report(home, contract, personal=False):
     uid, result = os.geteuid(), {}
     version = contract["schema_version"]
     for target, value in contract["profiles"].items():
@@ -183,7 +185,7 @@ def profile_report(home, contract):
         if not isinstance(config, dict) or not isinstance(meta, dict) or not str(meta.get("description") or "").strip():
             fail(f"source profile metadata invalid: {label}")
         if version == 2:
-            if config != v2_config(value["model"]):
+            if config != v2_config(value["model"], home / "bin/hermes-council-tools" if personal else COUNCIL_TOOLS_COMMAND, personal):
                 fail(f"dangerous runtime profile tools or policy drift: {target}")
             workflow = meta.get("workflow") or {}
             if workflow != {"name":"pr-risk-council","source_profile":value["source"]}:
@@ -193,7 +195,7 @@ def profile_report(home, contract):
     return result
 
 
-def validate_installed_council_tools(path, expected_uid=0, trusted_root=Path("/")):
+def validate_installed_council_tools(path, expected_uid=0, trusted_root=Path("/"), expected_mode=0o555):
     path, trusted_root = Path(path), Path(trusted_root)
     try:
         relative = path.relative_to(trusted_root)
@@ -212,7 +214,7 @@ def validate_installed_council_tools(path, expected_uid=0, trusted_root=Path("/"
             fail(f"council tools has unsafe parent: {current}")
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != expected_uid \
-            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o555:
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != expected_mode:
         fail("council tools missing or unsafe")
     # In a repository checkout, compare installed bytes to the source binary. The
     # installed preflight lives beside support files under /usr/local/libexec, where
@@ -224,8 +226,8 @@ def validate_installed_council_tools(path, expected_uid=0, trusted_root=Path("/"
         fail("installed council tools differs from repository source")
 
 
-def council_tools_report(path=COUNCIL_TOOLS_COMMAND, expected_uid=0, trusted_root=Path("/")):
-    validate_installed_council_tools(path, expected_uid, trusted_root)
+def council_tools_report(path=COUNCIL_TOOLS_COMMAND, expected_uid=0, trusted_root=Path("/"), personal=False):
+    validate_installed_council_tools(path, expected_uid, trusted_root, 0o500 if personal else 0o555)
     requests = "\n".join((
         json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json.dumps({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
@@ -260,11 +262,11 @@ def council_tools_report(path=COUNCIL_TOOLS_COMMAND, expected_uid=0, trusted_roo
         "name":f"mcp__council_tools__{tool['name']}",
         "description":tool["description"],
         "parameters":effective_input_schema(tool["inputSchema"])}} for tool in tools]
-    return {"command":str(COUNCIL_TOOLS_COMMAND),"installed_path":str(path),
+    return {"command":str(path) if personal else str(COUNCIL_TOOLS_COMMAND),"installed_path":str(path),
             "tools":list(COUNCIL_TOOLS),"definitions":definitions}
 
 
-def effective_tool_report(home, install, profiles, expected_definitions, council_tools):
+def effective_tool_report(home, install, profiles, expected_definitions, council_tools, personal=False):
     probe = r'''import json,os,sys
 from pathlib import Path
 from dotenv import dotenv_values
@@ -323,7 +325,7 @@ print(json.dumps({'resolved_toolsets':enabled,'model_tool_names':names,
                 fail(f"effective worker tool probe profile contains symlink: {target}")
             profile_home = probe_root / target
             shutil.copytree(source_home, profile_home)
-            expected_config = v2_config(profile["model"])
+            expected_config = v2_config(profile["model"], council_tools if personal else COUNCIL_TOOLS_COMMAND, personal)
             runtime = probe_root / f"runtime-{target}"; runtime.mkdir()
             db = runtime / "kanban.db"; db.touch()
             workspace = runtime / "workspace"; workspace.mkdir()
@@ -422,7 +424,11 @@ conn.close()
 def preflight(home, install, contract_path, council_tools=COUNCIL_TOOLS_COMMAND,
               council_tools_uid=0, council_tools_trusted_root=Path("/")):
     contract = load_contract(contract_path)
-    profiles = profile_report(home, contract)
+    personal_tool = home / "bin/hermes-council-tools"
+    personal = personal_tool.exists() or personal_tool.is_symlink()
+    if personal:
+        council_tools, council_tools_uid, council_tools_trusted_root = personal_tool, os.geteuid(), home
+    profiles = profile_report(home, contract, personal)
     runtime = runtime_report(home, install, profiles)
     version = contract["schema_version"]
     report = {"schema_version":version,"workflow":contract["workflow"],"engine":"kanban","feasible":True,
@@ -437,9 +443,9 @@ def preflight(home, install, contract_path, council_tools=COUNCIL_TOOLS_COMMAND,
               "isolated_temporary_database":True}
     if version == 2:
         report["council_tools"] = council_tools_report(
-            Path(council_tools), council_tools_uid, council_tools_trusted_root)
+            Path(council_tools), council_tools_uid, council_tools_trusted_root, personal)
         report["effective_worker_tools"] = effective_tool_report(
-            home, install, profiles, report["council_tools"]["definitions"], Path(council_tools))
+            home, install, profiles, report["council_tools"]["definitions"], Path(council_tools), personal)
         report["required_tools"] = list(COUNCIL_TOOLS)
         report["deferred_runtime_enforcement"] = ["deadline_seconds", "max_active_workflows", "token_budget"]
     return report

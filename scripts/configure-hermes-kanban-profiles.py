@@ -122,7 +122,8 @@ def source_material(root, uid):
     return soul, skills, str(metadata["description"]).strip()
 
 
-def profile_config(role, model, version=1):
+# Preflight and the workflow runner independently pin this shape to detect policy drift.
+def profile_config(role, model, version=1, personal_home=None):
     config = {
         "model":{"provider":"anthropic","default":model},
         "fallback_providers":[],
@@ -136,8 +137,10 @@ def profile_config(role, model, version=1):
                  "max_turns":80,"api_max_retries":0},
     }
     if version == 2:
-        config["mcp_servers"] = {"council-tools":{"command":COUNCIL_TOOLS_COMMAND,"args":[],"env":COUNCIL_ENV,
-                                                   "enabled":True,"tools":{"include":COUNCIL_TOOLS}}}
+        server = {"command":str(personal_home / "bin/hermes-council-tools") if personal_home else COUNCIL_TOOLS_COMMAND,
+                  "args":[],"env":COUNCIL_ENV,"enabled":True,"tools":{"include":COUNCIL_TOOLS}}
+        if personal_home: server["worker_only"] = True
+        config["mcp_servers"] = {"council-tools":server}
     return config
 
 
@@ -190,7 +193,7 @@ def prepare(home, contract, uid):
     return prepared
 
 
-def create_profile(profile_root, item, uid, gid):
+def create_profile(profile_root, item, uid, gid, personal=False):
     target, policy, soul, skills, description, version = item
     _, _, current_description = source_material(soul.parent, uid)
     if current_description != description: fail(f"source profile changed during apply: {policy['source']}")
@@ -199,7 +202,8 @@ def create_profile(profile_root, item, uid, gid):
     try:
         (temporary / "SOUL.md").write_bytes(soul.read_bytes())
         shutil.copytree(skills, temporary / "skills", symlinks=False)
-        expected_config = profile_config(policy["role"], policy["model"], version)
+        expected_config = profile_config(policy["role"], policy["model"], version,
+                                         profile_root.parent if personal else None)
         (temporary / "config.yaml").write_text(yaml.safe_dump(expected_config, sort_keys=False))
         meta = {"description":description,"display_name":TITLES[policy["role"]],
                 "workflow":{"name":WORKFLOW,"source_profile":policy["source"]}}
@@ -231,14 +235,16 @@ def remove_targets(home, contract):
     if any(target.exists() for target in targets): fail("council profile cleanup incomplete")
 
 
-def apply(home, contract, uid, gid):
+def apply(home, contract, uid, gid, personal=False, worker_settings=None):
     prepared = prepare(home, contract, uid); state = state_path(home, contract)
     if state.exists() or state.is_symlink(): fail("Kanban council profile state already exists; restore first")
     set_state(home, contract, "applying", uid, gid)
     created = []
     try:
         for item in prepared:
-            create_profile(home / "profiles", item, uid, gid); created.append(item[0])
+            create_profile(home / "profiles", item, uid, gid, personal); created.append(item[0])
+        if worker_settings:
+            configure_worker_env(home, contract, *worker_settings, uid, gid)
         set_state(home, contract, "applied", uid, gid)
     except Exception:
         try:
@@ -269,13 +275,18 @@ def check(home, contract, uid):
     return result
 
 
-def require_stopped():
+def require_stopped(personal=False):
     labels = ("com.example.ai-pr-automation-hermes", "com.example.ai-pr-automation-hermes-dashboard",
               "com.example.ai-pr-automation-hermes-kanban-safety-bridge")
     for label in labels:
         try: loaded = subprocess.run(["launchctl", "print", f"system/{label}"], capture_output=True).returncode == 0
         except FileNotFoundError: loaded = False
         if loaded: fail("stop Hermes gateway, dashboard, and safety bridge before apply/restore")
+    if personal:
+        for label in ("ai.hermes.gateway", "ai.hermes.dashboard"):
+            try: loaded = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True).returncode == 0
+            except FileNotFoundError: loaded = False
+            if loaded: fail("stop personal Hermes gateway and dashboard before apply/restore")
 
 
 def main():
@@ -283,6 +294,10 @@ def main():
     parser.add_argument("--hermes-home", type=Path, required=True)
     parser.add_argument("--service-user", required=True)
     parser.add_argument("--contract", type=Path, required=True)
+    parser.add_argument("--personal", action="store_true")
+    parser.add_argument("--snapshot-root", type=Path)
+    parser.add_argument("--workflow-root", type=Path)
+    parser.add_argument("--worker-python", type=Path)
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--apply", action="store_true")
     action.add_argument("--restore", action="store_true")
@@ -291,9 +306,24 @@ def main():
         user = pwd.getpwnam(args.service_user); contract = load_contract(args.contract)
         if (args.apply or args.restore) and os.geteuid() != user.pw_uid:
             fail("apply/restore must run as service user")
-        if args.apply or args.restore: require_stopped()
+        settings = (args.snapshot_root, args.workflow_root, args.worker_python)
+        if args.personal:
+            if contract["schema_version"] != 2: fail("personal Council requires v2 contract")
+            tool = args.hermes_home / "bin/hermes-council-tools"
+            safe_file(tool, user.pw_uid)
+            source = Path(__file__).resolve().parent.parent / "bin/hermes-council-tools"
+            if tool.stat().st_mode & 0o777 != 0o500 or tool.read_bytes() != source.read_bytes():
+                fail("user-owned Council helper differs from repository source")
+            if args.apply and (any(value is None or not value.is_absolute() for value in settings)
+                               or not all(path.is_dir() and not path.is_symlink() and path.stat().st_uid == user.pw_uid
+                                          and path.stat().st_mode & 0o777 == 0o700 for path in settings[:2])
+                               or not settings[2].is_file()):
+                fail("supply owner-only snapshot/workflow roots and worker Python")
+        elif any(settings): fail("worker settings require --personal")
+        if args.apply or args.restore: require_stopped(args.personal)
         result = restore(args.hermes_home, contract, user.pw_uid, user.pw_gid) if args.restore else \
-                 apply(args.hermes_home, contract, user.pw_uid, user.pw_gid) if args.apply else \
+                 apply(args.hermes_home, contract, user.pw_uid, user.pw_gid, args.personal,
+                       settings if args.personal else None) if args.apply else \
                  check(args.hermes_home, contract, user.pw_uid)
     except (OSError, ValueError, KeyError, json.JSONDecodeError, yaml.YAMLError) as error:
         raise SystemExit(f"Hermes Kanban profile configuration failed: {error}")

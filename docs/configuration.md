@@ -1,5 +1,7 @@
 # Configuration and credential boundaries
 
+> Historical service-account/controller configuration. Do not use the `sudo` installer or paths below for the personal fleet; follow [current getting started](getting-started.md) instead.
+
 Start with [from-zero setup](getting-started.md). [`.env.example`](../.env.example) lists the current Compose settings; `agent-config/hermes/native.env` pins the host installer. Keep actual `.env`, provider tokens, API keys, and private documents out of Git. `scripts/compose.sh config --quiet` checks the rendered Compose shape without printing interpolated secrets; `scripts/compose.sh config` **without** `--quiet` can expose them.
 
 ## Which process reads which setting?

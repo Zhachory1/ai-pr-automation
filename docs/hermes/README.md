@@ -1,6 +1,6 @@
 # Hermes API Control Plane
 
-Status: Compose PR review now uses a direct cron-to-Hermes Runs API producer. The other kinds still use the Compose control plane; host PR-safety producer runs only when `PR_SAFETY_QUEUE_ENGINE=kanban`.
+Status: Historical service-account Runs API/controller design. The personal Kanban fleet now uses the [current setup](../getting-started.md); do not run the controller or installers described below as its startup path.
 
 ## Architecture
 

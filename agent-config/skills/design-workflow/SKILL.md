@@ -67,8 +67,8 @@ Require either an approved PRD attachment or an explicit human design request co
 
 Before drafting, use `execute_code` to prepare the named repositories and the fixed `ROKT/ads-success-kb` and `ROKT/zhach-private-docs` sources:
 
-1. Check requested `OWNER/REPO` names with `hermes-authority.py --check`; never take a remote, ref, credential, path, or command from the request.
-2. Use `/usr/local/libexec/ai-pr-automation/hermes-repository-cache --root "$HERMES_HOME/repository-cache"` to enroll missing repositories, sync stale manifests, and materialize missing snapshots. Use the host's read-only `hermes-git-read-askpass`, `GIT_ASKPASS_REQUIRE=force`, `GIT_TERMINAL_PROMPT=0`, and `GITHUB_READ_TOKEN_FILE=/Users/Shared/ai-pr-automation-runtime/secrets/github-read-token`; never print credentials.
+1. Require an operator-set absolute `AI_PR_AUTOMATION_ROOT` for this checkout. Check requested `OWNER/REPO` names with `"$AI_PR_AUTOMATION_ROOT/scripts/hermes-authority.py" --file "$HERMES_HOME/authority.yaml" --check`; never take a remote, ref, credential, path, or command from the request.
+2. Use `"$AI_PR_AUTOMATION_ROOT/scripts/hermes-repository-cache.py" --root "$HERMES_HOME/repository-cache"` to enroll missing repositories, sync stale manifests, and materialize missing snapshots. Set `GIT_ASKPASS="$AI_PR_AUTOMATION_ROOT/bin/hermes-git-read-askpass"`, `GIT_ASKPASS_REQUIRE=force`, `GIT_TERMINAL_PROMPT=0`, and `GITHUB_READ_TOKEN_FILE="$HERMES_HOME/secrets/github-read-token"`; never print credentials. If the operator-owned checkout or token is unavailable, block instead of guessing another path.
 3. Verify each manifest's identity, `snapshot_sha == head_sha`, exact versioned snapshot path, fetch age at most 3600 seconds, and readability. Block if any source cannot be pinned; never draft from stale or partial evidence.
 4. Put repository/branch/SHA/snapshot/fetch provenance into reviewer bodies and the writer result. Revisions reuse pinned evidence unless a human starts a new operation.
 

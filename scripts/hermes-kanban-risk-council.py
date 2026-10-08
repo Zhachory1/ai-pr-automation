@@ -408,7 +408,10 @@ def verify_v2_inputs(ctx):
         immutable_file(path, data)
 
 
-def v2_profile_config(model):
+def v2_profile_config(model, council_tools=COUNCIL_TOOLS_COMMAND, personal=False):
+    server = {"command":str(council_tools),"args":[],"env":COUNCIL_ENV,
+              "enabled":True,"tools":{"include":COUNCIL_TOOLS}}
+    if personal: server["worker_only"] = True
     return {
         "model":{"provider":"anthropic","default":model},
         "fallback_providers":[],
@@ -419,19 +422,27 @@ def v2_profile_config(model):
         "memory":{"memory_enabled":False,"retention_enabled":False,"user_profile_enabled":False},
         "skills":{"creation_nudge_interval":0},
         "agent":{"disabled_toolsets":["delegation","kanban"],"max_turns":80,"api_max_retries":0},
-        "mcp_servers":{"council-tools":{"command":COUNCIL_TOOLS_COMMAND,"args":[],"env":COUNCIL_ENV,
-                                           "enabled":True,"tools":{"include":COUNCIL_TOOLS}}},
+        "mcp_servers":{"council-tools":server},
     }
 
 
 def profile_check_v2(home):
+    tool = home / "bin/hermes-council-tools"
+    personal = tool.exists() or tool.is_symlink()
+    if personal:
+        info = tool.lstat()
+        source = Path(__file__).resolve().parent.parent / "bin/hermes-council-tools"
+        if (not tool.is_file() or tool.is_symlink() or info.st_uid != os.geteuid()
+                or info.st_nlink != 1 or stat_mode(tool) != 0o500
+                or tool.read_bytes() != source.read_bytes()):
+            fail("user-owned Council helper differs from repository source")
     for role, name in {**V2_SPECIALISTS,"synthesis":V2_SYNTHESIS}.items():
         root = home / "profiles" / name
         mcp_json = root / "mcp.json"
         if not root.is_dir() or root.is_symlink() or mcp_json.exists() or mcp_json.is_symlink():
             fail(f"restricted profile unavailable: {name}")
         config = yaml.safe_load((root / "config.yaml").read_text()) or {}
-        if config != v2_profile_config(V2_MODELS[role]):
+        if config != v2_profile_config(V2_MODELS[role], tool if personal else COUNCIL_TOOLS_COMMAND, personal):
             fail(f"restricted profile policy mismatch: {name}")
 
 

@@ -337,8 +337,13 @@ for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1; do
   grep -Fq 'never delegate or start background work' "agent-config/hermes/profiles/$profile/SOUL.md"
 done
 grep -Fq 'skills/pr-review/SKILL.md' agent-config/hermes/profiles/pr-review-v1/distribution.yaml
-grep -Fq 'Hermes Runs API override is authoritative' agent-config/hermes/profiles/pr-review-v1/SOUL.md
-grep -Fq 'posted_ref` must be that exact marker' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
+grep -Fq 'Your Kanban task body is immutable JSON' agent-config/hermes/profiles/pr-review-v1/SOUL.md
+grep -Fq 'call `kanban_complete`' agent-config/hermes/profiles/pr-review-v1/SOUL.md
+grep -Fq 'metadata `posted_ref`' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
+grep -Fq '`kanban_block` with `kind=needs_input`' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
+grep -Fq 'complete this old task as `superseded`' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
+! grep -Fq 'Runs API override is authoritative' agent-config/hermes/profiles/pr-review-v1/SOUL.md
+! grep -Fq 'HERMES RUNS API OVERRIDE' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
 grep -Fq '`incident_candidate` is exceptional' agent-config/hermes/profiles/pr-safety-v1/SOUL.md
 grep -Fq 'normal review handling is insufficient' policy/pr-safety-policy-v1.md
 grep -Fq 'skills/pr-review-handler/SKILL.md' agent-config/hermes/profiles/pr-maintain-v1/distribution.yaml

@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import pwd
 import subprocess
 import sys
 import tempfile
@@ -84,6 +85,29 @@ class KanbanCouncilProfilesTest(unittest.TestCase):
             self.assertTrue(profiles.restore(home, V2_CONTRACT, os.getuid(), os.getgid())["restored"])
             self.assertFalse(profiles.state_path(home, V2_CONTRACT).exists())
 
+    def test_personal_v2_installs_worker_only_council_with_private_roots(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            home = self.home(root, V2_CONTRACT)
+            tool = home / "bin/hermes-council-tools"
+            tool.parent.mkdir(mode=0o700)
+            tool.write_bytes((ROOT / "bin/hermes-council-tools").read_bytes())
+            tool.chmod(0o500)
+            snapshots, workflows = root / "snapshots", root / "workflows"
+            snapshots.mkdir(mode=0o700); workflows.mkdir(mode=0o700)
+            settings = (snapshots, workflows, pathlib.Path(sys.executable))
+            result = profiles.apply(home, V2_CONTRACT, os.getuid(), os.getgid(), True, settings)
+            self.assertEqual(len(result["profiles"]), 5)
+            for target, policy in V2_CONTRACT["profiles"].items():
+                installed = home / "profiles" / target
+                config = yaml.safe_load((installed / "config.yaml").read_text())
+                self.assertEqual(config, profiles.profile_config(policy["role"], policy["model"], 2, home))
+                self.assertEqual(config["mcp_servers"]["council-tools"]["command"], str(tool))
+                self.assertIs(config["mcp_servers"]["council-tools"]["worker_only"], True)
+                self.assertIn(str(snapshots), (installed / ".env").read_text())
+                self.assertEqual((installed / ".env").stat().st_mode & 0o777, 0o600)
+            self.assertTrue(profiles.restore(home, V2_CONTRACT, os.getuid(), os.getgid())["restored"])
+
     def test_v2_contract_rejects_source_model_and_graph_drift(self):
         for mutate, message in (
             (lambda data: data["profiles"]["council-security-v2"].update(source="reviewer"), "source profile changed"),
@@ -153,6 +177,31 @@ class KanbanCouncilProfilesTest(unittest.TestCase):
                 profiles.require_stopped()
         self.assertEqual(run.call_args_list[-1].args[0],
             ["launchctl","print","system/com.example.ai-pr-automation-hermes-kanban-safety-bridge"])
+
+    def test_cli_personal_apply_uses_owner_paths_without_starting_services(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            home = self.home(root, V2_CONTRACT)
+            tool = home / "bin/hermes-council-tools"
+            tool.parent.mkdir(mode=0o700)
+            tool.write_bytes((ROOT / "bin/hermes-council-tools").read_bytes())
+            tool.chmod(0o500)
+            snapshots, workflows = root / "snapshots", root / "workflows"
+            snapshots.mkdir(mode=0o700); workflows.mkdir(mode=0o700)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            launchctl = bin_dir / "launchctl"
+            launchctl.write_text("#!/bin/sh\nexit 1\n")
+            launchctl.chmod(0o700)
+            command = [sys.executable, str(ROOT / "scripts/configure-hermes-kanban-profiles.py"),
+                       "--hermes-home", str(home), "--service-user", pwd.getpwuid(os.getuid()).pw_name,
+                       "--contract", str(V2_CONTRACT_PATH), "--personal", "--apply",
+                       "--snapshot-root", str(snapshots), "--workflow-root", str(workflows),
+                       "--worker-python", sys.executable]
+            env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}
+            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20, check=True)
+            self.assertEqual(len(json.loads(result.stdout)["profiles"]), 5)
+            self.assertFalse((home / "kanban/boards").exists())
 
     def test_cli_check_is_machine_readable_and_inert(self):
         with tempfile.TemporaryDirectory() as td:

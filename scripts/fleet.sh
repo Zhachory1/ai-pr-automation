@@ -18,7 +18,7 @@ case "${1:-}" in
     "$ROOT/scripts/compose.sh" config --format json | python3 -c '
 import json, os, pathlib, stat, sys
 secrets = json.load(sys.stdin)["secrets"]
-for name in ("github_discovery_token", "hermes_review_key", "hermes_maintain_key"):
+for name in ("github_discovery_token", "pr_review_ingress_key", "pr_maintain_ingress_key"):
     path = pathlib.Path(secrets[name]["file"])
     try:
         info, parent = path.lstat(), path.parent.lstat()
@@ -34,7 +34,7 @@ for name in ("github_discovery_token", "hermes_review_key", "hermes_maintain_key
     ;;
   support-up)
     mirror_authority
-    "$ROOT/scripts/compose.sh" up -d --no-build hindsight-db hindsight coderag signal ui-proxy
+    "$ROOT/scripts/compose.sh" up -d --no-build hindsight-db hindsight coderag ui-proxy
     ;;
   pause)
     "$ROOT/scripts/compose.sh" stop pr-producer-review pr-producer-maintain
@@ -49,7 +49,7 @@ for name in ("github_discovery_token", "hermes_review_key", "hermes_maintain_key
     "${HERMES_BIN:-$HOME/.local/bin/hermes}" gateway status
     ;;
   logs)
-    "$ROOT/scripts/compose.sh" logs --tail=200 hindsight-db hindsight hindsight-bank-init coderag signal pr-producer-review pr-producer-maintain ui-proxy
+    "$ROOT/scripts/compose.sh" logs --tail=200 hindsight-db hindsight hindsight-bank-init coderag pr-producer-review pr-producer-maintain ui-proxy
     ;;
   *) echo "usage: $0 up|support-up|pause|down|status|logs" >&2; exit 2 ;;
 esac
