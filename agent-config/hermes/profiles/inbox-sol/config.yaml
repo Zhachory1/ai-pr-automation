@@ -1,0 +1,22 @@
+gateway:
+  api_server:
+    enabled: false
+model:
+  provider: openai-codex
+  default: gpt-5.6-sol
+  base_url: https://chatgpt.com/backend-api/codex
+plugins:
+  enabled: []
+platform_toolsets:
+  cli: [no_mcp]
+  api_server: [no_mcp]
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+skills:
+  creation_nudge_interval: 0
+agent:
+  disabled_toolsets: [terminal, file, code_execution, browser, computer_use, web, skills, delegation, memory, session_search, cronjob, kanban, vision, image_gen, tts, todo, connections]
+  max_turns: 1
+  run_budget_seconds: 180
+  api_max_retries: 0
