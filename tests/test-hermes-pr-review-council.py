@@ -92,7 +92,7 @@ class CouncilPlanTest(unittest.TestCase):
         self.assertEqual(len(calls), 5)
         self.assertTrue(all(p["workspace_kind"] == "dir" and
                             pathlib.Path(p["workspace_path"]).parent == root / "workspaces" and
-                            p["board"] == council.BOARD and p["provider_override"] == "anthropic" and
+                            p["board"] == council.BOARD and p["provider_override"] == "openai-codex" and
                             p["max_retries"] == 0 for p in calls))
         for item in calls:
             directory = pathlib.Path(item["workspace_path"])
@@ -328,6 +328,20 @@ class CouncilPlanTest(unittest.TestCase):
         outputs.pop("reliability")
         with self.assertRaises(ValueError):
             council.check_verdict(spec, outputs, synthesis("approve"))
+
+    def test_tool_prefix_and_escaped_quotes_do_not_drop_specialist_finding(self):
+        spec = council.plan(self.fixture())
+        outputs = {role: {'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                          'role':role,'verdict':'clear','findings':[]} for role in spec['specialists']}
+        finding={'severity':'nit','required':False,'path':'snapshot/src/worker.py','line':7,
+                 'claim':'naming concern','evidence':'changed "identifier"','suggestion':'rename'}
+        outputs['mvp']['verdict']='findings';outputs['mvp']['findings']=[finding]
+        synthesis={'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                   'role':'synthesis','verdict':'approve',
+                   'findings':[{**finding,'path':'src/worker.py','evidence':'changed \\"identifier\\"'}]}
+        self.assertEqual(council.check_verdict(spec,outputs,synthesis),'approve')
+        synthesis['findings'][0]['claim']='different concern'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
 
     def test_wrong_head_bad_path_or_incomplete_diff_is_not_admitted(self):
         for value in ({**self.fixture(), "head_sha": "d" * 40},

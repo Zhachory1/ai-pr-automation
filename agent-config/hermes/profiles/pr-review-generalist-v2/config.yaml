@@ -2,8 +2,8 @@ gateway:
   api_server:
     enabled: false
 model:
-  provider: anthropic
-  default: claude-sonnet-4-6
+  provider: openai-codex
+  default: gpt-6-sol
 fallback_providers: []
 platform_toolsets:
   cli: [council-tools]

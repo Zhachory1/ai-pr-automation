@@ -5,9 +5,7 @@ import unittest
 import yaml
 
 ROOT=Path(__file__).resolve().parents[1]
-ROLES={"generalist":"claude-sonnet-4-6","reliability":"claude-haiku-4-5-20251001",
-       "mvp":"claude-haiku-4-5-20251001","security":"claude-haiku-4-5-20251001",
-       "synthesis":"claude-sonnet-4-6"}
+ROLES={role:"gpt-6-sol" for role in ("generalist","reliability","mvp","security","synthesis")}
 TOOLS={"snapshot_read","snapshot_search","kanban_show","kanban_comment",
        "kanban_heartbeat","kanban_complete","kanban_block"}
 
@@ -18,7 +16,7 @@ class CouncilProfilesTest(unittest.TestCase):
             with self.subTest(role=role):
                 folder=ROOT/f"agent-config/hermes/profiles/pr-review-{role}-v2"
                 config=yaml.safe_load((folder/'config.yaml').read_text())
-                self.assertEqual(config['model'],{'provider':'anthropic','default':model})
+                self.assertEqual(config['model'],{'provider':'openai-codex','default':model})
                 self.assertEqual(config['platform_toolsets']['cli'],['council-tools'])
                 self.assertEqual(config['plugins']['enabled'],[])
                 self.assertFalse(config['memory']['memory_enabled'])

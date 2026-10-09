@@ -16,9 +16,7 @@ PROFILES = {"generalist": "pr-review-generalist-v2",
             "reliability": "pr-review-reliability-v2",
             "mvp": "pr-review-mvp-v2"}
 SECURITY = "pr-review-security-v2"
-MODELS = {"generalist": "claude-sonnet-4-6", "reliability": "claude-haiku-4-5-20251001",
-          "mvp": "claude-haiku-4-5-20251001", "security": "claude-haiku-4-5-20251001",
-          "synthesis": "claude-sonnet-4-6"}
+MODELS = {role: "gpt-6-sol" for role in ("generalist", "reliability", "mvp", "security", "synthesis")}
 BOARD = "pr-review"
 SECURITY_PATH = re.compile(r"(^|[/_.-])(auth|authentication|secret|secrets|credential|credentials|iam|crypto|cryptography|permission|permissions)([/_.-]|$)", re.I)
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -36,6 +34,20 @@ def local_diff(path, base_sha, head_sha):
     if completed.returncode or not 0 < len(completed.stdout) <= 262144:
         raise ValueError("local PR diff is unavailable or too large")
     return completed.stdout
+
+
+def local_changed_paths(path, base_sha, head_sha):
+    result = subprocess.run(["git", "-C", str(path), "diff", "--no-ext-diff", "--no-textconv",
+                             "--name-only", "-z", f"{base_sha}...{head_sha}", "--"],
+                            capture_output=True, timeout=30,
+                            env={**{key:value for key,value in os.environ.items() if not key.startswith("GIT_")},
+                                 "GIT_NO_REPLACE_OBJECTS":"1", "GIT_TERMINAL_PROMPT":"0"})
+    if result.returncode or not result.stdout.endswith(b"\0") or len(result.stdout) > 65536:
+        raise ValueError("local PR path inventory is unavailable")
+    try:
+        return [name.decode("utf-8") for name in result.stdout[:-1].split(b"\0")]
+    except UnicodeDecodeError as error:
+        raise ValueError("local PR path inventory is not UTF-8") from error
 
 
 def collect(github, repo, number, head_sha, repository_path=None):
@@ -57,10 +69,14 @@ def collect(github, repo, number, head_sha, repository_path=None):
                 or not isinstance(item.get("patch"), str) or not item["patch"]):
             raise ValueError("unreviewable PR file or missing patch")
         paths.append(item["filename"])
-        if item["filename"].encode() not in diff:
+        if not repository_path and item["filename"].encode() not in diff:
             raise ValueError("PR diff does not contain its file inventory")
-    if len(set(paths)) != len(paths) or not diff.startswith(b"diff --git ") \
-            or diff.count(b"diff --git ") != len(paths):
+    if len(set(paths)) != len(paths) or not diff.startswith(b"diff --git "):
+        raise ValueError("PR diff and file inventory disagree")
+    if repository_path:
+        if sorted(local_changed_paths(repository_path, before["base_sha"], head_sha)) != sorted(paths):
+            raise ValueError("local Git and GitHub changed-file inventories disagree")
+    elif diff.count(b"diff --git ") != len(paths):
         raise ValueError("PR diff and file inventory disagree")
     reviews, comments, checks = github.reviews(repo, number), github.comments(repo, number), github.checks(repo, head_sha)
     if any(not isinstance(value, list) or len(value) > 500 for value in (reviews, comments, checks)):
@@ -116,7 +132,7 @@ def plan(request):
             "workflow_id": "pr-review-council-" + artifact_digest[:32],
             "specialists": specialists, "changed_paths": paths,
             "synthesis": {"profile": "pr-review-synthesis-v2", "parents": list(specialists)},
-            "limits": {"deadline_seconds": 480, "token_budget": 75000, "max_active_heads": 2}}
+            "limits": {"deadline_seconds": 480, "max_active_heads": 2}}
 
 
 def queue(enqueue, work_root, request):
@@ -242,6 +258,19 @@ def handoffs(kb, conn, spec, tasks):
     return outputs
 
 
+def canonical_finding(spec, finding):
+    if not isinstance(finding, dict):
+        raise ValueError("invalid council finding")
+    value = dict(finding)
+    path = value.get("path")
+    if isinstance(path, str) and path not in spec["changed_paths"] and path.startswith("snapshot/"):
+        value["path"] = path.removeprefix("snapshot/")
+    evidence = value.get("evidence")
+    if isinstance(evidence, str) and len(evidence) <= 2000:
+        value["evidence"] = evidence.replace('\\"', '"')
+    return value
+
+
 def _valid_finding(spec, finding):
     if (not isinstance(finding, dict) or set(finding) != {"severity", "required", "path", "line", "claim", "evidence", "suggestion"}
             or finding["severity"] not in ("blocker", "major", "minor", "nit")
@@ -275,12 +304,14 @@ def check_verdict(spec, outputs, synthesis):
             raise ValueError("invalid council specialist output")
         needs_info |= item["verdict"] == "needs-info"
         for finding in item["findings"]:
-            required |= _valid_finding(spec, finding)
-            needed.add(json.dumps(finding, sort_keys=True, separators=(",", ":")))
+            normalized = canonical_finding(spec, finding)
+            required |= _valid_finding(spec, normalized)
+            needed.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
     included = set()
     for finding in synthesis["findings"]:
-        required |= _valid_finding(spec, finding)
-        included.add(json.dumps(finding, sort_keys=True, separators=(",", ":")))
+        normalized = canonical_finding(spec, finding)
+        required |= _valid_finding(spec, normalized)
+        included.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
     if not needed <= included:
         raise ValueError("synthesis omitted a specialist finding")
     verdict = synthesis["verdict"]
@@ -408,7 +439,7 @@ def setup(kb, conn, spec, workspace):
                 conn, title=f"PR review council: {role}", body=body, assignee=profile,
                 created_by="operator", workspace_kind="dir", workspace_path=str(role_workspace),
                 idempotency_key=key, parents=parents, board=BOARD, max_runtime_seconds=480,
-                max_retries=0, model_override=MODELS[role], provider_override="anthropic",
+                max_retries=0, model_override=MODELS[role], provider_override="openai-codex",
                 goal_mode=False, completion_contract="local-only",
             )
     return tasks

@@ -44,11 +44,14 @@ class LocalCheckoutTest(unittest.TestCase):
             git('init');git('config','user.email','review@example.test');git('config','user.name','review')
             git('remote','add','origin','https://github.com/example/widget.git')
             (repo/'file.py').write_text('old\n');git('add','file.py');git('commit','-m','base');base=git('rev-parse','HEAD')
-            (repo/'file.py').write_text('new\n');git('commit','-am','review');head=git('rev-parse','HEAD')
+            (repo/'file.py').write_text('new\ndiff --git appears in source\n')
+            (repo/'café.py').write_text('unicode path\n');git('add','café.py')
+            git('commit','-am','review');head=git('rev-parse','HEAD')
             (repo/'file.py').write_text('dirty and not in the review\n')
             class GitHub:
-                def pr(self,*_):return {'state':'open','head_sha':head,'base_sha':base,'changed_files':1,'body':'goal'}
-                def files(self,*_):return [{'filename':'file.py','patch':'+new'}]
+                def pr(self,*_):return {'state':'open','head_sha':head,'base_sha':base,'changed_files':2,'body':'goal'}
+                def files(self,*_):return [{'filename':'file.py','patch':'+new'},
+                                           {'filename':'café.py','patch':'+unicode path'}]
                 def diff(self,*_):raise AssertionError('remote diff should not replace local Git')
                 def reviews(self,*_):return []
                 def comments(self,*_):return []
@@ -58,6 +61,7 @@ class LocalCheckoutTest(unittest.TestCase):
             spec=council.plan(request)
             workspace=root/'operation'
             council.prepare_snapshot(workspace,spec,diff,context)
+            self.assertEqual(set(request['changed_paths']),{'file.py','café.py'})
             self.assertFalse((workspace/'snapshot').exists())
             self.assertEqual(json.loads((workspace/'input/identity.json').read_text())['repository_path'],str(repo))
             council._verified_snapshot(workspace,spec)
@@ -81,7 +85,7 @@ class LocalCheckoutTest(unittest.TestCase):
             aliases={'workspace':str(workspace/'workspaces/generalist'),
                      'snapshot_root':str(root/'code'),'workflow_root':str(workspace/'input'),
                      'profile':'pr-review-generalist-v2','board':'pr-review'}
-            self.assertEqual(tool.snapshot_read({'path':'snapshot/file.py'},aliases),'new\n')
+            self.assertEqual(tool.snapshot_read({'path':'snapshot/file.py'},aliases),'new\ndiff --git appears in source\n')
             self.assertIn('-old',tool.snapshot_read({'path':'snapshot/diff.patch'},aliases))
             found=json.loads(tool.snapshot_search({'path':'snapshot','query':'new','max_results':2},aliases))
             self.assertEqual(found['matches'][0]['path'],'snapshot/file.py')
