@@ -1,0 +1,44 @@
+gateway:
+  api_server:
+    enabled: false
+model:
+  provider: anthropic
+  default: claude-sonnet-4-6
+fallback_providers: []
+platform_toolsets:
+  cli: [council-tools]
+  api_server: [no_mcp]
+plugins:
+  enabled: []
+auxiliary:
+  background_review:
+    enabled: false
+memory:
+  memory_enabled: false
+  retention_enabled: false
+  user_profile_enabled: false
+skills:
+  creation_nudge_interval: 0
+agent:
+  disabled_toolsets: [delegation, kanban, terminal, file, code_execution, browser, computer_use, web, skills, memory, vision, image_gen, tts, todo, connections]
+  max_turns: 80
+  api_max_retries: 0
+mcp_servers:
+  council-tools:
+    command: "${HERMES_COUNCIL_TOOLS_BIN}"
+    args: []
+    enabled: true
+    worker_only: true
+    env:
+      COUNCIL_TASK_ID: "${HERMES_KANBAN_TASK}"
+      COUNCIL_RUN_ID: "${HERMES_KANBAN_RUN_ID}"
+      COUNCIL_CLAIM_LOCK: "${HERMES_KANBAN_CLAIM_LOCK}"
+      COUNCIL_BOARD: "${HERMES_KANBAN_BOARD}"
+      COUNCIL_DB: "${HERMES_KANBAN_DB}"
+      COUNCIL_WORKSPACE: "${HERMES_KANBAN_WORKSPACE}"
+      COUNCIL_SNAPSHOT_ROOT: "${PR_REVIEW_COUNCIL_REPO_ROOT}"
+      COUNCIL_WORKFLOW_ROOT: "${PR_REVIEW_COUNCIL_WORKFLOW_ROOT}"
+      COUNCIL_PROFILE: "${HERMES_PROFILE}"
+      COUNCIL_TOOLS_PYTHON: "${HERMES_COUNCIL_TOOLS_PYTHON}"
+    tools:
+      include: [snapshot_read, snapshot_search, kanban_show, kanban_comment, kanban_heartbeat, kanban_complete, kanban_block]
