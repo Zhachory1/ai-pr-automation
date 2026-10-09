@@ -253,7 +253,13 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
     if result="$("$TIMEOUT_BIN" --kill-after=5s 135s python3 "${submit[@]}")"; then
       case "$(jq -r '.status' <<<"$result")" in
         capped) skip=$((skip+1)); log "skip $repo#$number@$sha: maintenance round cap reached" ;;
-        deferred) skip=$((skip+1)); log "skip $repo#$number@$sha: earlier maintenance round still active" ;;
+        deferred)
+          if [[ "$KIND" == pr-review ]]; then
+            enq=$((enq+1)); log "council queued $repo#$number@$sha"
+          else
+            skip=$((skip+1)); log "skip $repo#$number@$sha: earlier maintenance round still active"
+          fi ;;
+        superseded) skip=$((skip+1)); log "skip $repo#$number@$sha: council head superseded without review" ;;
         *) enq=$((enq+1)); log "Kanban $KIND $repo#$number@$sha: $result" ;;
       esac
     else

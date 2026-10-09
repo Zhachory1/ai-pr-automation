@@ -49,6 +49,12 @@ class SubmitTest(unittest.TestCase):
                                  "url": "https://github.com/owner/repo/pull/7", "title": "Fix", "head_sha": "b" * 40})
                 opener.open.return_value = Response({**response, "task_id": None})
                 with self.assertRaises(ValueError): client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40)
+                queued = {**response, "status": "deferred", "task_id": None}
+                opener.open.return_value = Response(queued)
+                self.assertEqual(client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40), queued)
+                superseded = {**queued, "status": "superseded"}
+                opener.open.return_value = Response(superseded)
+                self.assertEqual(client.submit("pr-review", "owner/repo", 7, "Fix", "b" * 40), superseded)
                 deferred = {"kind": "pr-maintain", "board": "pr-maintain", "operation_id":
                             client.identity("pr-maintain", "owner/repo", 7, "b" * 40, "1" * 64)["operation_id"],
                             "status": "deferred", "task_id": None}
