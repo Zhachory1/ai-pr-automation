@@ -142,15 +142,51 @@ class EnqueueTest(unittest.TestCase):
     def test_atomic_request_and_intent_failure_retry_exactly(self):
         for target in ("request.json","create-intent.json"):
             with self.subTest(target=target):
-                args,cli=self.fixture(); real=os.rename; failed=[]
-                def rename(source,destination):
+                args,cli=self.fixture(); real=os.link; failed=[]
+                def link(source,destination,**kwargs):
                     if pathlib.Path(destination).name == target and not failed: failed.append(True); raise OSError("fault")
-                    return real(source,destination)
-                with mock.patch.object(enqueue.os,"rename",side_effect=rename):
+                    return real(source,destination,**kwargs)
+                with mock.patch.object(enqueue.os,"link",side_effect=link):
                     with self.assertRaisesRegex(OSError,"fault"): self.admit(args,cli)
                 result=self.admit(args,cli); workspace=args.workspace_root/result["operation_id"]
                 self.assertEqual(len(cli.tasks),1); self.assertFalse(any(path.name.startswith(".") for path in workspace.iterdir()))
                 self.assertEqual((workspace/"task-id.json").read_bytes(),enqueue.canonical({"task_id":result["task_id"]}))
+    def test_immutable_request_never_overwrites_concurrent_owner(self):
+        args, _ = self.fixture()
+        enqueue.safe_dir(args.workspace_root, True)
+        target = args.workspace_root / 'request.json'
+        real_link = os.link
+        def concurrent_owner(source, destination, **kwargs):
+            if pathlib.Path(destination) == target:
+                target.write_bytes(b'older bound request')
+                target.chmod(0o440)
+            return real_link(source, destination, **kwargs)
+        with mock.patch.object(enqueue.os, 'link', side_effect=concurrent_owner):
+            with self.assertRaises((OSError, ValueError)):
+                enqueue.immutable(target, b'new council owner')
+        self.assertEqual(target.read_bytes(), b'older bound request')
+
+    def test_immutable_never_scavenges_another_writers_temporary(self):
+        args, _=self.fixture()
+        enqueue.safe_dir(args.workspace_root,True)
+        temp=args.workspace_root/'.request.json.tmp-123-0123456789abcdef'
+        temp.write_bytes(b'pending owner');temp.chmod(0o440)
+        with self.assertRaises(ValueError):enqueue.immutable(args.workspace_root/'request.json',b'other owner')
+        self.assertEqual(temp.read_bytes(),b'pending owner')
+        self.assertFalse((args.workspace_root/'request.json').exists())
+
+    def test_legacy_admission_refuses_an_existing_council_owner(self):
+        args, cli = self.fixture()
+        request = self.request()
+        enqueue.safe_dir(args.workspace_root, True)
+        workspace = enqueue.safe_dir(args.workspace_root / request['operation_id'], True)
+        owner = enqueue.canonical({'route':'council-v2','operation_id':request['operation_id']})
+        enqueue.immutable(workspace / 'request.json', owner)
+        with self.assertRaisesRegex(ValueError, 'existing immutable file differs'):
+            self.admit(args, cli, request)
+        self.assertEqual((workspace/'request.json').read_bytes(), owner)
+        self.assertEqual(cli.commands, [])
+
     def test_request_contract_and_exact_immutable_replay_reject_before_cli(self):
         cases=[{**self.request(),**change} for change in ({"operation_id":"pr-review-"+"0"*64},{"number":True},{"title":""},{"url":"https://example.test"},{"extra":"x"})]
         for request in cases:
