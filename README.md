@@ -2,11 +2,11 @@
 
 Local PR review and maintenance automation. Docker Compose runs two scheduled GitHub discovery producers, Hindsight, Coderag, and nginx. The producers submit eligible PRs to a localhost-only, authenticated host ingress that creates tasks through the current user's Hermes Kanban CLI. The `pr-review-v1` and `pr-maintain-v1` profiles run those tasks; there is no active fleet-owned queue or controller. Signal runs under the current user's LaunchAgent, not Docker.
 
-The old request database is archived offline; the legacy PR-safety bridge and Fleet Controller are not started. Document publication, memory writes, and PR-safety delivery are not part of this cutover. GitHub remains the PR merge UI; no agent merges PRs.
+The old request database is archived offline; its schema, controller, and queue code are removed from this repository. The legacy PR-safety bridge and Fleet Controller are not started. Document publication, memory writes, and PR-safety delivery are not part of this cutover. GitHub remains the PR merge UI; no agent merges PRs.
 
 ## Start safely
 
-On the operator's macOS account, install and configure Hermes in `~/.hermes` and its user-level gateway service. Install both PR profiles from `agent-config/hermes/profiles/`. Do not run the deprecated `scripts/hermes-native.sh install` or create/use a `hermes-agent` account for this runtime. See [getting started](docs/getting-started.md) for prerequisites.
+On the operator's macOS account, install and configure Hermes in `~/.hermes` and its user-level gateway service. Install both PR profiles from `agent-config/hermes/profiles/`. Do not use the retired `hermes-agent` service-account setup for this runtime. See [getting started](docs/getting-started.md) for prerequisites.
 
 Copy `.env.example` to `.env`, replace sample paths, configure a narrow repository authority file, and keep secrets outside this repository. The read-only GitHub discovery token and two per-kind Kanban ingress keys are owner-only files under the paths in `.env.example`; do not paste their values into chat or logs.
 
@@ -27,7 +27,7 @@ A separate Hermes profile can plan one private Google Calendar through restricte
 
 ## Validation
 
-Focused, fake-network tests cover the Kanban ingress, cron submission contract, profile MCP configuration, and Compose/nginx wiring. `scripts/m0-verify.sh` is **not** read-only: it writes a synthetic Hindsight fact. A real PR run, Signal message, or Hindsight recall requires separate authorization; static tests do not prove those effects.
+Focused, fake-network tests cover the Kanban ingress, cron submission contract, profile MCP configuration, and Compose/nginx wiring. `python3 tests/test-request-db-retired.py` guards against restoring the old request-database path. A real PR run, Signal message, or Hindsight recall requires separate authorization; static tests do not prove those effects.
 
 ## License
 

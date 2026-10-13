@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # hermes-pr-producer discovers matching PRs, keeps only granted repos, resolves head SHA, and
-# enqueues one row per PR with a per-commit dedupe key. Fakes gh/psql; authority allowlist is real.
+# admits granted PRs to Hermes. Fakes gh and refuses database access; authority allowlist is real.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -63,49 +63,19 @@ else
 fi
 SH
 
-# Fake psql: capture the invocation and return an id. Fidelity guard: real psql does NOT interpolate
-# :'var' in a -c string (only via stdin/file), so reject that exact broken form the producer once had.
 cat > "$tmp/bin/psql" <<'SH'
 #!/usr/bin/env bash
-args="$*"; sql="$(cat 2>/dev/null || true)"
-printf '%s\n' "$args" >> "$TEST_STATE/psql.log"
-[[ -n "$sql" ]] && printf 'STDIN_SQL: %s\n' "$sql" >> "$TEST_STATE/psql.log"
-if [[ "$args" == *" -c "* && "$args" == *":'"* ]]; then
-  echo "psql: -c cannot interpolate :'var' (use stdin)" >&2; exit 1
-fi
-echo 101
+echo 'FAIL: request database accessed' >&2
+exit 99
 SH
 chmod +x "$tmp/bin/gh" "$tmp/bin/psql"
 
-out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" \
-  HERMES_AUTHORITY_FILE="$tmp/authority.yaml" \
-  HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
-  REQUESTS_DB_USER=x PGPASSWORD=x \
-  bin/hermes-pr-producer review 2>&1)"
+# Removed queue engine cannot silently fall back to a database.
+if PATH="$tmp/bin:$PATH" PR_REVIEW_QUEUE_ENGINE=postgres bin/hermes-pr-producer review >/dev/null 2>&1; then
+  echo 'FAIL: retired request database mode accepted' >&2; exit 1
+fi
 
-# Exact and organization-wide grants enqueue; ungranted repo is skipped.
-# The enqueue SQL must arrive via stdin (with the :'var' substitutions), not a -c string.
-grep -q 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" \
-  || { echo 'FAIL: enqueue not fed via stdin (psql -c would not interpolate :var)' >&2; cat "$tmp/psql.log" >&2; exit 1; }
-n_enq="$(grep -c 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" 2>/dev/null | tr -dc 0-9 || echo 0)"
-[[ "${n_enq:-0}" == 2 ]] || { echo "FAIL: expected 2 enqueues, got ${n_enq:-0}" >&2; echo "$out" >&2; cat "$tmp/psql.log" >&2; exit 1; }
-grep -q "kind=pr-review" "$tmp/psql.log" || { echo 'FAIL: wrong kind' >&2; exit 1; }
-# Per-commit dedupe key present (passed as a -v var).
-grep -q 'dk=Zhachory1/ai-pr-automation#7@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$tmp/psql.log" \
-  || { echo 'FAIL: dedupe key not per-commit' >&2; cat "$tmp/psql.log" >&2; exit 1; }
-grep -q 'other/repo' "$tmp/psql.log" && { echo 'FAIL: ungranted repo enqueued' >&2; exit 1; }
-echo "$out" | grep -q 'enqueued=2' || { echo "FAIL: summary wrong: $out" >&2; exit 1; }
-
-# Personal owner wildcard discovery includes unassigned PRs and deduplicates assigned results.
-: > "$tmp/psql.log"; : > "$tmp/gh.log"
-owner_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_DISCOVER_ALL_OWNERS=Zhachory1,zhach1 \
-  HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
-  REQUESTS_DB_USER=x PGPASSWORD=x bin/hermes-pr-producer review 2>&1)"
-grep -q 'search prs --owner Zhachory1' "$tmp/gh.log"; grep -q 'search prs --owner zhach1' "$tmp/gh.log"
-[[ "$(grep -c 'STDIN_SQL: SELECT hermes_enqueue_request' "$tmp/psql.log" | tr -d ' ')" == 3 ]] || { echo "FAIL: owner-wide discovery did not enqueue three unique grants" >&2; exit 1; }
-echo "$owner_out" | grep -q 'enqueued=3' || { echo "FAIL: owner-wide summary wrong: $owner_out" >&2; exit 1; }
-
-# Optional review API mode reuses discovery, does not touch Postgres or start Hermes CLI.
+# Optional review API mode reuses discovery without starting Hermes CLI.
 cat > "$tmp/bin/review-submit" <<'PY'
 import json, os, pathlib, sys
 with pathlib.Path(os.environ["TEST_STATE"], "api.log").open("a") as output:
@@ -114,12 +84,12 @@ if os.environ.get("FAIL_SUBMIT_PR") == sys.argv[2]: raise SystemExit(1)
 print(json.dumps({"run_id": "run-" + sys.argv[2], "status": "started", "replayed": False}))
 PY
 chmod +x "$tmp/bin/review-submit"
-: > "$tmp/api.log"; : > "$tmp/psql.log"
+: > "$tmp/api.log"
 api_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=api \
   HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
   HERMES_REVIEW_SUBMIT_BIN="$tmp/bin/review-submit" bin/hermes-pr-producer review 2>&1)"
-[[ ! -s "$tmp/psql.log" && "$(wc -l < "$tmp/api.log" | tr -d ' ')" == 2 ]] \
-  || { echo 'FAIL: API review mode did not submit exactly two granted PRs without Postgres' >&2; exit 1; }
+[[ "$(wc -l < "$tmp/api.log" | tr -d ' ')" == 2 ]] \
+  || { echo 'FAIL: API review mode did not submit exactly two granted PRs' >&2; exit 1; }
 grep -q 'Zhachory1/ai-pr-automation 7 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$tmp/api.log"
 ! grep -q 'other/repo' "$tmp/api.log" || { echo 'FAIL: ungranted PR submitted to Hermes API' >&2; exit 1; }
 echo "$api_out" | grep -q 'admitted=2 failed=0 skipped=1' || { echo "FAIL: API review summary wrong: $api_out" >&2; exit 1; }
@@ -131,12 +101,9 @@ if FAIL_SUBMIT_PR=7 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGI
 fi
 [[ "$(wc -l < "$tmp/api.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: failed first review starved next PR' >&2; exit 1; }
 
-# maintain mode uses the author filter and pr-maintain kind.
-: > "$tmp/psql.log"
-PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_AUTHORITY_FILE="$tmp/authority.yaml" \
-  HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" REQUESTS_DB_USER=x PGPASSWORD=x \
-  bin/hermes-pr-producer maintain >/dev/null 2>&1
-grep -q 'pr-maintain' "$tmp/psql.log" || { echo 'FAIL: maintain kind not enqueued' >&2; exit 1; }
+if PATH="$tmp/bin:$PATH" PR_MAINTAIN_QUEUE_ENGINE=postgres bin/hermes-pr-producer maintain >/dev/null 2>&1; then
+  echo 'FAIL: retired maintenance database mode accepted' >&2; exit 1
+fi
 
 # Optional maintenance API mode submits only actionable external feedback; head and digest bind identity.
 api_maintain() {
@@ -146,9 +113,9 @@ api_maintain() {
     HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" \
     HERMES_MAINTAIN_SUBMIT_BIN="$tmp/bin/review-submit" bin/hermes-pr-producer maintain
 }
-: > "$tmp/api.log"; : > "$tmp/psql.log"
+: > "$tmp/api.log"
 none_api="$(api_maintain 2>&1)"
-[[ ! -s "$tmp/api.log" && ! -s "$tmp/psql.log" ]] || { echo 'FAIL: no-feedback maintenance submitted' >&2; exit 1; }
+[[ ! -s "$tmp/api.log" ]] || { echo 'FAIL: no-feedback maintenance submitted' >&2; exit 1; }
 echo "$none_api" | grep -q 'skipped=1'
 FEEDBACK_VERSION=v1 api_maintain >/dev/null 2>&1
 FEEDBACK_VERSION=v1 api_maintain >/dev/null 2>&1
@@ -159,7 +126,7 @@ FEEDBACK_VERSION=v2 api_maintain >/dev/null 2>&1
 HEAD_SHA="$(printf 'a%.0s' {1..40})" FEEDBACK_VERSION=v1 api_maintain >/dev/null 2>&1
 [[ "$(sed -n '1p' "$tmp/api.log")" != "$(sed -n '4p' "$tmp/api.log")" ]] || { echo 'FAIL: new head reused old request' >&2; exit 1; }
 
-# Direct review mode admits current discoveries only and never touches PostgreSQL or invokes Hermes.
+# Direct review mode admits current discoveries without invoking Hermes.
 mkdir -p "$tmp/support" "$tmp/home" "$tmp/work/historical-operation"
 cp scripts/hermes_direct_pr_journal.py "$tmp/support/"
 printf '{"historical":true}\n' > "$tmp/work/historical-operation/request.json"
@@ -197,9 +164,9 @@ direct() {
     HERMES_PR_KANBAN_ENQUEUE="$tmp/support/enqueue.py" HERMES_PR_KANBAN_WORK_ROOT="$tmp/work" \
     bin/hermes-pr-producer review
 }
-: > "$tmp/psql.log"; rm -f "$tmp/direct.log" "$tmp/model-called"
+rm -f "$tmp/direct.log" "$tmp/model-called"
 direct_out="$(direct 2>&1)"
-[[ ! -s "$tmp/psql.log" && ! -e "$tmp/model-called" ]] || { echo 'FAIL: direct mode called psql or Hermes' >&2; exit 1; }
+[[ ! -e "$tmp/model-called" ]] || { echo 'FAIL: direct mode invoked Hermes' >&2; exit 1; }
 [[ "$(wc -l < "$tmp/direct.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: direct mode did not admit exactly two current grants' >&2; exit 1; }
 op7="$(PYTHONPATH=scripts python3 -c 'from hermes_direct_pr_journal import identity; print(identity("pr-review", "Zhachory1/ai-pr-automation", 7, "deadbeef"*5)["operation_id"])')"
 op8="$(PYTHONPATH=scripts python3 -c 'from hermes_direct_pr_journal import identity; print(identity("pr-review", "ROKT/ml", 8, "deadbeef"*5)["operation_id"])')"
@@ -244,9 +211,9 @@ echo "$owner_maint_out" | grep -q 'admitted=2 failed=0' || { echo "FAIL: owner-w
 
 # Own feedback and passing checks produce no maintenance round. All feedback reads are paginated,
 # bounded by producer timeout, and the authenticated login is fetched once.
-rm -rf "$tmp/work"/pr-maintain-*; rm -f "$tmp/direct.log" "$tmp/cards.log"; : > "$tmp/psql.log"; : > "$tmp/gh.log"
+rm -rf "$tmp/work"/pr-maintain-*; rm -f "$tmp/direct.log" "$tmp/cards.log"; : > "$tmp/gh.log"
 none_out="$(FEEDBACK_VERSION=none direct_maintain 2>&1)"
-[[ ! -e "$tmp/direct.log" && ! -s "$tmp/psql.log" ]] || { echo 'FAIL: no-feedback maintain enqueued' >&2; exit 1; }
+[[ ! -e "$tmp/direct.log" ]] || { echo 'FAIL: no-feedback maintain enqueued' >&2; exit 1; }
 echo "$none_out" | grep -q 'admitted=0 failed=0 skipped=1' || { echo "FAIL: no-feedback summary: $none_out" >&2; exit 1; }
 [[ "$(grep -c '^api user ' "$tmp/gh.log")" == 1 && "$(grep -c -- '--paginate' "$tmp/gh.log")" == 2 ]] \
   || { echo 'FAIL: maintenance API calls were not login-once/paginated' >&2; cat "$tmp/gh.log" >&2; exit 1; }
@@ -291,7 +258,7 @@ print(h(json.dumps(sorted(items),separators=(",",":"))))
 PY
 )"
 maintain_out="$(CHECKS_RC=1 FEEDBACK_VERSION=v1 direct_maintain 2>&1)"
-[[ "$(wc -l < "$tmp/direct.log" | tr -d ' ')" == 1 && ! -s "$tmp/psql.log" ]] || { echo 'FAIL: external feedback not admitted exactly once' >&2; exit 1; }
+[[ "$(wc -l < "$tmp/direct.log" | tr -d ' ')" == 1 ]] || { echo 'FAIL: external feedback not admitted exactly once' >&2; exit 1; }
 maintain_op="$(PYTHONPATH=scripts python3 -c 'from hermes_direct_pr_journal import identity; import sys; print(identity("pr-maintain","Zhachory1/ai-pr-automation",7,"deadbeef"*5,sys.argv[1])["operation_id"])' "$expected_digest")"
 jq -e --arg digest "$expected_digest" --arg op "$maintain_op" --arg home "$tmp/home" --arg bin "$tmp/bin/hermes" --arg root "$tmp/work" '
   .argv == ["--kind","pr-maintain","--hermes-home",$home,"--hermes-bin",$bin,"--workspace-root",$root] and
@@ -334,9 +301,9 @@ if GH_SCENARIO=maintain-batch FEEDBACK_VERSION=batch FAIL_API_PR=7 batch_out="$(
 after="$(wc -l < "$tmp/direct.log" | tr -d ' ')"
 [[ "$batch_rc" == 1 && "$after" == $((before+1)) ]] || { echo 'FAIL: API failure starved later PR or wrong exit' >&2; echo "$batch_out" >&2; exit 1; }
 echo "$batch_out" | grep -q 'admitted=1 failed=1 skipped=0' || { echo "FAIL: API failure summary: $batch_out" >&2; exit 1; }
-[[ "$(grep -c '^api user ' "$tmp/gh.log")" == 1 && ! -s "$tmp/psql.log" ]] || { echo 'FAIL: direct maintain login/psql behavior' >&2; exit 1; }
+[[ "$(grep -c '^api user ' "$tmp/gh.log")" == 1 ]] || { echo 'FAIL: direct maintain login behavior' >&2; exit 1; }
 
-# Compose bridge keeps discovery/feedback and never invokes psql, Hermes CLI, or Runs API.
+# Compose bridge keeps discovery/feedback and never invokes Hermes CLI or Runs API.
 cat > "$tmp/bin/bridge-submit" <<'PY'
 import json, os, pathlib, sys
 with pathlib.Path(os.environ["TEST_STATE"], "bridge.log").open("a") as stream:
@@ -350,11 +317,11 @@ else:
     print(json.dumps({"kind":kind,"board":kind,"operation_id":kind+"-"+"a"*64,
       "task_id":"t_12345678","status":"ready"}))
 PY
-: > "$tmp/bridge.log"; : > "$tmp/psql.log"
+: > "$tmp/bridge.log"
 bridge_review_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=bridge \
   HERMES_KANBAN_SUBMIT_BIN="$tmp/bin/bridge-submit" HERMES_AUTHORITY_FILE="$tmp/authority.yaml" \
   HERMES_AUTHORITY_BIN="$PWD/scripts/hermes-authority.py" bin/hermes-pr-producer review 2>&1)"
-[[ ! -s "$tmp/psql.log" && "$(wc -l < "$tmp/bridge.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: bridge review touched DB or skipped PR' >&2; exit 1; }
+[[ "$(wc -l < "$tmp/bridge.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: bridge review skipped PR' >&2; exit 1; }
 echo "$bridge_review_out" | grep -q 'admitted=2 failed=0 skipped=1'
 : > "$tmp/bridge.log"
 bridge_maintain_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" GH_SCENARIO=maintain FEEDBACK_VERSION=v1 \
@@ -371,4 +338,4 @@ bridge_deferred_out="$(DEFER_BRIDGE=1 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" GH
 echo "$bridge_deferred_out" | grep -q 'admitted=0 failed=0 skipped=1' \
   || { echo 'FAIL: active maintenance round was not deferred' >&2; exit 1; }
 
-echo 'PASS: hermes-pr-producer postgres, direct, API, and Compose Kanban bridge modes'
+echo 'PASS: hermes-pr-producer direct, API, and Compose Kanban bridge modes'

@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
 # hermes-pr-safety-producer — read-only merged-PR producer for the host-native fleet. Discovers
 # merged PRs authored by the configured GitHub logins, snapshots each merge commit read-only, and
-# enqueues one pr-safety-review request per merge SHA. Makes zero model calls.
+# admits one Kanban task per merge SHA. Makes zero model calls.
 #
 # Ported from the retired Docker producer (bin/pr-safety-merged-pr-producer, git show
 # 9ec1d3d~1:bin/pr-safety-merged-pr-producer): same immutable-snapshot identity (clean checkout at
-# the merge commit, base ref oid, git-diff SHA-256), same event-ledger dedupe (merge SHA is the event
-# identity), same stale-head supersede. The event ledger + queue insert now go through the
-# SECURITY DEFINER hermes_enqueue_pr_safety_event (hermes_worker has no direct table DML), and repo
+# the merge commit, base ref oid, git-diff SHA-256). Kanban handles admission by merge SHA; repo
 # scope is additionally filtered through the operator authority YAML (see hermes-pr-producer),
 # matching the rest of the native fleet's scope-of-attention model.
 set -euo pipefail
 umask 077
 
 HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || echo /usr/local/libexec/ai-pr-automation)"
-: "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
-: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
-QUEUE_ENGINE="${PR_SAFETY_QUEUE_ENGINE:-postgres}"
-[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban ]] \
-  || { echo "PR_SAFETY_QUEUE_ENGINE must be postgres or kanban" >&2; exit 2; }
+[[ "${PR_SAFETY_QUEUE_ENGINE:-}" == kanban ]] \
+  || { echo "PR_SAFETY_QUEUE_ENGINE=kanban is required for optional PR-safety admission" >&2; exit 2; }
 AUTHORITY="${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.yaml}"
 AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
@@ -32,19 +27,14 @@ RISK_COUNCIL="${HERMES_KANBAN_RISK_COUNCIL:-/usr/local/libexec/ai-pr-automation/
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
 need gh; need git; need jq; need python3
-if [[ "$QUEUE_ENGINE" == postgres ]]; then
-  need psql
-else
-  [[ -x "$HERMES_BIN" && -x "$HERMES_PYTHON" && -f "$KANBAN_ENQUEUE" \
-      && -f "$KANBAN_CONTRACT" && -f "$RISK_COUNCIL" ]] \
-    || { echo "host Hermes Kanban enqueue support is unavailable" >&2; exit 2; }
-fi
+[[ -x "$HERMES_BIN" && -x "$HERMES_PYTHON" && -f "$KANBAN_ENQUEUE" \
+    && -f "$KANBAN_CONTRACT" && -f "$RISK_COUNCIL" ]] \
+  || { echo "host Hermes Kanban enqueue support is unavailable" >&2; exit 2; }
 
 digest() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi; }
 resolve_path() { python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
 inside_root() { [[ "$1" == "$2" || "$1" == "$2/"* ]]; }
 log() { printf '%s hermes-pr-safety-producer %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
-psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
 
 for required in PR_SAFETY_MERGED_PR_AUTHORS PR_SAFETY_SNAPSHOT_ROOT PR_SAFETY_POLICY_ROOT \
   PR_SAFETY_POLICY_PATH PR_SAFETY_POLICY_VERSION PR_SAFETY_POLICY_DIGEST; do
@@ -58,10 +48,7 @@ done
 [[ "$PR_SAFETY_POLICY_DIGEST" =~ ^[0-9a-f]{64}$ ]] || { echo "PR_SAFETY_POLICY_DIGEST must be lowercase SHA-256" >&2; exit 2; }
 
 SEARCH_LIMIT="${PR_SAFETY_MERGED_PR_SEARCH_LIMIT:-10}"
-SNAPSHOT_KEEP="${PR_SAFETY_SNAPSHOT_KEEP:-25}"
-
-SNAPSHOT_ROOT="$(resolve_path "$PR_SAFETY_SNAPSHOT_ROOT")"
-if [[ "$QUEUE_ENGINE" == kanban ]]; then SNAPSHOT_ROOT="$SNAPSHOT_ROOT/direct-kanban"; fi
+SNAPSHOT_ROOT="$(resolve_path "$PR_SAFETY_SNAPSHOT_ROOT")/direct-kanban"
 POLICY_ROOT="$(resolve_path "$PR_SAFETY_POLICY_ROOT")"
 POLICY_PATH="$(resolve_path "$PR_SAFETY_POLICY_PATH")"
 mkdir -p "$SNAPSHOT_ROOT"
@@ -143,7 +130,7 @@ snapshot_for() {
 # Review one merged PR record: {repo, number, mergeSha, baseSha}. The merge commit is the immutable
 # head; base is the PR base ref oid. diff_hash is computed from the snapshot, not trusted from input.
 process_pr() {
-  local record="$1" repo pr merge base op snapshot_info snapshot diff payload event_digest inserted result
+  local record="$1" repo pr merge base op snapshot_info snapshot diff payload result
   repo="$(jq -r '.repo' <<<"$record")"; pr="$(jq -r '.number' <<<"$record")"
   merge="$(jq -r '.mergeSha' <<<"$record")"; base="$(jq -r '.baseSha' <<<"$record")"
   [[ "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { log "skip: bad repo '$repo'"; return 0; }
@@ -158,22 +145,14 @@ process_pr() {
     --arg diff "$diff" --arg policy_version "$PR_SAFETY_POLICY_VERSION" --arg policy_digest "$PR_SAFETY_POLICY_DIGEST" \
     --arg snapshot "$snapshot" --arg policy_path "$POLICY_PATH" \
     '{operation_id:$op,repo:$repo,pr:($pr|tonumber),head_sha:$head,base_sha:$base,diff_hash:$diff,policy_version:$policy_version,policy_digest:$policy_digest,snapshot_path:$snapshot,policy_path:$policy_path}')"
-  if [[ "$QUEUE_ENGINE" == kanban ]]; then
-    if result="$(printf '%s' "$payload" | "$HERMES_PYTHON" -B "$KANBAN_ENQUEUE" \
-        --hermes-home "$HERMES_HOME" --hermes-bin "$HERMES_BIN" \
-        --risk-council "$RISK_COUNCIL" --contract "$KANBAN_CONTRACT")"; then
-      log "kanban $(jq -r '.status + " " + .board' <<<"$result") for $repo#$pr@$merge"
-    else
-      log "kanban enqueue failed for $repo#$pr@$merge"
-      return 1
-    fi
-    return
+  if result="$(printf '%s' "$payload" | "$HERMES_PYTHON" -B "$KANBAN_ENQUEUE" \
+      --hermes-home "$HERMES_HOME" --hermes-bin "$HERMES_BIN" \
+      --risk-council "$RISK_COUNCIL" --contract "$KANBAN_CONTRACT")"; then
+    log "kanban $(jq -r '.status + " " + .board' <<<"$result") for $repo#$pr@$merge"
+  else
+    log "kanban enqueue failed for $repo#$pr@$merge"
+    return 1
   fi
-  event_digest="$(jq -cS . <<<"$record" | digest)"
-  inserted="$(psqlq -v merge_sha="$merge" -v event_digest="$event_digest" -v payload="$payload" \
-    -v dk="$repo#$pr@$merge" -v lineage="$repo#$pr" \
-    <<<"SELECT hermes_enqueue_pr_safety_event(:'merge_sha', :'event_digest', :'payload'::jsonb, :'dk', :'lineage');" 2>/dev/null || true)"
-  if [[ "$inserted" =~ ^[0-9]+$ ]]; then log "enqueued $repo#$pr@$merge (#$inserted)"; else log "recorded or deduped $repo#$pr@$merge"; fi
 }
 
 # Resolve one author's merged PRs to normalized {repo, number, mergeSha, baseSha} records, written
@@ -222,27 +201,6 @@ if [[ -n "${PR_SAFETY_MERGED_PR_INPUT_FILE:-}" ]]; then
   exit 0
 fi
 
-# Remove old snapshots beyond SNAPSHOT_KEEP newest (by mtime), but never one still referenced by a
-# queued/running review. Snapshot dir name is the operation_id.
-gc_snapshots() {
-  [[ "$QUEUE_ENGINE" == postgres ]] || return 0
-  [[ "$SNAPSHOT_KEEP" -gt 0 ]] || return 0
-  local dirs op active
-  dirs=$(ls -dt "$SNAPSHOT_ROOT"/pr-safety-* 2>/dev/null || true)
-  [[ -n "$dirs" ]] || return 0
-  local i=0
-  while IFS= read -r snap; do
-    [[ -n "$snap" ]] || continue
-    i=$((i+1))
-    (( i <= SNAPSHOT_KEEP )) && continue
-    op="$(basename "$snap")"
-    active="$(psqlq -v op="$op" <<<"SELECT hermes_pr_safety_operation_active(:'op');" 2>/dev/null || true)"
-    if [[ "$active" == t ]]; then log "gc keep (in-flight): $op"; continue; fi
-    chmod -R u+w "$snap" 2>/dev/null || true
-    rm -rf "$snap" && log "gc removed snapshot $op"
-  done <<<"$dirs"
-}
-
 records="$(mktemp)"; trap 'rm -f "$records"' EXIT
 IFS=',' read -r -a authors <<<"$PR_SAFETY_MERGED_PR_AUTHORS"
 for author in "${authors[@]}"; do
@@ -251,4 +209,3 @@ for author in "${authors[@]}"; do
   records_for_author "$author" "$records"
 done
 process_records "$records"
-gc_snapshots
