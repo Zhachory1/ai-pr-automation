@@ -176,6 +176,29 @@ print(json.dumps(_build_safe_env(_interpolate_env_vars(json.loads(sys.argv[1])))
             self.assertFalse(body["truncated"])
             self.assertEqual({path:path.read_bytes() for path in before}, before)
 
+    def test_pinned_git_diff_and_changed_file_use_snapshot_prefix(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td).resolve()
+            env, workspace, _snapshot, _inputs = self.fixture(root)
+            repo = root / 'snapshots/repo'; repo.mkdir()
+            def git(*args):
+                return subprocess.run(['git','-C',str(repo),*args],capture_output=True,
+                                      text=True,check=True).stdout.strip()
+            git('init');git('config','user.name','fixture');git('config','user.email','fixture@example.test')
+            (repo/'file.py').write_text('old\n');git('add','file.py');git('commit','-m','base')
+            base=git('rev-parse','HEAD')
+            (repo/'file.py').write_text('new\n');git('commit','-am','head');head=git('rev-parse','HEAD')
+            binding=workspace/'.council-tools.json';binding.chmod(0o600)
+            binding.write_text(json.dumps({'schema_version':2,'snapshot_root':str(repo),
+                                           'input_root':str(root/'workflows/run/input'),
+                                           'head_sha':head,'base_sha':base}))
+            binding.chmod(0o440)
+            env.update(COUNCIL_PROFILE='pr-review-mvp-v2',COUNCIL_BOARD='pr-review')
+            patch=self.call(env,'snapshot_read',{'path':'snapshot/diff.patch'})
+            self.assertIn('+new',patch['content'][0]['text'])
+            changed=self.call(env,'snapshot_read',{'path':'snapshot/file.py'})
+            self.assertEqual(changed['content'][0]['text'],'new\n')
+
     def test_kanban_wrappers_forward_only_own_task_and_exact_handlers(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.fake_pinned(pathlib.Path(td))

@@ -35,6 +35,15 @@ class CouncilProfilesTest(unittest.TestCase):
                 self.assertIn('kanban_complete',prompt)
                 self.assertNotIn('autopraxis-pr-review',prompt)
                 self.assertNotIn('HERMES RUNS API OVERRIDE',prompt)
+                if role in ('reliability','mvp','security'):
+                    self.assertNotIn('needs-info',prompt)
+                    for step in ('input/identity.json','snapshot/diff.patch','kanban_block'):
+                        self.assertIn(step,prompt)
+        parent=(ROOT/'agent-config/hermes/profiles/pr-review-v1/SOUL.md').read_text()
+        skill=(ROOT/'agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md').read_text()
+        for text in (parent,skill):
+            self.assertNotIn('needs-info',text)
+            self.assertIn('kanban_block',text)
 
 
 if __name__=='__main__':unittest.main()
