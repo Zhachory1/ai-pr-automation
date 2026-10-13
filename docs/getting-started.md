@@ -1,6 +1,6 @@
 # Getting started (macOS)
 
-This runtime uses the **current user's** `~/.hermes` installation. The separate `hermes-agent` service-account installer, Fleet Controller, request database, and host Kanban bridge are retired from default startup. Do not invoke `sudo scripts/hermes-native.sh install` or use cross-user Hermes calls to set up this fleet.
+This runtime uses the **current user's** `~/.hermes` installation. The separate `hermes-agent` service-account installer, Fleet Controller, request database, and old host Kanban bridge have been removed from the supported startup. Do not use cross-user Hermes calls to set up this fleet.
 
 ## Prerequisites
 
@@ -50,7 +50,7 @@ Copy [`.env.example`](../.env.example) to `.env`, replace every `/Users/YOU` pla
 
 ## Support-only startup
 
-Stop old effect-producing controller/producers before switching an existing fleet; `support-up` does not stop orphans. Do not delete its request volume or unresolved rows. Then:
+Stop old effect-producing controller/producers before switching an existing fleet; `support-up` does not stop orphans. Preserve the offline request archive and inspect unresolved GitHub effects before any manual replay. Then:
 
 On a fresh Mac, build Coderag once before `support-up` (which deliberately uses `--no-build`); this fetches its pinned build dependency but starts no containers. Skip the build on an existing fleet with the image already present.
 

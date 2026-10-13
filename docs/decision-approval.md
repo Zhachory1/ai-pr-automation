@@ -1,6 +1,8 @@
-# Pending Decision Approval
+# Historical Pending Decision Approval
 
-- status: ready for review
+> Retired request-database/status-server design. The referenced queue, schema, UI, and approval commands have been removed. Do not use this document to operate the current Hermes Kanban fleet.
+
+- status: superseded
 - owner: local fleet operator
 - scope: `pending_decisions` only
 - source: user request, 2026-09-04

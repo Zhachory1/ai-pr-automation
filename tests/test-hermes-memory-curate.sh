@@ -2,7 +2,7 @@
 # The curate runner is the WRITE GATE: the model only proposes; the runner filters, dedups, and
 # writes over the memory MCP (curl). Verify: base gate drops secret/too-short; team bank gets clean
 # keepers; the org bank gets ONLY keepers that also pass the stricter gate (>=2 sources, >=80 chars,
-# no internal-topic term); near-dups are skipped; the row settles done.
+# no internal-topic term); near-dups are skipped; direct runs advance the watermark.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -11,18 +11,8 @@ printf 'a durable lesson about the fleet queue long enough to pass the size gate
 
 cat > "$tmp/bin/psql" <<'SH'
 #!/usr/bin/env bash
-set -euo pipefail
-args="$*"; input="$(cat || true)"
-[[ -z "${TEST_PSQL_FORBIDDEN:-}" ]] || { touch "$TEST_STATE/psql-forbidden"; exit 99; }
-if [[ "$args" == *hermes_enqueue_request* || "$input" == *hermes_enqueue_request* ]]; then
-  printf '%s\n' "$input" > "$TEST_STATE/enqueue.sql"
-  echo 42   # self-enqueue tick
-elif [[ "$args" == *hermes_claim_request* ]]; then
-  touch "$TEST_STATE/claimed"
-  jq -cn '{id:5,kind:"memory-curate",payload:{},dedupe_key:"memory-curate:1"}'
-elif [[ "$args" == *hermes_renew_request* ]]; then echo t
-elif [[ "$input" == *hermes_settle_request* ]]; then printf '%s\n' "$input" > "$TEST_STATE/settle.sql"; echo t
-else exit 2; fi
+touch "$TEST_STATE/psql-forbidden"
+exit 99
 SH
 
 # Fake hermes: emit proposals — clean+multi-source (team+org), secret (drop), too-short (drop),
@@ -81,27 +71,14 @@ else
 fi
 SH
 chmod +x "$tmp/bin/psql" "$tmp/bin/hermes" "$tmp/bin/curl"
-
-# Standing producer mode enqueues and exits; dispatcher owns the claim/consumer concurrency.
-PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" \
-  REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake \
-  MEMORY_CURATOR_STATE_DIR="$tmp/state" MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" \
-  MEMORY_CURATOR_PRIVATE_DOCS="$tmp/none" HERMES_QUEUE_LEASE_SECONDS=4 \
-  bin/hermes-memory-curate --enqueue-only >/dev/null
-[[ -s "$tmp/enqueue.sql" ]] || { echo 'FAIL: enqueue-only did not enqueue' >&2; exit 1; }
-[[ ! -e "$tmp/claimed" ]] || { echo 'FAIL: enqueue-only also claimed' >&2; exit 1; }
-rm -f "$tmp/enqueue.sql"
-
-out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" \
-  REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake \
-  MEMORY_CURATOR_STATE_DIR="$tmp/state" MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" \
-  MEMORY_CURATOR_PRIVATE_DOCS="$tmp/none" HERMES_QUEUE_LEASE_SECONDS=4 \
-  bin/hermes-memory-curate --enqueue)"
-
-echo "$out" | grep -q 'request=5 status=done' || { echo "FAIL: not done: $out" >&2; exit 1; }
-grep -q 'hermes_enqueue_request' "$tmp/enqueue.sql" || { echo 'FAIL: self-enqueue SQL missing' >&2; exit 1; }
-
 team="$tmp/team.jsonl"; org="$tmp/org.jsonl"
+if PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" bin/hermes-memory-curate >/dev/null 2>&1; then
+  echo 'FAIL: optional memory curation enabled without --direct' >&2; exit 1
+fi
+out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" TEST_PSQL_FORBIDDEN=1 HERMES_BIN="$tmp/bin/hermes" \
+  MEMORY_CURATOR_STATE_DIR="$tmp/state" MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" \
+  MEMORY_CURATOR_PRIVATE_DOCS="$tmp/none" bin/hermes-memory-curate --direct)"
+[[ "$out" == 'status=done' && ! -e "$tmp/psql-forbidden" ]] || { echo "FAIL: direct run: $out" >&2; exit 1; }
 # Team bank: clean-multisource + force-with-lease + revenue-topic = 3 (secret/too-short/near-dup dropped).
 tn="$(grep -c . "$team" 2>/dev/null || echo 0)"
 [[ "$tn" == 3 ]] || { echo "FAIL: team writes=$tn expected 3" >&2; cat "$team" >&2; exit 1; }
@@ -112,15 +89,6 @@ on="$(grep -c . "$org" 2>/dev/null || echo 0)"
 grep -q 'supersedes an older queued head' "$org" || { echo 'FAIL: wrong org memory' >&2; exit 1; }
 if grep -qi 'revenue' "$org"; then echo 'FAIL: internal-topic reached org bank' >&2; exit 1; fi
 if grep -q 'force-with-lease' "$org"; then echo 'FAIL: single-source/short memory reached org bank' >&2; exit 1; fi
-[[ -s "$tmp/state/last-run" ]] || { echo 'FAIL: watermark not advanced' >&2; exit 1; }
-
-# Direct mode reuses the same gather/model/gates without touching PostgreSQL.
-: > "$team"; : > "$org"; printf '0\n' > "$tmp/state/last-run"
-rm -f "$tmp/psql-forbidden"
-out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" TEST_PSQL_FORBIDDEN=1 HERMES_BIN="$tmp/bin/hermes" \
-  MEMORY_CURATOR_STATE_DIR="$tmp/state" MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" \
-  MEMORY_CURATOR_PRIVATE_DOCS="$tmp/none" bin/hermes-memory-curate --direct)"
-[[ "$out" == 'status=done' ]] || { echo "FAIL: direct not done: $out" >&2; exit 1; }
 [[ ! -e "$tmp/psql-forbidden" ]] || { echo 'FAIL: direct called psql' >&2; exit 1; }
 [[ "$(grep -c . "$team")" == 3 ]] || { echo 'FAIL: direct team routing differs' >&2; exit 1; }
 [[ "$(grep -c . "$org")" == 1 ]] || { echo 'FAIL: direct org routing differs' >&2; exit 1; }
@@ -154,31 +122,17 @@ done
 
 # Every proposal item is validated before iteration; malformed output reconciles and holds watermark.
 assert_invalid_proposal() {
-  local name="$1" proposal="$2" proposal_mode state out rc
-  for proposal_mode in postgres direct; do
-    state="$tmp/state-invalid-$name-$proposal_mode"; mkdir -p "$state"; printf '123\n' > "$state/last-run"
-    rm -f "$tmp/psql-forbidden" "$tmp/settle.sql"
-    set +e
-    if [[ "$proposal_mode" == direct ]]; then
-      out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" TEST_PSQL_FORBIDDEN=1 TEST_PROPOSAL="$proposal" HERMES_BIN="$tmp/bin/hermes" \
-        MEMORY_CURATOR_STATE_DIR="$state" MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" \
-        MEMORY_CURATOR_PRIVATE_DOCS="$tmp/none" bin/hermes-memory-curate --direct)"; rc=$?
-    else
-      out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" TEST_PROPOSAL="$proposal" HERMES_BIN="$tmp/bin/hermes" \
-        REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake MEMORY_CURATOR_STATE_DIR="$state" \
-        MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" MEMORY_CURATOR_PRIVATE_DOCS="$tmp/none" \
-        HERMES_QUEUE_LEASE_SECONDS=4 bin/hermes-memory-curate)"; rc=$?
-    fi
-    set -e
-    if [[ "$proposal_mode" == direct ]]; then
-      [[ "$rc" == 1 && "$out" == 'status=reconcile' && ! -e "$tmp/psql-forbidden" ]] || {
-        echo "FAIL: direct accepted $name rc=$rc out=$out" >&2; exit 1; }
-    else
-      [[ "$rc" == 0 && "$out" == 'request=5 status=reconcile' && -s "$tmp/settle.sql" ]] || {
-        echo "FAIL: postgres did not settle $name rc=$rc out=$out" >&2; exit 1; }
-    fi
-    [[ "$(cat "$state/last-run")" == 123 ]] || { echo "FAIL: $proposal_mode $name advanced watermark" >&2; exit 1; }
-  done
+  local name="$1" proposal="$2" state out rc
+  state="$tmp/state-invalid-$name"; mkdir -p "$state"; printf '123\n' > "$state/last-run"
+  rm -f "$tmp/psql-forbidden"
+  set +e
+  out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" TEST_PSQL_FORBIDDEN=1 TEST_PROPOSAL="$proposal" HERMES_BIN="$tmp/bin/hermes" \
+    MEMORY_CURATOR_STATE_DIR="$state" MEMORY_CURATOR_TASKS_DIR="$tmp/tasks" \
+    MEMORY_CURATOR_PRIVATE_DOCS="$tmp/none" bin/hermes-memory-curate --direct)"; rc=$?
+  set -e
+  [[ "$rc" == 1 && "$out" == 'status=reconcile' && ! -e "$tmp/psql-forbidden" ]] || {
+    echo "FAIL: direct accepted $name rc=$rc out=$out" >&2; exit 1; }
+  [[ "$(cat "$state/last-run")" == 123 ]] || { echo "FAIL: $name advanced watermark" >&2; exit 1; }
 }
 
 assert_invalid_proposal null-entry '{"memories":[null]}'
@@ -217,4 +171,4 @@ PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" TEST_PSQL_FORBIDDEN=1 HERMES_BIN="$tmp/b
 set -e
 [[ "$rc" == 2 && ! -e "$tmp/model.calls" && ! -e "$tmp/psql-forbidden" ]] || { echo 'FAIL: invalid args accepted or performed work' >&2; exit 1; }
 
-echo 'PASS: memory-curate Postgres and direct modes gate writes, failures, and overlap'
+echo 'PASS: memory-curate direct mode gates writes, failures, and overlap'
