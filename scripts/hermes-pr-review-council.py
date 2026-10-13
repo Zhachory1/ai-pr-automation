@@ -286,6 +286,11 @@ def canonical_finding(spec, finding):
     if not isinstance(finding, dict):
         raise ValueError("invalid council finding")
     value = dict(finding)
+    source_role = value.pop("source_role", None)
+    if source_role is not None and source_role not in spec["specialists"]:
+        raise ValueError("invalid council finding source role")
+    if value.get("severity") == "low":
+        value["severity"] = "minor"
     path = value.get("path")
     if isinstance(path, str) and path not in spec["changed_paths"] and path.startswith("snapshot/"):
         value["path"] = path.removeprefix("snapshot/")
@@ -312,7 +317,7 @@ def _valid_finding(spec, finding):
 def check_verdict(spec, outputs, synthesis):
     """Accept only a typed synthesis that preserves every specialist finding."""
     keys = {"operation_id", "artifact_digest", "role", "verdict", "findings"}
-    optional = {"needs_info", "parent_verdicts", "unreviewable_paths"}
+    optional = {"needs_info", "needs_info_reason", "parent_verdicts", "unreviewable_paths"}
     if not isinstance(outputs, dict) or set(outputs) != set(spec["specialists"]) \
             or not isinstance(synthesis, dict) or not keys <= set(synthesis) or set(synthesis) - keys - optional \
             or synthesis["role"] != "synthesis" or synthesis["operation_id"] != spec["operation_id"] \
@@ -321,6 +326,7 @@ def check_verdict(spec, outputs, synthesis):
             or not isinstance(synthesis["findings"], list) or len(synthesis["findings"]) > 50:
         raise ValueError("council synthesis differs from contract")
     needed, needs_info, required = set(), False, False
+    by_role = {}
     for role, item in outputs.items():
         if not isinstance(item, dict) or not keys <= set(item) or set(item) - keys - {"needs_info"} \
                 or item["operation_id"] != spec["operation_id"] or item["artifact_digest"] != spec["artifact_digest"] \
@@ -331,14 +337,21 @@ def check_verdict(spec, outputs, synthesis):
                 or not item["needs_info"].strip() or len(item["needs_info"]) > 2000):
             raise ValueError("invalid council specialist needs-info reason")
         needs_info |= item["verdict"] == "needs-info" or "needs_info" in item
+        role_findings = set()
         for finding in item["findings"]:
             normalized = canonical_finding(spec, finding)
             required |= _valid_finding(spec, normalized)
             needs_info |= normalized["severity"] == "needs-info"
-            needed.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
-    if ("needs_info" in synthesis and (not isinstance(synthesis["needs_info"], str)
-            or not synthesis["needs_info"].strip() or len(synthesis["needs_info"]) > 2000)):
-        raise ValueError("invalid synthesis needs-info reason")
+            role_findings.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
+        needed.update(role_findings)
+        by_role[role] = role_findings
+    for name in ("needs_info", "needs_info_reason"):
+        if name in synthesis and (not isinstance(synthesis[name], str)
+                or not synthesis[name].strip() or len(synthesis[name]) > 2000):
+            raise ValueError("invalid synthesis needs-info reason")
+    if ("needs_info" in synthesis and "needs_info_reason" in synthesis
+            and synthesis["needs_info"] != synthesis["needs_info_reason"]):
+        raise ValueError("conflicting synthesis needs-info reasons")
     if ("parent_verdicts" in synthesis and synthesis["parent_verdicts"] !=
             {role:item["verdict"] for role,item in outputs.items()}):
         raise ValueError("synthesis parent verdicts differ")
@@ -347,17 +360,21 @@ def check_verdict(spec, outputs, synthesis):
             or any(not isinstance(path, str) or len(path) > 512 or path not in spec["changed_paths"]
                    for path in paths)):
         raise ValueError("invalid synthesis unreviewable paths")
-    needs_info |= "needs_info" in synthesis or bool(paths)
+    needs_info |= "needs_info" in synthesis or "needs_info_reason" in synthesis or bool(paths)
     included = set()
     for finding in synthesis["findings"]:
         normalized = canonical_finding(spec, finding)
         required |= _valid_finding(spec, normalized)
         needs_info |= normalized["severity"] == "needs-info"
-        included.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
+        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+        if "source_role" in finding and encoded not in by_role[finding["source_role"]]:
+            raise ValueError("synthesis finding source differs")
+        included.add(encoded)
     if not needed <= included:
         raise ValueError("synthesis omitted a specialist finding")
     verdict = synthesis["verdict"]
-    if (verdict == "needs-info" and not synthesis["findings"] and not synthesis.get("needs_info")
+    if (verdict == "needs-info" and not synthesis["findings"]
+            and not (synthesis.get("needs_info") or synthesis.get("needs_info_reason"))
             and not (paths or spec.get("unreviewable_paths"))):
         raise ValueError("council needs-info verdict lacks actionable evidence")
     if (verdict == "approve" and (required or needs_info or spec.get("unreviewable_paths"))
