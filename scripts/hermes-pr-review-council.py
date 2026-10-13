@@ -63,12 +63,14 @@ def collect(github, repo, number, head_sha, repository_path=None):
     if (not isinstance(files, list) or len(files) != before["changed_files"]
             or not isinstance(diff, bytes) or not 0 < len(diff) <= 262144):
         raise ValueError("incomplete or oversized PR diff")
-    paths = []
+    paths, unreviewable = [], []
     for item in files:
         if (not isinstance(item, dict) or not isinstance(item.get("filename"), str)
-                or not isinstance(item.get("patch"), str) or not item["patch"]):
+                or (not repository_path and (not isinstance(item.get("patch"), str) or not item["patch"]))):
             raise ValueError("unreviewable PR file or missing patch")
         paths.append(item["filename"])
+        if not isinstance(item.get("patch"), str) or not item["patch"]:
+            unreviewable.append(item["filename"])
         if not repository_path and item["filename"].encode() not in diff:
             raise ValueError("PR diff does not contain its file inventory")
     if len(set(paths)) != len(paths) or not diff.startswith(b"diff --git "):
@@ -82,7 +84,8 @@ def collect(github, repo, number, head_sha, repository_path=None):
     if any(not isinstance(value, list) or len(value) > 500 for value in (reviews, comments, checks)):
         raise ValueError("PR context inventory is incomplete")
     context = json.dumps({"intent": before.get("body") or "", "prior_feedback": reviews + comments,
-                          "checks": checks}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+                          "checks": checks, **({"unreviewable_paths": unreviewable} if unreviewable else {})},
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     if len(context) > 65536 or github.pr(repo, number) != before:
         raise ValueError("PR context is oversized or head changed while reading")
     request = {"repo": repo, "number": number, "head_sha": head_sha,
@@ -90,6 +93,8 @@ def collect(github, repo, number, head_sha, repository_path=None):
                "context_digest": hashlib.sha256(context).hexdigest(), "changed_paths": paths}
     if repository_path:
         request["repository_path"] = str(repository_path)
+    if unreviewable:
+        request["unreviewable_paths"] = unreviewable
     request["operation_id"] = identity("pr-review", repo, number, head_sha)["operation_id"]
     plan(request)
     return request, diff, context
@@ -97,7 +102,9 @@ def collect(github, repo, number, head_sha, repository_path=None):
 
 def plan(request):
     required = {"operation_id", "repo", "number", "head_sha", "base_sha", "diff_digest", "context_digest", "changed_paths"}
-    if not isinstance(request, dict) or set(request) not in (required, required | {"repository_path"}):
+    if not isinstance(request, dict) or not required <= set(request) \
+            or set(request) - required - {"repository_path", "unreviewable_paths"}:
+
         raise ValueError("pre-merge council request shape changed")
     try:
         operation = identity("pr-review", request["repo"], request["number"], request["head_sha"])
@@ -110,7 +117,13 @@ def plan(request):
             or not isinstance(request["context_digest"], str) or not HEX64.fullmatch(request["context_digest"])
             or not isinstance(paths, list) or not 0 < len(paths) <= 250
             or ("repository_path" in request and
-                (not isinstance(request["repository_path"], str) or not Path(request["repository_path"]).is_absolute()))):
+                (not isinstance(request["repository_path"], str) or not Path(request["repository_path"]).is_absolute()))
+            or ("unreviewable_paths" in request and
+                (not isinstance(request["unreviewable_paths"], list)
+                 or not request["unreviewable_paths"]
+                 or not all(isinstance(path, str) for path in request["unreviewable_paths"])
+                 or len(set(request["unreviewable_paths"])) != len(request["unreviewable_paths"])
+                 or not set(request["unreviewable_paths"]) <= set(paths)))):
         raise ValueError("pre-merge council snapshot identity is incomplete")
     for path in paths:
         if (not isinstance(path, str) or not 0 < len(path) <= 512 or "\x00" in path
@@ -124,10 +137,13 @@ def plan(request):
                "context_digest": request["context_digest"], "specialists": list(specialists), "changed_paths": sorted(paths)}
     if "repository_path" in request:
         binding["repository_path"] = request["repository_path"]
+    if "unreviewable_paths" in request:
+        binding["unreviewable_paths"] = sorted(request["unreviewable_paths"])
     artifact_digest = hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {"operation_id": operation["operation_id"], "artifact_digest": artifact_digest,
             "head_sha": request["head_sha"], "base_sha": request["base_sha"],
             "diff_digest": request["diff_digest"], "context_digest": request["context_digest"],
+            "unreviewable_paths": request.get("unreviewable_paths", []),
             **({"repository_path": request["repository_path"]} if "repository_path" in request else {}),
             "workflow_id": "pr-review-council-" + artifact_digest[:32],
             "specialists": specialists, "changed_paths": paths,
@@ -224,7 +240,8 @@ def admit(kb, conn, enqueue, github, work_root, request, repository_path=None):
                      "number": request["number"], "head_sha": request["head_sha"],
                      "base_sha": manifest["base_sha"], "diff_digest": manifest["diff_digest"],
                      "context_digest": manifest["context_digest"], "changed_paths": manifest["changed_paths"],
-                     **({"repository_path": manifest["repository_path"]} if "repository_path" in manifest else {})})
+                     **({"repository_path": manifest["repository_path"]} if "repository_path" in manifest else {}),
+                     **({"unreviewable_paths": manifest["unreviewable_paths"]} if "unreviewable_paths" in manifest else {})})
         if repository_path and spec.get("repository_path") != str(repository_path):
             raise ValueError("local review checkout changed on replay")
         claim(enqueue, root, spec, request)
@@ -315,7 +332,9 @@ def check_verdict(spec, outputs, synthesis):
     if not needed <= included:
         raise ValueError("synthesis omitted a specialist finding")
     verdict = synthesis["verdict"]
-    if verdict == "approve" and (required or needs_info) or verdict == "request-changes" and not required:
+    if (verdict == "approve" and (required or needs_info or spec.get("unreviewable_paths"))
+            or verdict == "request-changes" and not required
+            or verdict == "needs-info" and required):
         raise ValueError("council verdict ignores required changes or missing evidence")
     return verdict
 
@@ -368,6 +387,8 @@ def prepare_snapshot(workspace, spec, diff, context):
                 ("operation_id", "head_sha", "base_sha", "diff_digest", "context_digest", "artifact_digest", "changed_paths")}
     if spec.get("repository_path"):
         manifest["repository_path"] = spec["repository_path"]
+    if spec.get("unreviewable_paths"):
+        manifest["unreviewable_paths"] = spec["unreviewable_paths"]
     encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
     if len(encoded) > 65536:
         raise ValueError("council identity exceeds limit")
@@ -390,6 +411,8 @@ def _verified_snapshot(workspace, spec):
               ("operation_id", "head_sha", "base_sha", "diff_digest", "context_digest", "artifact_digest", "changed_paths")}
     if spec.get("repository_path"):
         wanted["repository_path"] = spec["repository_path"]
+    if spec.get("unreviewable_paths"):
+        wanted["unreviewable_paths"] = spec["unreviewable_paths"]
     try:
         actual = json.loads(_immutable_file(path))
         diff = (local_diff(spec["repository_path"], spec["base_sha"], spec["head_sha"])

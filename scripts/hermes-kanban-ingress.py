@@ -312,7 +312,9 @@ def invoke_council(config, request, repository_path=None):
                                      "context_digest": manifest["context_digest"],
                                      "changed_paths": manifest["changed_paths"],
                                      **({"repository_path": manifest["repository_path"]}
-                                        if "repository_path" in manifest else {})})
+                                        if "repository_path" in manifest else {}),
+                                     **({"unreviewable_paths": manifest["unreviewable_paths"]}
+                                        if "unreviewable_paths" in manifest else {})})
             PUBLISHER.purge_verified(workspace / "review-effects.sqlite", workspace, spec, outcome["task_id"])
     with kbc.connect_closing(board=COUNCIL.BOARD) as conn:
         admitted = COUNCIL.admit(kb, conn, ENQUEUE, github, config.work, request, repository_path)
@@ -330,7 +332,9 @@ def invoke_council(config, request, repository_path=None):
                              "base_sha": manifest["base_sha"], "diff_digest": manifest["diff_digest"],
                              "context_digest": manifest["context_digest"], "changed_paths": manifest["changed_paths"],
                              **({"repository_path": manifest["repository_path"]}
-                                if "repository_path" in manifest else {})})
+                                if "repository_path" in manifest else {}),
+                             **({"unreviewable_paths": manifest["unreviewable_paths"]}
+                                if "unreviewable_paths" in manifest else {})})
         tasks = {}
         for role in [*spec["specialists"], "synthesis"]:
             row = conn.execute("SELECT id FROM tasks WHERE idempotency_key=?",

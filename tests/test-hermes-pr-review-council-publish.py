@@ -2,7 +2,9 @@
 import importlib.machinery
 import importlib.util
 import json
+import os
 import pathlib
+import time
 import sqlite3
 import hashlib
 import sys
@@ -46,10 +48,16 @@ class PublisherTest(unittest.TestCase):
         op=identity('pr-review','example/repo',17,'a'*40)['operation_id']
         self.request={'operation_id':op,'repo':'example/repo','number':17,
                       'head_sha':'a'*40,'base_sha':'b'*40,'artifact_digest':'d'*64}
+        self.owner=pathlib.Path(self.tmp.name)/'request.json'
+        self.owner.write_text(json.dumps({'route':'council-v2','operation_id':op,
+            'repo':'example/repo','number':17,'head_sha':'a'*40,'title':'synthetic'},
+            sort_keys=True,separators=(',',':')))
+        self.owner.chmod(0o440)
         self.body='Reviewed synthetic change. No required changes.'
         self.plan={'operation_id':op,'artifact_digest':'d'*64,'head_sha':'a'*40,'base_sha':'b'*40,
                    'specialists':{'generalist':'g','reliability':'r','mvp':'m'},
-                   'synthesis':{'profile':'pr-review-synthesis-v2'},'changed_paths':['src/file.py']}
+                   'synthesis':{'profile':'pr-review-synthesis-v2'},'changed_paths':['src/file.py'],
+                   'limits':{'deadline_seconds':480}}
         self.outputs={role:{'operation_id':op,'artifact_digest':'d'*64,'role':role,'verdict':'clear','findings':[]}
                       for role in self.plan['specialists']}
         self.synthesis={'operation_id':op,'artifact_digest':'d'*64,'role':'synthesis','verdict':'approve','findings':[]}
@@ -168,6 +176,20 @@ class PublisherTest(unittest.TestCase):
                              'role':'mvp','verdict':'clear','findings':[]}
         with self.assertRaises(ValueError):self.post('REQUEST_CHANGES')
         self.assertEqual(self.gh.posts,[])
+
+    def test_operation_deadline_blocks_new_post_but_reconciles_prior_acceptance(self):
+        old=time.time()-481
+        os.utime(self.owner,(old,old))
+        with self.assertRaisesRegex(ValueError,'deadline'):
+            self.post()
+        self.assertEqual(self.gh.posts,[])
+        os.utime(self.owner,None)
+        self.gh.fail_after_post=True
+        with self.assertRaises(TimeoutError):self.post()
+        self.assertEqual(len(self.gh.posts),1)
+        os.utime(self.owner,(old,old))
+        self.assertEqual(self.post()['status'],'verified')
+        self.assertEqual(len(self.gh.posts),1)
 
     def test_changed_head_or_closed_pr_never_posts(self):
         self.gh.head='e'*40

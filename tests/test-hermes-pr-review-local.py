@@ -51,7 +51,7 @@ class LocalCheckoutTest(unittest.TestCase):
             class GitHub:
                 def pr(self,*_):return {'state':'open','head_sha':head,'base_sha':base,'changed_files':2,'body':'goal'}
                 def files(self,*_):return [{'filename':'file.py','patch':'+new'},
-                                           {'filename':'café.py','patch':'+unicode path'}]
+                                           {'filename':'café.py','patch':None}]
                 def diff(self,*_):raise AssertionError('remote diff should not replace local Git')
                 def reviews(self,*_):return []
                 def comments(self,*_):return []
@@ -62,6 +62,14 @@ class LocalCheckoutTest(unittest.TestCase):
             workspace=root/'operation'
             council.prepare_snapshot(workspace,spec,diff,context)
             self.assertEqual(set(request['changed_paths']),{'file.py','café.py'})
+            self.assertEqual(spec['unreviewable_paths'],['café.py'])
+            outputs={role:{'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                           'role':role,'verdict':'clear','findings':[]} for role in spec['specialists']}
+            synthesis={'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                       'role':'synthesis','verdict':'approve','findings':[]}
+            with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+            synthesis['verdict']='needs-info'
+            self.assertEqual(council.check_verdict(spec,outputs,synthesis),'needs-info')
             self.assertFalse((workspace/'snapshot').exists())
             self.assertEqual(json.loads((workspace/'input/identity.json').read_text())['repository_path'],str(repo))
             council._verified_snapshot(workspace,spec)

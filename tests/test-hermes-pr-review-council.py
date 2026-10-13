@@ -324,6 +324,8 @@ class CouncilPlanTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             council.check_verdict(spec, outputs, synthesis("request-changes"))
         both = outputs["reliability"]["findings"] + outputs["mvp"]["findings"]
+        with self.assertRaises(ValueError):
+            council.check_verdict(spec, outputs, synthesis("needs-info", both))
         self.assertEqual(council.check_verdict(spec, outputs, synthesis("request-changes", both)), "request-changes")
         outputs.pop("reliability")
         with self.assertRaises(ValueError):

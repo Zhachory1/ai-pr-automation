@@ -7,7 +7,7 @@
 
 Review every *eligible* newly admitted PR head through independent generalist SWE, reliability, and MVP perspectives before posting **one** GitHub review. Eligible means the same open, authorized, assignee/owner-selected head accepted by today's review producer; no new size or content filter. A deterministic changed-path rule adds security for auth, secrets, IAM, crypto, or permission changes. One synthesis combines evidence and dissent; only one publisher can write to GitHub. Human operators still own merging.
 
-`APPROVE` remains valid when no changes are required, including nit-only feedback. Material actionable defects require `REQUEST_CHANGES`; missing/incomplete evidence uses `COMMENT`/needs-info rather than unsupported approval. Votes, body length, and elapsed review time do not determine verdicts.
+`APPROVE` remains valid when no changes are required, including nit-only feedback. Material actionable defects require `REQUEST_CHANGES` even when other evidence is incomplete; missing/incomplete evidence without a known required fix uses `COMMENT`/needs-info rather than unsupported approval. Votes, body length, and elapsed review time do not determine verdicts.
 
 ## Boundaries
 

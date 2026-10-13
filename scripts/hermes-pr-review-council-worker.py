@@ -77,7 +77,9 @@ def stale_pending(config, request, github):
         manifest = json.loads(INGRESS.COUNCIL._immutable_file(manifest_path))
         spec = INGRESS.COUNCIL.plan({"repo":request["repo"], "number":request["number"],
             "operation_id":request["operation_id"], "head_sha":request["head_sha"],
-            **{key:manifest[key] for key in ("base_sha","diff_digest","context_digest","changed_paths","repository_path")}})
+            **{key:manifest[key] for key in ("base_sha","diff_digest","context_digest","changed_paths")},
+            **({"repository_path":manifest["repository_path"]} if "repository_path" in manifest else {}),
+            **({"unreviewable_paths":manifest["unreviewable_paths"]} if "unreviewable_paths" in manifest else {})})
         INGRESS.COUNCIL._verified_snapshot(workspace,spec)
         board_db = config.home / "kanban/boards/pr-review/kanban.db"
         if board_db.is_symlink():
