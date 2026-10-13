@@ -136,9 +136,12 @@ def redact_review_cards(request, artifact_digest):
                     or body.get("role") != role or body.get("operation_id") != request["operation_id"]
                     or body.get("artifact_digest") != artifact_digest):
                 raise ValueError("review child lineage differs before redaction")
-            runs = conn.execute("SELECT profile,outcome,ended_at FROM task_runs WHERE task_id=?",
-                                (task["id"],)).fetchall()
-            if len(runs) != 1 or tuple(runs[0])[:2] != (roles[role], "completed") or runs[0]["ended_at"] is None:
+            runs = conn.execute("SELECT profile,outcome,ended_at,worker_pid FROM task_runs "
+                                "WHERE task_id=? ORDER BY id", (task["id"],)).fetchall()
+            if (not runs or any(run["profile"] != roles[role] or run["ended_at"] is None
+                                or run["worker_pid"] is not None for run in runs)
+                    or runs[-1]["outcome"] != "completed"
+                    or sum(run["outcome"] == "completed" for run in runs) != 1):
                 raise ValueError("review child run differs before redaction")
             if conn.execute("SELECT 1 FROM task_attachments WHERE task_id=?", (task["id"],)).fetchone():
                 raise ValueError("review child attachment needs manual reconciliation")

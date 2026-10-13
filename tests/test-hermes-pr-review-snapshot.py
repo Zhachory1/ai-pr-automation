@@ -73,7 +73,7 @@ class SnapshotTest(unittest.TestCase):
             board=root/'board.db'
             with sqlite3.connect(board) as db:
                 db.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,status TEXT,body TEXT,result TEXT,last_failure_error TEXT,model_override TEXT,provider_override TEXT);'
-                                 'CREATE TABLE task_runs(task_id TEXT,profile TEXT,outcome TEXT,ended_at INTEGER,summary TEXT,metadata TEXT,error TEXT);'
+                                 'CREATE TABLE task_runs(id INTEGER PRIMARY KEY,task_id TEXT,profile TEXT,outcome TEXT,ended_at INTEGER,worker_pid INTEGER,summary TEXT,metadata TEXT,error TEXT);'
                                  'CREATE TABLE task_attachments(task_id TEXT);'
                                  'CREATE TABLE task_comments(task_id TEXT,author TEXT,body TEXT);'
                                  'CREATE TABLE task_events(task_id TEXT,payload TEXT);')
@@ -83,8 +83,11 @@ class SnapshotTest(unittest.TestCase):
                         (task_id,f'{prepared["workflow_id"]}:{role}',f'pr-review-{role}-v2','done',
                          json.dumps({'role':role,'operation_id':operation,'artifact_digest':prepared['artifact_digest']}),
                          'private result',None,'gpt-6-luna','openai-codex'))
-                    db.execute('INSERT INTO task_runs VALUES (?,?,?,?,?,?,?)',
-                        (task_id,f'pr-review-{role}-v2','completed',1,'private summary','{"evidence":"private"}',None))
+                    if role=='mvp':
+                        db.execute('INSERT INTO task_runs(task_id,profile,outcome,ended_at,worker_pid,summary,metadata,error) VALUES (?,?,?,?,?,?,?,?)',
+                            (task_id,f'pr-review-{role}-v2','crashed',1,None,'old failure','{"private":"error"}',None))
+                    db.execute('INSERT INTO task_runs(task_id,profile,outcome,ended_at,worker_pid,summary,metadata,error) VALUES (?,?,?,?,?,?,?,?)',
+                        (task_id,f'pr-review-{role}-v2','completed',2,None,'private summary','{"evidence":"private"}',None))
                     db.execute('INSERT INTO task_comments VALUES (?,?,?)',
                         (task_id,f'pr-review-{role}-v2','private comment'))
                     db.execute('INSERT INTO task_events VALUES (?,?)',(task_id,'private event'))
@@ -120,7 +123,7 @@ class SnapshotTest(unittest.TestCase):
                 self.assertFalse((workspace/'input/context.json').exists())
                 self.assertFalse((workspace/'input/identity.json').exists())
                 with sqlite3.connect(board) as db:
-                    self.assertEqual(db.execute('SELECT metadata FROM task_runs').fetchall(),[(None,),(None,)])
+                    self.assertEqual(db.execute('SELECT metadata FROM task_runs').fetchall(),[(None,),(None,),(None,)])
                     self.assertEqual(db.execute('SELECT body FROM task_comments').fetchall(),[('[redacted]',),('[redacted]',)])
                 (workspace/'input/context.json').write_bytes(private)
                 (workspace/'input/context.json').chmod(0o400)
