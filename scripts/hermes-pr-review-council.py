@@ -297,14 +297,14 @@ def canonical_finding(spec, finding):
 
 def _valid_finding(spec, finding):
     if (not isinstance(finding, dict) or set(finding) != {"severity", "required", "path", "line", "claim", "evidence", "suggestion"}
-            or finding["severity"] not in ("blocker", "major", "minor", "nit")
+            or finding["severity"] not in ("blocker", "major", "minor", "nit", "needs-info")
             or type(finding["required"]) is not bool or type(finding["line"]) is not int
             or finding["line"] <= 0 or finding["path"] not in spec["changed_paths"]
             or any(not isinstance(finding[key], str) or not finding[key].strip()
                    or len(finding[key]) > limit for key, limit in
                    (("claim", 512), ("evidence", 2000), ("suggestion", 1024)))
             or (finding["severity"] in ("blocker", "major") and not finding["required"])
-            or (finding["severity"] == "nit" and finding["required"])):
+            or (finding["severity"] in ("nit", "needs-info") and finding["required"])):
         raise ValueError("invalid council changed-line finding")
     return finding["required"]
 
@@ -330,11 +330,13 @@ def check_verdict(spec, outputs, synthesis):
         for finding in item["findings"]:
             normalized = canonical_finding(spec, finding)
             required |= _valid_finding(spec, normalized)
+            needs_info |= normalized["severity"] == "needs-info"
             needed.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
     included = set()
     for finding in synthesis["findings"]:
         normalized = canonical_finding(spec, finding)
         required |= _valid_finding(spec, normalized)
+        needs_info |= normalized["severity"] == "needs-info"
         included.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
     if not needed <= included:
         raise ValueError("synthesis omitted a specialist finding")

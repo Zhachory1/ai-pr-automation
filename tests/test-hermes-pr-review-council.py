@@ -344,6 +344,28 @@ class CouncilPlanTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             council.check_verdict(spec, outputs, synthesis("approve"))
 
+    def test_nonrequired_needs_info_finding_requires_a_needs_info_verdict(self):
+        spec=council.plan(self.fixture())
+        outputs={role:{'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                       'role':role,'verdict':'clear','findings':[]} for role in spec['specialists']}
+        finding={'severity':'needs-info','required':False,'path':'src/worker.py','line':7,
+                 'claim':'source incomplete','evidence':'changed path lacks required context',
+                 'suggestion':'supply missing context'}
+        outputs['generalist']['verdict']='needs-info'
+        outputs['generalist']['findings']=[finding]
+        synthesis={'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                   'role':'synthesis','verdict':'needs-info','findings':[finding]}
+        self.assertEqual(council.check_verdict(spec,outputs,synthesis),'needs-info')
+        synthesis['verdict']='approve'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+        finding['required']=True
+        synthesis['verdict']='needs-info'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+        finding['required']=False
+        outputs['generalist']['verdict']='clear';outputs['generalist']['findings']=[]
+        synthesis['verdict']='approve'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+
     def test_tool_prefix_and_escaped_quotes_do_not_drop_specialist_finding(self):
         spec = council.plan(self.fixture())
         outputs = {role: {'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
