@@ -19,7 +19,7 @@ def resolve(repository, head_sha, *, root=None, fetch=True):
         raise ValueError("local checkout root is unavailable")
     root = root.resolve(strict=True)
     owner, name = repository.split("/")
-    candidates = [root / name, root / owner / name]
+    candidates = [root / name, root / owner / name, root / owner.lower() / name]
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1", GIT_LFS_SKIP_SMUDGE="1")
 

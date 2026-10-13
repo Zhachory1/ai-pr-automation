@@ -36,6 +36,16 @@ class LocalCheckoutTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'matching local checkout not found'):
                 module.resolve('example/widget','a'*40,root=root,fetch=False)
 
+    def test_finds_existing_lowercase_owner_directory_for_uppercase_github_org(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve()/'code';repo=root/'rokt/op3';repo.mkdir(parents=True)
+            def git(*args):
+                return subprocess.run(['git','-C',str(repo),*args],check=True,capture_output=True,text=True).stdout.strip()
+            git('init');git('config','user.email','fixture@example.test');git('config','user.name','fixture')
+            git('remote','add','origin','ssh://git@github.com/ROKT/op3.git')
+            (repo/'file.py').write_text('fixture\n');git('add','file.py');git('commit','-m','fixture')
+            self.assertEqual(module.resolve('ROKT/op3',git('rev-parse','HEAD'),root=root,fetch=False),repo)
+
     def test_workers_share_pinned_git_checkout_without_a_diff_copy(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();repo=root/'code/widget';repo.mkdir(parents=True)
