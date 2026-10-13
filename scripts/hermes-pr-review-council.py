@@ -288,8 +288,11 @@ def canonical_finding(spec, finding):
     value = dict(finding)
     source_role = value.pop("source_role", None)
     source = value.pop("source", None)
-    if (source_role is not None and source is not None and source_role != source
-            or (source_role or source) is not None and (source_role or source) not in spec["specialists"]):
+    if ("source_role" in finding and
+            (not isinstance(source_role, str) or source_role not in spec["specialists"])) \
+            or ("source" in finding and
+                (not isinstance(source, str) or source not in spec["specialists"])) \
+            or (source_role is not None and source is not None and source_role != source):
         raise ValueError("invalid council finding source role")
     severity = value.get("severity")
     if isinstance(severity, str):

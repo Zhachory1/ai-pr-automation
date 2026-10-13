@@ -416,6 +416,16 @@ class CouncilPlanTest(unittest.TestCase):
         synthesis['findings'][0]['source']='mvp'
         with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
         synthesis['findings'][0]['source']='reliability'
+        for invalid in ('', None, [], {'role':'reliability'}):
+            with self.subTest(invalid=invalid):
+                synthesis['findings'][0]['source']=invalid
+                with self.assertRaisesRegex(ValueError,'source role'):
+                    council.check_verdict(spec,outputs,synthesis)
+        synthesis['findings'][0]['source']='reliability'
+        synthesis['findings'][0]['source_role']='mvp'
+        with self.assertRaisesRegex(ValueError,'source role'):
+            council.check_verdict(spec,outputs,synthesis)
+        synthesis['findings'][0].pop('source_role')
         synthesis['verdict']='approve'
         with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
 
