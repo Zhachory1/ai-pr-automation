@@ -206,6 +206,7 @@ def admit(kb, conn, enqueue, github, work_root, request, repository_path=None):
     root = enqueue.safe_dir(work_root)
     workspace = root / request["operation_id"]
     owner_path = workspace / "request.json"
+    spec = None
     if owner_path.exists() or owner_path.is_symlink():
         enqueue.safe_dir(workspace)
         previous = json.loads(enqueue.read_immutable(owner_path))
@@ -213,39 +214,45 @@ def admit(kb, conn, enqueue, github, work_root, request, repository_path=None):
             if any(previous[key] != request[key] for key in request if key != "title"):
                 raise ValueError("legacy review owner identity changed")
             return {"route": "legacy"}
+        if (not isinstance(previous, dict) or set(previous) !=
+                {"route", "operation_id", "repo", "number", "head_sha", "title"}
+                or previous["route"] != "council-v2"
+                or any(previous[key] != request[key] for key in ("operation_id", "repo", "number", "head_sha"))):
+            raise ValueError("review operation owner differs")
         manifest_path = workspace / "input/identity.json"
         if not manifest_path.exists() and not manifest_path.is_symlink():
-            outcome = json.loads(_immutable_file(workspace / "review-outcome.json"))
-            if (not isinstance(previous, dict) or set(previous) !=
-                    {"route", "operation_id", "repo", "number", "head_sha", "title"}
-                    or previous["route"] != "council-v2"
-                    or any(previous[key] != request[key] for key in ("operation_id", "repo", "number", "head_sha"))
-                    or not isinstance(outcome, dict) or set(outcome) not in (
-                    {"status", "operation_id", "artifact_digest", "head_sha", "base_sha",
-                     "diff_digest", "context_digest", "task_id", "review_id"},
-                    {"status", "operation_id", "artifact_digest", "head_sha", "base_sha",
-                     "diff_digest", "context_digest", "task_id", "review_id", "repository_path"})
-                    or outcome["status"] != "verified"
-                    or any(outcome[key] != previous[key] for key in ("operation_id", "head_sha"))
-                    or not isinstance(outcome["task_id"], str) or not re.fullmatch(r"t_[0-9a-f]{8}", outcome["task_id"])
-                    or type(outcome["review_id"]) is not int or outcome["review_id"] <= 0):
-                raise ValueError("review completion receipt differs from owner")
-            if any((workspace / name).exists() or (workspace / name).is_symlink()
-                   for name in ("snapshot/diff.patch", "input/context.json")):
-                raise ValueError("verified review cleanup incomplete; reconcile private snapshot")
-            return {"route": "council", "task_id": outcome["task_id"],
-                    "operation_id": request["operation_id"], "status": "done"}
-        manifest = json.loads(_immutable_file(manifest_path))
-        spec = plan({"operation_id": request["operation_id"], "repo": request["repo"],
-                     "number": request["number"], "head_sha": request["head_sha"],
-                     "base_sha": manifest["base_sha"], "diff_digest": manifest["diff_digest"],
-                     "context_digest": manifest["context_digest"], "changed_paths": manifest["changed_paths"],
-                     **({"repository_path": manifest["repository_path"]} if "repository_path" in manifest else {}),
-                     **({"unreviewable_paths": manifest["unreviewable_paths"]} if "unreviewable_paths" in manifest else {})})
-        if repository_path and spec.get("repository_path") != str(repository_path):
-            raise ValueError("local review checkout changed on replay")
-        claim(enqueue, root, spec, request)
-    else:
+            receipt = workspace / "review-outcome.json"
+            if receipt.exists() or receipt.is_symlink():
+                outcome = json.loads(_immutable_file(receipt))
+                if (not isinstance(outcome, dict) or set(outcome) not in (
+                        {"status", "operation_id", "artifact_digest", "head_sha", "base_sha",
+                         "diff_digest", "context_digest", "task_id", "review_id"},
+                        {"status", "operation_id", "artifact_digest", "head_sha", "base_sha",
+                         "diff_digest", "context_digest", "task_id", "review_id", "repository_path"})
+                        or outcome["status"] != "verified"
+                        or any(outcome[key] != previous[key] for key in ("operation_id", "head_sha"))
+                        or not isinstance(outcome["task_id"], str) or not re.fullmatch(r"t_[0-9a-f]{8}", outcome["task_id"])
+                        or type(outcome["review_id"]) is not int or outcome["review_id"] <= 0):
+                    raise ValueError("review completion receipt differs from owner")
+                if any((workspace / name).exists() or (workspace / name).is_symlink()
+                       for name in ("snapshot/diff.patch", "input/context.json")):
+                    raise ValueError("verified review cleanup incomplete; reconcile private snapshot")
+                return {"route": "council", "task_id": outcome["task_id"],
+                        "operation_id": request["operation_id"], "status": "done"}
+            if any(item.name != "request.json" for item in workspace.iterdir()):
+                raise ValueError("incomplete council input; reconcile before retry")
+        else:
+            manifest = json.loads(_immutable_file(manifest_path))
+            spec = plan({"operation_id": request["operation_id"], "repo": request["repo"],
+                         "number": request["number"], "head_sha": request["head_sha"],
+                         "base_sha": manifest["base_sha"], "diff_digest": manifest["diff_digest"],
+                         "context_digest": manifest["context_digest"], "changed_paths": manifest["changed_paths"],
+                         **({"repository_path": manifest["repository_path"]} if "repository_path" in manifest else {}),
+                         **({"unreviewable_paths": manifest["unreviewable_paths"]} if "unreviewable_paths" in manifest else {})})
+            if repository_path and spec.get("repository_path") != str(repository_path):
+                raise ValueError("local review checkout changed on replay")
+            claim(enqueue, root, spec, request)
+    if spec is None:
         snapshot, diff, context = collect(github, request["repo"], request["number"], request["head_sha"],
                                           repository_path)
         spec = plan(snapshot)

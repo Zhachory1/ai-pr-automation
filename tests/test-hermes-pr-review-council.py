@@ -208,6 +208,19 @@ class CouncilPlanTest(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM tasks').fetchone()[0],4)
         with tempfile.TemporaryDirectory() as temp:
             root=pathlib.Path(temp).resolve()
+            self.assertEqual(council.queue(enqueue,root,request),'council')
+            fresh=sqlite3.connect(':memory:');self.addCleanup(fresh.close);fresh.row_factory=sqlite3.Row
+            fresh.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT);'
+                                'CREATE TABLE task_links(parent_id TEXT,child_id TEXT);')
+            admitted=council.admit(KB,fresh,enqueue,GitHub(),root,request)
+            self.assertEqual(admitted['route'],'council')
+            self.assertEqual(fresh.execute('SELECT count(*) FROM tasks').fetchone()[0],4)
+            self.assertTrue((root/request['operation_id']/'input/identity.json').exists())
+            (root/request['operation_id']/'input/identity.json').unlink()
+            with self.assertRaisesRegex(ValueError,'incomplete council'):
+                council.admit(KB,fresh,enqueue,GitHub(),root,request)
+        with tempfile.TemporaryDirectory() as temp:
+            root=pathlib.Path(temp).resolve()
             workspace=enqueue.safe_dir(root/request['operation_id'],True)
             enqueue.immutable(workspace/'request.json',enqueue.canonical(request))
             self.assertEqual(council.admit(KB,conn,enqueue,GitHub(),root,request),{'route':'legacy'})
