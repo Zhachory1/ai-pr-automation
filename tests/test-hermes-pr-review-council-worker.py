@@ -79,17 +79,17 @@ class CouncilWorkerTest(unittest.TestCase):
                 'number':17,'head_sha':'a'*40,'base_sha':'b'*40,'diff_digest':'c'*64,
                 'context_digest':'d'*64,'changed_paths':['file.py']})
             with closing(sqlite3.connect(board)) as db:
-                db.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT,status TEXT,workspace_path TEXT,result TEXT,last_failure_error TEXT);'
+                db.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT,status TEXT,workspace_path TEXT,result TEXT,last_failure_error TEXT,claim_lock TEXT,worker_pid INTEGER,current_run_id INTEGER);'
                                  'CREATE TABLE task_attachments(task_id TEXT);'
                                  'CREATE TABLE task_comments(task_id TEXT,author TEXT,body TEXT);'
                                  'CREATE TABLE task_runs(task_id TEXT,profile TEXT,status TEXT,outcome TEXT,ended_at INTEGER,worker_pid INTEGER,summary TEXT,metadata TEXT,error TEXT);'
-                                 'CREATE TABLE task_events(task_id TEXT,payload TEXT);')
+                                 "CREATE TABLE task_events(task_id TEXT,kind TEXT DEFAULT 'completed',payload TEXT,created_at INTEGER DEFAULT 0);")
                 for index,(role,profile) in enumerate(spec['specialists'].items(),1):
                     db.execute('INSERT INTO tasks(id,idempotency_key,assignee,body,status,workspace_path) VALUES (?,?,?,?,?,?)',
                         (f't_{index:08x}',spec['workflow_id']+':'+role,profile,
                          json.dumps({'role':role,'operation_id':spec['operation_id'],
                                      'artifact_digest':spec['artifact_digest']}),
-                         'ready',str(workspace/'workspaces'/role)))
+                         'running' if role=='generalist' else 'ready',str(workspace/'workspaces'/role)))
                 db.execute('INSERT INTO tasks(id,idempotency_key,assignee,body,status,workspace_path) VALUES (?,?,?,?,?,?)',
                     ('t_00000004',spec['workflow_id']+':synthesis',spec['synthesis']['profile'],
                      json.dumps({'role':'synthesis','operation_id':spec['operation_id'],
@@ -97,6 +97,7 @@ class CouncilWorkerTest(unittest.TestCase):
                      'todo',str(workspace/'workspaces/synthesis')))
                 db.execute('INSERT INTO tasks(id,idempotency_key,assignee,body,status,workspace_path) VALUES (?,?,?,?,?,?)',
                     ('t_99999999','unrelated','pr-review-v1','{}','done',str(workspace)))
+                db.execute("INSERT INTO task_runs VALUES ('t_00000001','pr-review-generalist-v2','running',NULL,NULL,123,NULL,NULL,NULL)")
                 db.execute("INSERT INTO task_comments VALUES ('t_00000001','operator','human note')")
                 db.execute("INSERT INTO task_comments VALUES ('t_00000001','pr-review-generalist-v2','private note')")
                 db.commit()
@@ -115,6 +116,7 @@ class CouncilWorkerTest(unittest.TestCase):
                     worker.gc_cards(config,spec,workspace)
                 with closing(sqlite3.connect(board)) as db:
                     db.execute("UPDATE tasks SET status='done' WHERE id!='t_99999999'")
+                    db.execute("DELETE FROM task_runs WHERE ended_at IS NULL")
                     db.execute("DELETE FROM task_comments WHERE author='operator'")
                     db.commit()
                 with self.assertRaisesRegex(ValueError,'run history'):
@@ -126,7 +128,7 @@ class CouncilWorkerTest(unittest.TestCase):
                         db.execute('INSERT INTO task_runs VALUES (?,?,?,?,?,?,?,?,?)',
                                    (tid,profile,'done','completed',1,None,
                                     'private summary','{"evidence":"private"}',None))
-                        db.execute('INSERT INTO task_events VALUES (?,?)',(tid,'{"evidence":"private"}'))
+                        db.execute('INSERT INTO task_events(task_id,payload) VALUES (?,?)',(tid,'{"evidence":"private"}'))
                     db.execute("INSERT INTO task_comments VALUES ('t_00000001','operator','human note')")
                     db.commit()
                 with self.assertRaisesRegex(ValueError,'operator comments'):
@@ -139,6 +141,33 @@ class CouncilWorkerTest(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT metadata FROM task_runs').fetchall(),[(None,)]*4)
                 self.assertEqual(db.execute('SELECT body FROM task_comments').fetchall(),[('[redacted]',)])
                 self.assertEqual(db.execute('SELECT payload FROM task_events').fetchall(),[(None,)]*4)
+                db.execute("UPDATE tasks SET status='blocked' WHERE id='t_00000001'")
+                db.execute("UPDATE task_runs SET status='blocked',outcome='blocked',metadata='private after completion' WHERE task_id='t_00000001'")
+                db.execute("UPDATE tasks SET status='todo' WHERE id='t_00000004'")
+                db.execute("DELETE FROM task_runs WHERE task_id='t_00000004'")
+                db.commit()
+            with closing(sqlite3.connect(board)) as db:
+                db.execute("CREATE TRIGGER reject_park BEFORE UPDATE OF status ON tasks "
+                           "WHEN OLD.id='t_00000004' AND NEW.status='blocked' BEGIN SELECT RAISE(IGNORE); END")
+                db.commit()
+            with mock.patch.dict(sys.modules,{'hermes_cli':package,'hermes_cli.kanban_db_connect':kbc}):
+                with self.assertRaisesRegex(ValueError,'became active'):
+                    worker.gc_cards(config,spec,workspace)
+                with closing(sqlite3.connect(board)) as db:
+                    self.assertEqual(db.execute("SELECT metadata FROM task_runs WHERE task_id='t_00000001'").fetchone(),
+                                     ('private after completion',))
+                    self.assertEqual(db.execute("SELECT status FROM tasks WHERE id='t_00000004'").fetchone(),('todo',))
+                    db.execute('DROP TRIGGER reject_park')
+                    db.execute("UPDATE tasks SET status='blocked' WHERE id='t_00000004'")
+                    db.execute("INSERT INTO task_events(task_id,kind,payload,created_at) "
+                               "VALUES ('t_00000004','stale_gc_parked',NULL,1)")
+                    db.commit()
+                worker.gc_cards(config,spec,workspace)
+            with closing(sqlite3.connect(board)) as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM tasks').fetchone()[0],5)
+                self.assertEqual(db.execute("SELECT status FROM tasks WHERE id IN ('t_00000001','t_00000004')").fetchall(),
+                                 [('blocked',),('blocked',)])
+                self.assertEqual(db.execute("SELECT status FROM tasks WHERE id='t_99999999'").fetchone(),('done',))
 
     def test_daily_gc_finishes_verified_receipt_cleanup_without_posting_again(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -159,7 +188,7 @@ class CouncilWorkerTest(unittest.TestCase):
                 self.assertEqual(worker.tick(config,stale_gc=True)['status'],'done')
             invoked.assert_called_once()
 
-    def test_daily_gc_releases_expired_unchanged_head_without_effect(self):
+    def test_daily_gc_keeps_unchanged_head_pending_without_operation_deadline(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();operation='pr-review-'+'a'*64;workspace=root/operation
             workspace.mkdir(mode=0o700)
@@ -178,8 +207,8 @@ class CouncilWorkerTest(unittest.TestCase):
             with mock.patch.object(worker.INGRESS,'validate_council_runtime'),\
                  mock.patch.object(worker.INGRESS.GITHUB,'GitHub',return_value=GitHub()),\
                  mock.patch.object(worker.INGRESS,'invoke_council',side_effect=AssertionError('expired post')):
-                self.assertEqual(worker.tick(config,stale_gc=True)['status'],'superseded')
-            self.assertEqual(json.loads((workspace/'review-outcome.json').read_text())['status'],'superseded')
+                self.assertEqual(worker.tick(config,stale_gc=True)['status'],'idle')
+            self.assertFalse((workspace/'review-outcome.json').exists())
             worker.INGRESS.council_capacity(config,'pr-review-'+'b'*64)
 
     def test_stale_pending_head_releases_capacity_without_posting(self):

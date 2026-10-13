@@ -29,7 +29,8 @@ def gc_cards(config, spec, workspace):
         sys.path.insert(0, str(install))
     from hermes_cli import kanban_db_connect as kbc
     with kbc.connect_closing(board=INGRESS.COUNCIL.BOARD) as conn:
-        rows = conn.execute("SELECT id,idempotency_key,assignee,body,status,workspace_path FROM tasks "
+        rows = conn.execute("SELECT id,idempotency_key,assignee,body,status,workspace_path,"
+                            "claim_lock,worker_pid,current_run_id FROM tasks "
                             "WHERE idempotency_key LIKE ?", (spec["workflow_id"] + ":%",)).fetchall()
         expected = {**spec["specialists"], "synthesis":spec["synthesis"]["profile"]}
         indexed = {}
@@ -41,13 +42,25 @@ def gc_cards(config, spec, workspace):
                     or body.get("operation_id") != spec["operation_id"]
                     or body.get("artifact_digest") != spec["artifact_digest"]
                     or task["workspace_path"] != str(workspace / "workspaces" / role)
-                    or task["status"] not in ("done", "archived")):
+                    or task["claim_lock"] is not None or task["worker_pid"] is not None
+                    or task["current_run_id"] is not None
+                    or task["status"] not in ("done", "archived", "blocked", "todo", "ready")):
                 raise ValueError("stale council card is active or differs from pinned graph")
             runs = conn.execute("SELECT profile,status,outcome,ended_at,worker_pid FROM task_runs WHERE task_id=?",
                                 (task["id"],)).fetchall()
-            if (len(runs) != 1 or runs[0]["profile"] != expected[role] or runs[0]["status"] != "done"
-                    or runs[0]["outcome"] != "completed" or runs[0]["ended_at"] is None
-                    or runs[0]["worker_pid"] is not None):
+            if task["status"] in ("todo", "ready"):
+                if runs:
+                    raise ValueError("stale council card run history is incomplete")
+            elif task["status"] in ("archived", "blocked") and not runs:
+                if not conn.execute("SELECT 1 FROM task_events WHERE task_id=? AND kind='stale_gc_parked'",
+                                    (task["id"],)).fetchone():
+                    raise ValueError("stale council card run history is incomplete")
+            elif (len(runs) != 1 or runs[0]["ended_at"] is None or runs[0]["worker_pid"] is not None
+                  or (runs[0]["profile"] != expected[role]
+                      and not (runs[0]["profile"] is None and runs[0]["outcome"] == "spawn_failed"))
+                  or (task["status"] == "done" and (runs[0]["status"], runs[0]["outcome"]) != ("done", "completed"))
+                  or (task["status"] == "blocked" and runs[0]["outcome"] not in
+                      ("blocked", "gave_up", "timed_out", "spawn_failed", "crashed", "reclaimed"))):
                 raise ValueError("stale council card run history is incomplete")
             if conn.execute("SELECT 1 FROM task_attachments WHERE task_id=?", (task["id"],)).fetchone():
                 raise ValueError("stale council card has attachments requiring manual reconciliation")
@@ -57,7 +70,30 @@ def gc_cards(config, spec, workspace):
             indexed[role] = task["id"]
         if set(indexed) != set(expected):
             raise ValueError("stale council graph is incomplete")
+        for role in ("synthesis", *spec["specialists"]):
+            task_id = indexed[role]
+            current = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if current is None or current["status"] not in ("done", "archived", "blocked", "todo", "ready"):
+                raise ValueError("stale council card became active during cleanup")
+            if current["status"] in ("todo", "ready"):
+                with conn:
+                    parked = conn.execute("UPDATE tasks SET status='blocked' WHERE id=? AND status=? "
+                                          "AND claim_lock IS NULL AND worker_pid IS NULL AND current_run_id IS NULL",
+                                          (task_id, current["status"]))
+                    if parked.rowcount != 1:
+                        raise ValueError("stale council card became active during cleanup")
+                    conn.execute("INSERT INTO task_events(task_id,kind,payload,created_at) VALUES (?,?,NULL,?)",
+                                 (task_id, "stale_gc_parked", int(time.time())))
+        conn.execute("BEGIN IMMEDIATE")
         with conn:
+            for task_id in indexed.values():
+                current = conn.execute("SELECT status,claim_lock,worker_pid,current_run_id FROM tasks WHERE id=?",
+                                       (task_id,)).fetchone()
+                if (current is None or current["status"] not in ("done", "archived", "blocked")
+                        or any(current[key] is not None for key in ("claim_lock", "worker_pid", "current_run_id"))):
+                    raise ValueError("stale council card became active during redaction")
+                if conn.execute("SELECT 1 FROM task_runs WHERE task_id=? AND ended_at IS NULL", (task_id,)).fetchone():
+                    raise ValueError("stale council run reopened during cleanup")
             for task_id in indexed.values():
                 conn.execute("UPDATE task_runs SET summary=NULL,metadata=NULL,error=NULL WHERE task_id=?", (task_id,))
                 conn.execute("UPDATE task_comments SET body='[redacted]' WHERE task_id=?", (task_id,))
@@ -83,16 +119,18 @@ def stale_pending(config, request, github):
         board_db = config.home / "kanban/boards/pr-review/kanban.db"
         if board_db.is_symlink():
             raise ValueError("stale council board is unsafe")
-        has_cards = False
+        has_cards = has_blocked = False
         if board_db.exists():
             with sqlite3.connect(f"file:{board_db}?mode=ro",uri=True) as conn:
-                has_cards = bool(conn.execute("SELECT 1 FROM tasks WHERE idempotency_key LIKE ? LIMIT 1",
-                                              (spec["workflow_id"]+':%',)).fetchone())
+                rows = conn.execute("SELECT status FROM tasks WHERE idempotency_key LIKE ?",
+                                    (spec["workflow_id"]+':%',)).fetchall()
+                has_cards = bool(rows)
+                has_blocked = any(row[0] == "blocked" for row in rows)
     elif (workspace / "input/context.json").exists() or (workspace / "snapshot/diff.patch").exists():
         raise ValueError("stale head has incomplete private input")
-    age = time.time() - (workspace / "request.json").stat().st_mtime
     if (state["state"] == "open" and state["head_sha"] == request["head_sha"]
-            and 0 <= age <= 480 and (spec is None or state["base_sha"] == spec["base_sha"])):
+            and (spec is None or state["base_sha"] == spec["base_sha"])
+            and not (spec and has_blocked)):
         return None
     marker = f'<!-- ai-pr-automation head={request["head_sha"]} -->'
     if any(marker in (item.get("body") or "") for item in

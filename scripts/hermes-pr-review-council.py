@@ -148,7 +148,7 @@ def plan(request):
             "workflow_id": "pr-review-council-" + artifact_digest[:32],
             "specialists": specialists, "changed_paths": paths,
             "synthesis": {"profile": "pr-review-synthesis-v2", "parents": list(specialists)},
-            "limits": {"deadline_seconds": 480, "max_active_heads": 2}}
+            "limits": {"max_active_heads": 2}}
 
 
 def queue(enqueue, work_root, request):

@@ -56,8 +56,7 @@ class PublisherTest(unittest.TestCase):
         self.body='Reviewed synthetic change. No required changes.'
         self.plan={'operation_id':op,'artifact_digest':'d'*64,'head_sha':'a'*40,'base_sha':'b'*40,
                    'specialists':{'generalist':'g','reliability':'r','mvp':'m'},
-                   'synthesis':{'profile':'pr-review-synthesis-v2'},'changed_paths':['src/file.py'],
-                   'limits':{'deadline_seconds':480}}
+                   'synthesis':{'profile':'pr-review-synthesis-v2'},'changed_paths':['src/file.py']}
         self.outputs={role:{'operation_id':op,'artifact_digest':'d'*64,'role':role,'verdict':'clear','findings':[]}
                       for role in self.plan['specialists']}
         self.synthesis={'operation_id':op,'artifact_digest':'d'*64,'role':'synthesis','verdict':'approve','findings':[]}
@@ -186,17 +185,12 @@ class PublisherTest(unittest.TestCase):
         with self.assertRaises(ValueError):self.post('REQUEST_CHANGES')
         self.assertEqual(self.gh.posts,[])
 
-    def test_operation_deadline_blocks_new_post_but_reconciles_prior_acceptance(self):
+    def test_old_head_still_posts_once_when_council_finishes_late(self):
         old=time.time()-481
         os.utime(self.owner,(old,old))
-        with self.assertRaisesRegex(ValueError,'deadline'):
-            self.post()
-        self.assertEqual(self.gh.posts,[])
-        os.utime(self.owner,None)
         self.gh.fail_after_post=True
         with self.assertRaises(TimeoutError):self.post()
         self.assertEqual(len(self.gh.posts),1)
-        os.utime(self.owner,(old,old))
         self.assertEqual(self.post()['status'],'verified')
         self.assertEqual(len(self.gh.posts),1)
 

@@ -11,7 +11,6 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
-import time
 
 from hermes_direct_pr_journal import identity
 
@@ -191,26 +190,6 @@ def settle(kb, conn, tasks, spec, ledger, github, request, workspace):
     return result
 
 
-def check_deadline(path, request, spec):
-    owner_path = Path(path).parent / "request.json"
-    fd = os.open(owner_path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(fd, "rb") as source:
-        info = os.fstat(source.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o440 or info.st_size > 16384):
-            raise ValueError("unsafe council owner before deadline check")
-        owner = json.loads(source.read(16385))
-    if (not isinstance(owner, dict) or set(owner) !=
-            {"route", "operation_id", "repo", "number", "head_sha", "title"}
-            or owner["route"] != "council-v2"
-            or any(owner[key] != request[key] for key in ("operation_id", "repo", "number", "head_sha"))
-            or not isinstance(owner["title"], str) or not 0 < len(owner["title"]) <= 256):
-        raise ValueError("council owner differs before deadline check")
-    elapsed = time.time() - info.st_mtime
-    if not 0 <= elapsed <= spec["limits"]["deadline_seconds"]:
-        raise ValueError("council operation deadline expired")
-
-
 def publish(path, github, request, event, body, spec, outputs, synthesis):
     verdict = COUNCIL.check_verdict(spec, outputs, synthesis)
     if body != render(synthesis, spec):
@@ -285,7 +264,6 @@ def publish(path, github, request, event, body, spec, outputs, synthesis):
             raise ValueError("PR head/base/state differs from reviewed snapshot")
         if row:
             raise ValueError("review post outcome uncertain; never retry automatically")
-        check_deadline(path, request, spec)
         conn.execute("INSERT INTO effects(operation_id,repo,pr,head_sha,base_sha,artifact_digest,body_digest,event,phase) "
                      "VALUES (?,?,?,?,?,?,?,?,'post_started')",
                      (request["operation_id"], *binding))
