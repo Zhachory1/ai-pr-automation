@@ -68,7 +68,7 @@ class CouncilPlanTest(unittest.TestCase):
         conn = sqlite3.connect(":memory:")
         self.addCleanup(conn.close)
         conn.row_factory = sqlite3.Row
-        conn.executescript("CREATE TABLE tasks(id TEXT PRIMARY KEY,idempotency_key TEXT,assignee TEXT,body TEXT);"
+        conn.executescript("CREATE TABLE tasks(id TEXT PRIMARY KEY,idempotency_key TEXT,assignee TEXT,body TEXT,model_override TEXT,provider_override TEXT);"
                            "CREATE TABLE task_links(parent_id TEXT,child_id TEXT);")
         calls = []
         class KB:
@@ -76,8 +76,8 @@ class CouncilPlanTest(unittest.TestCase):
             def create_task(conn, **params):
                 calls.append(params)
                 task_id = "t_%08x" % (conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] + 1)
-                conn.execute("INSERT INTO tasks VALUES (?,?,?,?)", (task_id, params["idempotency_key"],
-                                                                    params["assignee"], params["body"]))
+                conn.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?)", (task_id, params["idempotency_key"],
+                        params["assignee"], params["body"], params["model_override"], params["provider_override"]))
                 for parent in params.get("parents", ()):
                     conn.execute("INSERT INTO task_links VALUES (?,?)", (parent, task_id))
                 conn.commit()
@@ -86,10 +86,23 @@ class CouncilPlanTest(unittest.TestCase):
         root = self.snapshot(spec)
         first = council.setup(KB, conn, spec, root)
         self.assertEqual(first, council.setup(KB, conn, spec, root))
+        conn.execute("UPDATE tasks SET model_override='wrong-model' WHERE id=?",(first['generalist'],))
+        with self.assertRaisesRegex(ValueError,'immutable graph'):
+            council.setup(KB,conn,spec,root)
+        conn.execute("UPDATE tasks SET model_override='gpt-6-sol' WHERE id=?",(first['generalist'],))
+        conn.execute("UPDATE tasks SET provider_override='anthropic' WHERE id=?",(first['mvp'],))
+        with self.assertRaisesRegex(ValueError,'immutable graph'):
+            council.setup(KB,conn,spec,root)
+        conn.execute("UPDATE tasks SET provider_override='openai-codex' WHERE id=?",(first['mvp'],))
+        self.assertEqual(first,council.setup(KB,conn,spec,root))
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 5)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0], 4)
         self.assertEqual(set(first), {"generalist", "reliability", "mvp", "security", "synthesis"})
         self.assertEqual(len(calls), 5)
+        self.assertEqual({json.loads(p['body'])['role']:p['model_override'] for p in calls},
+                         {'generalist':'gpt-6-sol','reliability':'gpt-6-luna','mvp':'gpt-6-luna',
+                          'security':'gpt-6-luna','synthesis':'gpt-6-sol'})
+        self.assertTrue(all(json.loads(p['body'])['model']==p['model_override'] for p in calls))
         self.assertTrue(all(p["workspace_kind"] == "dir" and
                             pathlib.Path(p["workspace_path"]).parent == root / "workspaces" and
                             p["board"] == council.BOARD and p["provider_override"] == "openai-codex" and
@@ -98,6 +111,13 @@ class CouncilPlanTest(unittest.TestCase):
             directory = pathlib.Path(item["workspace_path"])
             self.assertEqual({p.name for p in directory.iterdir()}, {".council-tools.json"})
             self.assertEqual((directory / ".council-tools.json").stat().st_mode & 0o777, 0o440)
+        for role, task_id in first.items():
+            old=json.loads(conn.execute('SELECT body FROM tasks WHERE id=?',(task_id,)).fetchone()[0])
+            old.pop('model')
+            conn.execute('UPDATE tasks SET body=?,model_override=? WHERE id=?',
+                         (json.dumps(old,sort_keys=True,separators=(',',':')),'gpt-6-sol',task_id))
+        self.assertEqual(first,council.setup(KB,conn,spec,root))
+        self.assertEqual(len(calls),5)
 
     def test_existing_restricted_snapshot_tool_accepts_only_bound_workspace(self):
         source = ROOT / "bin/hermes-council-tools"
@@ -109,14 +129,15 @@ class CouncilPlanTest(unittest.TestCase):
         root = self.snapshot(spec).resolve()
         conn = sqlite3.connect(":memory:"); self.addCleanup(conn.close)
         conn.row_factory = sqlite3.Row
-        conn.executescript("CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT);"
+        conn.executescript("CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT,model_override TEXT,provider_override TEXT);"
                            "CREATE TABLE task_links(parent_id TEXT,child_id TEXT);")
         class KB:
             @staticmethod
             def create_task(conn, **params):
                 task_id = "t_%08x" % (conn.execute("SELECT count(*) FROM tasks").fetchone()[0] + 1)
-                conn.execute("INSERT INTO tasks VALUES (?,?,?,?)",
-                             (task_id, params["idempotency_key"], params["assignee"], params["body"]))
+                conn.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?)",
+                             (task_id, params["idempotency_key"], params["assignee"], params["body"],
+                              params["model_override"], params["provider_override"]))
                 for parent in params.get("parents", ()):conn.execute("INSERT INTO task_links VALUES (?,?)",(parent,task_id))
                 conn.commit();return task_id
         ids = council.setup(KB, conn, spec, root)
@@ -169,14 +190,15 @@ class CouncilPlanTest(unittest.TestCase):
             def checks(self,*_):return []
         conn=sqlite3.connect(':memory:');self.addCleanup(conn.close)
         conn.row_factory=sqlite3.Row
-        conn.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT);'
+        conn.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT,model_override TEXT,provider_override TEXT);'
                            'CREATE TABLE task_links(parent_id TEXT,child_id TEXT);')
         class KB:
             @staticmethod
             def create_task(conn,**params):
                 task_id='t_%08x'%(conn.execute('SELECT count(*) FROM tasks').fetchone()[0]+1)
-                conn.execute('INSERT INTO tasks VALUES (?,?,?,?)',
-                             (task_id,params['idempotency_key'],params['assignee'],params['body']))
+                conn.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?)',
+                             (task_id,params['idempotency_key'],params['assignee'],params['body'],
+                              params['model_override'],params['provider_override']))
                 for parent in params.get('parents',()):conn.execute('INSERT INTO task_links VALUES (?,?)',(parent,task_id))
                 conn.commit();return task_id
         fixture=self.fixture()
@@ -210,7 +232,7 @@ class CouncilPlanTest(unittest.TestCase):
             root=pathlib.Path(temp).resolve()
             self.assertEqual(council.queue(enqueue,root,request),'council')
             fresh=sqlite3.connect(':memory:');self.addCleanup(fresh.close);fresh.row_factory=sqlite3.Row
-            fresh.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT);'
+            fresh.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT,model_override TEXT,provider_override TEXT);'
                                 'CREATE TABLE task_links(parent_id TEXT,child_id TEXT);')
             admitted=council.admit(KB,fresh,enqueue,GitHub(),root,request)
             self.assertEqual(admitted['route'],'council')

@@ -30,14 +30,17 @@ def gc_cards(config, spec, workspace):
     from hermes_cli import kanban_db_connect as kbc
     with kbc.connect_closing(board=INGRESS.COUNCIL.BOARD) as conn:
         rows = conn.execute("SELECT id,idempotency_key,assignee,body,status,workspace_path,"
-                            "claim_lock,worker_pid,current_run_id FROM tasks "
+                            "claim_lock,worker_pid,current_run_id,model_override,provider_override FROM tasks "
                             "WHERE idempotency_key LIKE ?", (spec["workflow_id"] + ":%",)).fetchall()
         expected = {**spec["specialists"], "synthesis":spec["synthesis"]["profile"]}
-        indexed = {}
+        indexed, bound = {}, {}
         for task in rows:
             body = json.loads(task["body"])
             role = body.get("role")
+            expected_model = INGRESS.COUNCIL.MODELS.get(role) if "model" in body else "gpt-6-sol"
             if (role not in expected or role in indexed or task["assignee"] != expected[role]
+                    or ("model" in body and body["model"] != expected_model)
+                    or task["model_override"] != expected_model or task["provider_override"] != "openai-codex"
                     or task["idempotency_key"] != f'{spec["workflow_id"]}:{role}'
                     or body.get("operation_id") != spec["operation_id"]
                     or body.get("artifact_digest") != spec["artifact_digest"]
@@ -68,6 +71,7 @@ def gc_cards(config, spec, workspace):
                             (task["id"], expected[role])).fetchone():
                 raise ValueError("stale council card has operator comments requiring manual reconciliation")
             indexed[role] = task["id"]
+            bound[task["id"]] = (task["body"], expected_model)
         if set(indexed) != set(expected):
             raise ValueError("stale council graph is incomplete")
         for role in ("synthesis", *spec["specialists"]):
@@ -87,9 +91,11 @@ def gc_cards(config, spec, workspace):
         conn.execute("BEGIN IMMEDIATE")
         with conn:
             for task_id in indexed.values():
-                current = conn.execute("SELECT status,claim_lock,worker_pid,current_run_id FROM tasks WHERE id=?",
-                                       (task_id,)).fetchone()
+                current = conn.execute("SELECT status,claim_lock,worker_pid,current_run_id,body,model_override,provider_override "
+                                       "FROM tasks WHERE id=?", (task_id,)).fetchone()
                 if (current is None or current["status"] not in ("done", "archived", "blocked")
+                        or current["body"] != bound[task_id][0] or current["model_override"] != bound[task_id][1]
+                        or current["provider_override"] != "openai-codex"
                         or any(current[key] is not None for key in ("claim_lock", "worker_pid", "current_run_id"))):
                     raise ValueError("stale council card became active during redaction")
                 if conn.execute("SELECT 1 FROM task_runs WHERE task_id=? AND ended_at IS NULL", (task_id,)).fetchone():

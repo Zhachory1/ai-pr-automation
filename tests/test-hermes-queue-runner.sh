@@ -61,7 +61,8 @@ PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK
   bin/hermes-queue-runner pr-maintain | grep -q 'request=12 status=done'
 grep -Fxq 'pr-maintain-v1' "$tmp/hermes.args"
 grep -q 'hermes_settle_request' "$tmp/settle-generic.sql"
-grep -Fq 'provider: anthropic' agent-config/hermes/profiles/pr-maintain-v1/config.yaml
+grep -Fq 'provider: openai-codex' agent-config/hermes/profiles/pr-maintain-v1/config.yaml
+grep -Fq 'default: gpt-6-sol' agent-config/hermes/profiles/pr-maintain-v1/config.yaml
 
 if PATH="$tmp/bin:$PATH" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK_ROOT="$tmp/work" \
   REQUESTS_DB_USER=hermes_runtime PGPASSWORD=fake bin/hermes-queue-runner unknown >/dev/null 2>&1; then

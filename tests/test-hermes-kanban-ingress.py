@@ -246,6 +246,9 @@ class IngressTest(unittest.TestCase):
             with mock.patch.object(ingress.ENQUEUE, "show", return_value=shown) as show:
                 self.assertEqual(ingress.admit(self.config, "pr-maintain", "b" * 64, payload)["status"], "deferred")
                 self.assertLessEqual(show.call_args.kwargs["timeout"], 2)
+                task.update(model_override='gpt-6-sol',provider_override='openai-codex')
+                self.assertEqual(ingress.admit(self.config, "pr-maintain", "b" * 64, payload)["status"], "deferred")
+                task.update(model_override=ingress.ENQUEUE.MODEL,provider_override='anthropic')
                 task.update(status="done", completed_at=2, result="ok")
                 for field, altered in (("tenant", "other-operation"), ("body", "{}"),
                                        ("workspace_path", str(self.root)), ("id", "t_87654321")):

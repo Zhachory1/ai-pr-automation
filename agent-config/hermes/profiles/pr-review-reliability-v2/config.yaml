@@ -3,7 +3,7 @@ gateway:
     enabled: false
 model:
   provider: openai-codex
-  default: gpt-6-sol
+  default: gpt-6-luna
 fallback_providers: []
 platform_toolsets:
   cli: [council-tools]
