@@ -16,7 +16,8 @@ PROFILES = {"generalist": "pr-review-generalist-v2",
             "reliability": "pr-review-reliability-v2",
             "mvp": "pr-review-mvp-v2"}
 SECURITY = "pr-review-security-v2"
-MODELS = {role: "gpt-6-sol" for role in ("generalist", "reliability", "mvp", "security", "synthesis")}
+MODELS = {"generalist": "gpt-6-sol", "reliability": "gpt-6-luna",
+          "mvp": "gpt-6-luna", "security": "gpt-6-luna", "synthesis": "gpt-6-sol"}
 BOARD = "pr-review"
 SECURITY_PATH = re.compile(r"(^|[/_.-])(auth|authentication|secret|secrets|credential|credentials|iam|crypto|cryptography|permission|permissions)([/_.-]|$)", re.I)
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -499,15 +500,21 @@ def setup(kb, conn, spec, workspace):
         _immutable_file(role_workspace / ".council-tools.json", binding, mode=0o440, max_bytes=4096)
         parents = list(tasks.values()) if role == "synthesis" else []
         key = f'{spec["workflow_id"]}:{role}'
-        body = json.dumps({"workflow_id": spec["workflow_id"], "artifact_digest": spec["artifact_digest"],
-                           "operation_id": spec["operation_id"], "role": role,
-                           "snapshot": "snapshot/", "parents": parents,
-                           **({"repository_path": spec["repository_path"], "head_sha": spec["head_sha"]}
-                              if local else {})}, sort_keys=True, separators=(",", ":"))
-        existing = conn.execute("SELECT id,assignee,body FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
+        payload = {"workflow_id": spec["workflow_id"], "artifact_digest": spec["artifact_digest"],
+                   "operation_id": spec["operation_id"], "role": role,
+                   "snapshot": "snapshot/", "parents": parents,
+                   **({"repository_path": spec["repository_path"], "head_sha": spec["head_sha"]}
+                      if local else {})}
+        body = json.dumps({**payload, "model": MODELS[role]}, sort_keys=True, separators=(",", ":"))
+        existing = conn.execute("SELECT id,assignee,body,model_override,provider_override FROM tasks "
+                                "WHERE idempotency_key=?", (key,)).fetchone()
         if existing:
+            old_body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            expected_model = MODELS[role] if existing["body"] == body else "gpt-6-sol"
             linked = [row[0] for row in conn.execute("SELECT parent_id FROM task_links WHERE child_id=? ORDER BY parent_id", (existing["id"],))]
-            if existing["assignee"] != profile or existing["body"] != body or linked != sorted(parents):
+            if (existing["assignee"] != profile or existing["body"] not in (body, old_body)
+                    or existing["model_override"] != expected_model
+                    or existing["provider_override"] != "openai-codex" or linked != sorted(parents)):
                 raise ValueError("existing council card differs from immutable graph")
             tasks[role] = existing["id"]
         else:

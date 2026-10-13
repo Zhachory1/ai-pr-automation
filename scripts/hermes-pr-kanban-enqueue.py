@@ -5,6 +5,7 @@ from hermes_direct_pr_journal import identity
 
 CONFIG = {"pr-review": ("pr-review", "PR Review", "pr-review-v1", 1800), "pr-maintain": ("pr-maintain", "PR Maintain", "pr-maintain-v1", 2400)}
 MODEL = "claude-sonnet-4-6"
+MAINTAIN_MODEL = ("gpt-6-sol", "openai-codex")
 REVIEW_SUMMARY = "Automatic execution stopped; human review required."
 TASK_KEYS = {"id","title","body","assignee","status","priority","tenant","workspace_kind","workspace_path","branch_name","project_id","created_by","created_at","started_at","completed_at","result","skills","max_runtime_seconds","max_retries","model_override","provider_override","session_id","workflow_template_id","current_step_key","completion_contract","last_failure_error"}
 BOARD_KEYS = {"slug","name","description","icon","color","default_workdir","project_id","created_at","archived","db_path","is_current","counts","total"}
@@ -14,6 +15,11 @@ RUN_KEYS = {"id","profile","step_key","status","outcome","summary","error","meta
 TASK_ID = re.compile(r"t_[0-9a-f]{8}\Z"); MAX_ITEMS = 256; MAX_VALUE = 16384; LOCK_FD = None
 
 def fail(message): raise ValueError(message)
+def model_policy(operation, task=None):
+    if operation.startswith("pr-maintain-") and (task is None or
+            (task.get("model_override"), task.get("provider_override")) != (MODEL, "anthropic")):
+        return MAINTAIN_MODEL
+    return MODEL, "anthropic"
 def canonical(value): return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
 def exact(value, keys, label):
     if not isinstance(value, dict) or set(value) != keys: fail(f"{label} schema drift")
@@ -141,9 +147,10 @@ def history(value):
         strings = (item[key] for key in ("profile","step_key","status","outcome","summary","error"))
         if type(item["id"]) is not int or item["id"] <= 0 or not all(isinstance(field, (str, type(None))) for field in strings) or not isinstance(item["metadata"], (dict, type(None))) or any(field is not None and type(field) is not int for field in (item["worker_pid"],item["started_at"],item["ended_at"])): fail("run history drift")
 
-def verify_task(task, task_id, body, title, workspace, tenant, runtime, status, assignees, operational=False):
+def verify_task(task, task_id, body, title, workspace, tenant, runtime, status, assignees, operational=False, allow_legacy=True):
     exact(task, TASK_KEYS, "task")
-    expected = {"id":task_id,"body":body,"title":title,"priority":0,"model_override":MODEL,"provider_override":"anthropic","workspace_kind":"dir","workspace_path":str(workspace),"branch_name":None,"project_id":None,"tenant":tenant,
+    model, provider = model_policy(tenant, task if allow_legacy else None)
+    expected = {"id":task_id,"body":body,"title":title,"priority":0,"model_override":model,"provider_override":provider,"workspace_kind":"dir","workspace_path":str(workspace),"branch_name":None,"project_id":None,"tenant":tenant,
                 "skills":[],"max_runtime_seconds":runtime,"max_retries":1,"created_by":"operator","session_id":None,"workflow_template_id":None,"current_step_key":None,"completion_contract":"local-only"}
     if any(task[key] != item for key,item in expected.items()) or task["status"] != status or task["assignee"] not in assignees or type(task["created_at"]) is not int or (task["started_at"] is not None and type(task["started_at"]) is not int): fail("Kanban card drift")
     terminal = status in {"done","archived"}
@@ -154,15 +161,17 @@ def verify_task(task, task_id, body, title, workspace, tenant, runtime, status, 
     return task
 
 def pristine(value, profile, workspace, tenant):
+    model, provider = model_policy(tenant, value["task"])
     payload = {"assignee":profile,"status":"blocked","parents":[],"creator_task_id":None,"tenant":tenant,"workspace_kind":"dir","workspace_path":str(workspace),"branch_name":None,"project_id":None,"skills":None,
-               "goal_mode":None,"model_override":MODEL,"provider_override":"anthropic"}
+               "goal_mode":None,"model_override":model,"provider_override":provider}
     events = value["events"]
     return value["runs"] == [] and len(events) == 2 and events[0]["kind"] == "created" and events[0]["payload"] == payload and events[0]["run_id"] is None and events[1]["kind"] == "blocked" \
         and events[1]["payload"] == {"reason":"initial_status","status":"blocked","actor":"operator"} and events[1]["run_id"] is None
 
 def enqueue(args):
     request, encoded = load_request(args.kind); operation = request["operation_id"]
-    board, name, profile, runtime = CONFIG[args.kind]; root = safe_dir(args.workspace_root, True); workspace = safe_dir(root / operation, True)
+    board, name, profile, runtime = CONFIG[args.kind]; model, provider = model_policy(operation)
+    root = safe_dir(args.workspace_root, True); workspace = safe_dir(root / operation, True)
     request_path = workspace / "request.json"; immutable(request_path, encoded); body = encoded.decode(); bind_path = workspace / "task-id.json"; intent_path = workspace / "create-intent.json"
     intent = canonical({"operation_id":operation,"request_digest":hashlib.sha256(encoded).hexdigest()}); bound = bind_path.exists() or bind_path.is_symlink(); intent_existed = intent_path.exists() or intent_path.is_symlink()
     if intent_existed: immutable(intent_path, intent)
@@ -180,14 +189,15 @@ def enqueue(args):
     if bound: task_id = binding(bind_path); current = show(command, env, root, board, task_id)
     else:
         immutable(intent_path, intent); created = run([*command,"kanban","--board",board,"create",title,"--body-file",str(request_path),"--assignee",profile,"--workspace",f"dir:{workspace}","--idempotency-key",operation,"--tenant",operation,"--max-runtime",str(runtime),
-            "--max-retries","1","--model",MODEL,"--provider","anthropic","--completion-contract","local-only","--created-by","operator","--initial-status","blocked","--json"], env, True, root)
+            "--max-retries","1","--model",model,"--provider",provider,"--completion-contract","local-only","--created-by","operator","--initial-status","blocked","--json"], env, True, root)
         task_id = created.get("id") if isinstance(created, dict) else None
         if not isinstance(task_id, str) or not TASK_ID.fullmatch(task_id): fail("invalid task ID")
         current = show(command, env, root, board, task_id); history(current); initial = pristine(current, profile, workspace, operation)
         status = current["task"].get("status")
         if status not in {"blocked","ready","running","review","done"}: fail("invalid unbound card status")
         allowed = ({profile} if initial else {profile,None}) if status == "blocked" else ({profile,None} if status == "ready" else ({profile} if status == "running" else ({None} if status == "review" else {profile,None})))
-        verify_task(created, task_id, body, title, workspace, operation, runtime, status, allowed, status == "blocked" and not initial)
+        verify_task(created, task_id, body, title, workspace, operation, runtime, status, allowed,
+                    status == "blocked" and not initial, allow_legacy=False)
         if created != current["task"]: fail("create/show task drift")
         immutable(bind_path, canonical({"task_id":task_id}))
     history(current); status = current["task"].get("status"); initial = pristine(current, profile, workspace, operation); manual_or_failed_block = status == "blocked" and not initial

@@ -79,22 +79,23 @@ class CouncilWorkerTest(unittest.TestCase):
                 'number':17,'head_sha':'a'*40,'base_sha':'b'*40,'diff_digest':'c'*64,
                 'context_digest':'d'*64,'changed_paths':['file.py']})
             with closing(sqlite3.connect(board)) as db:
-                db.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT,status TEXT,workspace_path TEXT,result TEXT,last_failure_error TEXT,claim_lock TEXT,worker_pid INTEGER,current_run_id INTEGER);'
+                db.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT,status TEXT,workspace_path TEXT,result TEXT,last_failure_error TEXT,claim_lock TEXT,worker_pid INTEGER,current_run_id INTEGER,model_override TEXT,provider_override TEXT);'
                                  'CREATE TABLE task_attachments(task_id TEXT);'
                                  'CREATE TABLE task_comments(task_id TEXT,author TEXT,body TEXT);'
                                  'CREATE TABLE task_runs(task_id TEXT,profile TEXT,status TEXT,outcome TEXT,ended_at INTEGER,worker_pid INTEGER,summary TEXT,metadata TEXT,error TEXT);'
                                  "CREATE TABLE task_events(task_id TEXT,kind TEXT DEFAULT 'completed',payload TEXT,created_at INTEGER DEFAULT 0);")
                 for index,(role,profile) in enumerate(spec['specialists'].items(),1):
-                    db.execute('INSERT INTO tasks(id,idempotency_key,assignee,body,status,workspace_path) VALUES (?,?,?,?,?,?)',
+                    db.execute('INSERT INTO tasks(id,idempotency_key,assignee,body,status,workspace_path,model_override,provider_override) VALUES (?,?,?,?,?,?,?,?)',
                         (f't_{index:08x}',spec['workflow_id']+':'+role,profile,
                          json.dumps({'role':role,'operation_id':spec['operation_id'],
                                      'artifact_digest':spec['artifact_digest']}),
-                         'running' if role=='generalist' else 'ready',str(workspace/'workspaces'/role)))
-                db.execute('INSERT INTO tasks(id,idempotency_key,assignee,body,status,workspace_path) VALUES (?,?,?,?,?,?)',
+                         'running' if role=='generalist' else 'ready',str(workspace/'workspaces'/role),
+                         'gpt-6-sol','openai-codex'))
+                db.execute('INSERT INTO tasks(id,idempotency_key,assignee,body,status,workspace_path,model_override,provider_override) VALUES (?,?,?,?,?,?,?,?)',
                     ('t_00000004',spec['workflow_id']+':synthesis',spec['synthesis']['profile'],
                      json.dumps({'role':'synthesis','operation_id':spec['operation_id'],
                                  'artifact_digest':spec['artifact_digest']}),
-                     'todo',str(workspace/'workspaces/synthesis')))
+                     'todo',str(workspace/'workspaces/synthesis'),'gpt-6-sol','openai-codex'))
                 db.execute('INSERT INTO tasks(id,idempotency_key,assignee,body,status,workspace_path) VALUES (?,?,?,?,?,?)',
                     ('t_99999999','unrelated','pr-review-v1','{}','done',str(workspace)))
                 db.execute("INSERT INTO task_runs VALUES ('t_00000001','pr-review-generalist-v2','running',NULL,NULL,123,NULL,NULL,NULL)")
@@ -134,7 +135,14 @@ class CouncilWorkerTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'operator comments'):
                     worker.gc_cards(config,spec,workspace)
                 with closing(sqlite3.connect(board)) as db:
-                    db.execute("DELETE FROM task_comments WHERE author='operator'");db.commit()
+                    db.execute("DELETE FROM task_comments WHERE author='operator'")
+                    db.execute("UPDATE tasks SET model_override='unknown' WHERE id='t_00000001'")
+                    db.commit()
+                with self.assertRaisesRegex(ValueError,'pinned graph'):
+                    worker.gc_cards(config,spec,workspace)
+                with closing(sqlite3.connect(board)) as db:
+                    db.execute("UPDATE tasks SET model_override='gpt-6-sol' WHERE id='t_00000001'")
+                    db.commit()
                 worker.gc_cards(config,spec,workspace)
             with closing(sqlite3.connect(board)) as db:
                 self.assertEqual(db.execute('SELECT count(*) FROM tasks').fetchone()[0],5)

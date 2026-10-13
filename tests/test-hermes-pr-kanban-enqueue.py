@@ -78,12 +78,29 @@ class EnqueueTest(unittest.TestCase):
         maintain=copy.copy(args); maintain.kind="pr-maintain"; maintained=self.admit(maintain,cli,self.request("pr-maintain"))
         self.assertEqual(first,replay); self.assertEqual((len(cli.tasks),first["board"],second["board"]),(3,"pr-review","pr-review"))
         self.assertEqual((first["status"],maintained["status"]),("ready","ready")); self.assertNotIn("list",self.actions(cli))
+        self.assertEqual((cli.tasks[maintained['task_id']]['task']['model_override'],
+                          cli.tasks[maintained['task_id']]['task']['provider_override']),
+                         ('gpt-6-sol','openai-codex'))
+        self.assertEqual((cli.tasks[first['task_id']]['task']['model_override'],
+                          cli.tasks[first['task_id']]['task']['provider_override']),
+                         (enqueue.MODEL,'anthropic'))
         self.assertEqual(cli.boards,{"pr-review":"PR Review","pr-maintain":"PR Maintain"})
         cards=[item["task"] for item in cli.tasks.values()]; self.assertTrue(all(set(card) == enqueue.TASK_KEYS for card in cards)); self.assertEqual([c["max_runtime_seconds"] for c in cards],[1800,1800,2400])
         workspace=args.workspace_root/first["operation_id"]; self.assertEqual(tuple((workspace/name).stat().st_mode & 0o777 for name in ("request.json","create-intent.json","task-id.json")),(0o440,0o440,0o440))
         self.assertEqual(json.loads((workspace/"create-intent.json").read_text()),{"operation_id":first["operation_id"],"request_digest":enqueue.hashlib.sha256(enqueue.canonical(self.request())).hexdigest()}); self.assertEqual(json.loads((workspace/"task-id.json").read_text()),{"task_id":first["task_id"]})
         allowed={"HOME","HERMES_HOME","PATH","PYTHONUTF8","PYTHONDONTWRITEBYTECODE","HERMES_SAFE_MODE"}
         self.assertTrue(all(set(env) == allowed for env,_ in cli.envs))
+    def test_legacy_maintenance_binding_keeps_its_pinned_model_on_replay(self):
+        args,cli=self.fixture('pr-maintain');first=self.admit(args,cli)
+        shown=cli.tasks[first['task_id']]
+        shown['task'].update(model_override=enqueue.MODEL,provider_override='anthropic')
+        shown['events'][0]['payload'].update(model_override=enqueue.MODEL,provider_override='anthropic')
+        cli.commands.clear()
+        self.assertEqual(self.admit(args,cli),first)
+        self.assertNotIn('create',self.actions(cli))
+        shown['task']['model_override']='unapproved-model'
+        self.assert_inert(args,cli,'card drift')
+
     def test_lost_create_response_fails_closed_without_duplicate_on_every_replay(self):
         args,cli=self.fixture(); cli.interrupt=True
         with self.assertRaisesRegex(ValueError,"interrupted create"): self.admit(args,cli)

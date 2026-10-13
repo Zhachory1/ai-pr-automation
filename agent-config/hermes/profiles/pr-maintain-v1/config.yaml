@@ -12,8 +12,8 @@ mcp_servers:
   coderag:
     url: http://127.0.0.1:9750/mcp
 model:
-  provider: anthropic
-  default: claude-sonnet-4-6
+  provider: openai-codex
+  default: gpt-6-sol
 memory:
   memory_enabled: false
   user_profile_enabled: false

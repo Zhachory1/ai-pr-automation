@@ -5,7 +5,8 @@ import unittest
 import yaml
 
 ROOT=Path(__file__).resolve().parents[1]
-ROLES={role:"gpt-6-sol" for role in ("generalist","reliability","mvp","security","synthesis")}
+ROLES={"generalist":"gpt-6-sol","reliability":"gpt-6-luna",
+       "mvp":"gpt-6-luna","security":"gpt-6-luna","synthesis":"gpt-6-sol"}
 TOOLS={"snapshot_read","snapshot_search","kanban_show","kanban_comment",
        "kanban_heartbeat","kanban_complete","kanban_block"}
 
