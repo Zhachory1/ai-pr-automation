@@ -287,10 +287,17 @@ def canonical_finding(spec, finding):
         raise ValueError("invalid council finding")
     value = dict(finding)
     source_role = value.pop("source_role", None)
-    if source_role is not None and source_role not in spec["specialists"]:
+    source = value.pop("source", None)
+    if ("source_role" in finding and
+            (not isinstance(source_role, str) or source_role not in spec["specialists"])) \
+            or ("source" in finding and
+                (not isinstance(source, str) or source not in spec["specialists"])) \
+            or (source_role is not None and source is not None and source_role != source):
         raise ValueError("invalid council finding source role")
-    if value.get("severity") == "low":
-        value["severity"] = "minor"
+    severity = value.get("severity")
+    if isinstance(severity, str):
+        value["severity"] = {"low":"minor", "medium":"minor", "high":"major",
+                             "critical":"blocker"}.get(severity, severity)
     path = value.get("path")
     if isinstance(path, str) and path not in spec["changed_paths"] and path.startswith("snapshot/"):
         value["path"] = path.removeprefix("snapshot/")
@@ -367,7 +374,8 @@ def check_verdict(spec, outputs, synthesis):
         required |= _valid_finding(spec, normalized)
         needs_info |= normalized["severity"] == "needs-info"
         encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
-        if "source_role" in finding and encoded not in by_role[finding["source_role"]]:
+        source = finding.get("source_role") or finding.get("source")
+        if source is not None and encoded not in by_role[source]:
             raise ValueError("synthesis finding source differs")
         included.add(encoded)
     if not needed <= included:

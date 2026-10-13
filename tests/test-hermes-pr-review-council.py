@@ -401,6 +401,34 @@ class CouncilPlanTest(unittest.TestCase):
         synthesis['findings'][0]['source_role']='reliability'
         with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
 
+    def test_high_medium_severity_and_source_alias_keep_required_changes(self):
+        spec=council.plan(self.fixture())
+        outputs={role:{'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                       'role':role,'verdict':'clear','findings':[]} for role in spec['specialists']}
+        finding={'severity':'high','required':True,'path':'src/worker.py','line':8,
+                 'claim':'data loss','evidence':'state is dropped','suggestion':'persist state'}
+        other={**finding,'severity':'medium','claim':'retry fails'}
+        outputs['reliability'].update(verdict='findings',findings=[finding,other])
+        synthesis={'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                   'role':'synthesis','verdict':'request-changes',
+                   'findings':[{**finding,'source':'reliability'},{**other,'source':'reliability'}]}
+        self.assertEqual(council.check_verdict(spec,outputs,synthesis),'request-changes')
+        synthesis['findings'][0]['source']='mvp'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+        synthesis['findings'][0]['source']='reliability'
+        for invalid in ('', None, [], {'role':'reliability'}):
+            with self.subTest(invalid=invalid):
+                synthesis['findings'][0]['source']=invalid
+                with self.assertRaisesRegex(ValueError,'source role'):
+                    council.check_verdict(spec,outputs,synthesis)
+        synthesis['findings'][0]['source']='reliability'
+        synthesis['findings'][0]['source_role']='mvp'
+        with self.assertRaisesRegex(ValueError,'source role'):
+            council.check_verdict(spec,outputs,synthesis)
+        synthesis['findings'][0].pop('source_role')
+        synthesis['verdict']='approve'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+
     def test_tool_prefix_and_escaped_quotes_do_not_drop_specialist_finding(self):
         spec = council.plan(self.fixture())
         outputs = {role: {'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
