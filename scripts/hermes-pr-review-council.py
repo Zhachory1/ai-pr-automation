@@ -206,6 +206,7 @@ def admit(kb, conn, enqueue, github, work_root, request, repository_path=None):
     root = enqueue.safe_dir(work_root)
     workspace = root / request["operation_id"]
     owner_path = workspace / "request.json"
+    spec = None
     if owner_path.exists() or owner_path.is_symlink():
         enqueue.safe_dir(workspace)
         previous = json.loads(enqueue.read_immutable(owner_path))
@@ -213,39 +214,45 @@ def admit(kb, conn, enqueue, github, work_root, request, repository_path=None):
             if any(previous[key] != request[key] for key in request if key != "title"):
                 raise ValueError("legacy review owner identity changed")
             return {"route": "legacy"}
+        if (not isinstance(previous, dict) or set(previous) !=
+                {"route", "operation_id", "repo", "number", "head_sha", "title"}
+                or previous["route"] != "council-v2"
+                or any(previous[key] != request[key] for key in ("operation_id", "repo", "number", "head_sha"))):
+            raise ValueError("review operation owner differs")
         manifest_path = workspace / "input/identity.json"
         if not manifest_path.exists() and not manifest_path.is_symlink():
-            outcome = json.loads(_immutable_file(workspace / "review-outcome.json"))
-            if (not isinstance(previous, dict) or set(previous) !=
-                    {"route", "operation_id", "repo", "number", "head_sha", "title"}
-                    or previous["route"] != "council-v2"
-                    or any(previous[key] != request[key] for key in ("operation_id", "repo", "number", "head_sha"))
-                    or not isinstance(outcome, dict) or set(outcome) not in (
-                    {"status", "operation_id", "artifact_digest", "head_sha", "base_sha",
-                     "diff_digest", "context_digest", "task_id", "review_id"},
-                    {"status", "operation_id", "artifact_digest", "head_sha", "base_sha",
-                     "diff_digest", "context_digest", "task_id", "review_id", "repository_path"})
-                    or outcome["status"] != "verified"
-                    or any(outcome[key] != previous[key] for key in ("operation_id", "head_sha"))
-                    or not isinstance(outcome["task_id"], str) or not re.fullmatch(r"t_[0-9a-f]{8}", outcome["task_id"])
-                    or type(outcome["review_id"]) is not int or outcome["review_id"] <= 0):
-                raise ValueError("review completion receipt differs from owner")
-            if any((workspace / name).exists() or (workspace / name).is_symlink()
-                   for name in ("snapshot/diff.patch", "input/context.json")):
-                raise ValueError("verified review cleanup incomplete; reconcile private snapshot")
-            return {"route": "council", "task_id": outcome["task_id"],
-                    "operation_id": request["operation_id"], "status": "done"}
-        manifest = json.loads(_immutable_file(manifest_path))
-        spec = plan({"operation_id": request["operation_id"], "repo": request["repo"],
-                     "number": request["number"], "head_sha": request["head_sha"],
-                     "base_sha": manifest["base_sha"], "diff_digest": manifest["diff_digest"],
-                     "context_digest": manifest["context_digest"], "changed_paths": manifest["changed_paths"],
-                     **({"repository_path": manifest["repository_path"]} if "repository_path" in manifest else {}),
-                     **({"unreviewable_paths": manifest["unreviewable_paths"]} if "unreviewable_paths" in manifest else {})})
-        if repository_path and spec.get("repository_path") != str(repository_path):
-            raise ValueError("local review checkout changed on replay")
-        claim(enqueue, root, spec, request)
-    else:
+            receipt = workspace / "review-outcome.json"
+            if receipt.exists() or receipt.is_symlink():
+                outcome = json.loads(_immutable_file(receipt))
+                if (not isinstance(outcome, dict) or set(outcome) not in (
+                        {"status", "operation_id", "artifact_digest", "head_sha", "base_sha",
+                         "diff_digest", "context_digest", "task_id", "review_id"},
+                        {"status", "operation_id", "artifact_digest", "head_sha", "base_sha",
+                         "diff_digest", "context_digest", "task_id", "review_id", "repository_path"})
+                        or outcome["status"] != "verified"
+                        or any(outcome[key] != previous[key] for key in ("operation_id", "head_sha"))
+                        or not isinstance(outcome["task_id"], str) or not re.fullmatch(r"t_[0-9a-f]{8}", outcome["task_id"])
+                        or type(outcome["review_id"]) is not int or outcome["review_id"] <= 0):
+                    raise ValueError("review completion receipt differs from owner")
+                if any((workspace / name).exists() or (workspace / name).is_symlink()
+                       for name in ("snapshot/diff.patch", "input/context.json")):
+                    raise ValueError("verified review cleanup incomplete; reconcile private snapshot")
+                return {"route": "council", "task_id": outcome["task_id"],
+                        "operation_id": request["operation_id"], "status": "done"}
+            if any(item.name != "request.json" for item in workspace.iterdir()):
+                raise ValueError("incomplete council input; reconcile before retry")
+        else:
+            manifest = json.loads(_immutable_file(manifest_path))
+            spec = plan({"operation_id": request["operation_id"], "repo": request["repo"],
+                         "number": request["number"], "head_sha": request["head_sha"],
+                         "base_sha": manifest["base_sha"], "diff_digest": manifest["diff_digest"],
+                         "context_digest": manifest["context_digest"], "changed_paths": manifest["changed_paths"],
+                         **({"repository_path": manifest["repository_path"]} if "repository_path" in manifest else {}),
+                         **({"unreviewable_paths": manifest["unreviewable_paths"]} if "unreviewable_paths" in manifest else {})})
+            if repository_path and spec.get("repository_path") != str(repository_path):
+                raise ValueError("local review checkout changed on replay")
+            claim(enqueue, root, spec, request)
+    if spec is None:
         snapshot, diff, context = collect(github, request["repo"], request["number"], request["head_sha"],
                                           repository_path)
         spec = plan(snapshot)
@@ -290,14 +297,14 @@ def canonical_finding(spec, finding):
 
 def _valid_finding(spec, finding):
     if (not isinstance(finding, dict) or set(finding) != {"severity", "required", "path", "line", "claim", "evidence", "suggestion"}
-            or finding["severity"] not in ("blocker", "major", "minor", "nit")
+            or finding["severity"] not in ("blocker", "major", "minor", "nit", "needs-info")
             or type(finding["required"]) is not bool or type(finding["line"]) is not int
             or finding["line"] <= 0 or finding["path"] not in spec["changed_paths"]
             or any(not isinstance(finding[key], str) or not finding[key].strip()
                    or len(finding[key]) > limit for key, limit in
                    (("claim", 512), ("evidence", 2000), ("suggestion", 1024)))
             or (finding["severity"] in ("blocker", "major") and not finding["required"])
-            or (finding["severity"] == "nit" and finding["required"])):
+            or (finding["severity"] in ("nit", "needs-info") and finding["required"])):
         raise ValueError("invalid council changed-line finding")
     return finding["required"]
 
@@ -305,8 +312,9 @@ def _valid_finding(spec, finding):
 def check_verdict(spec, outputs, synthesis):
     """Accept only a typed synthesis that preserves every specialist finding."""
     keys = {"operation_id", "artifact_digest", "role", "verdict", "findings"}
+    optional = {"needs_info", "parent_verdicts", "unreviewable_paths"}
     if not isinstance(outputs, dict) or set(outputs) != set(spec["specialists"]) \
-            or not isinstance(synthesis, dict) or set(synthesis) != keys \
+            or not isinstance(synthesis, dict) or not keys <= set(synthesis) or set(synthesis) - keys - optional \
             or synthesis["role"] != "synthesis" or synthesis["operation_id"] != spec["operation_id"] \
             or synthesis["artifact_digest"] != spec["artifact_digest"] \
             or synthesis["verdict"] not in ("approve", "request-changes", "needs-info") \
@@ -314,24 +322,44 @@ def check_verdict(spec, outputs, synthesis):
         raise ValueError("council synthesis differs from contract")
     needed, needs_info, required = set(), False, False
     for role, item in outputs.items():
-        if not isinstance(item, dict) or set(item) != keys \
+        if not isinstance(item, dict) or not keys <= set(item) or set(item) - keys - {"needs_info"} \
                 or item["operation_id"] != spec["operation_id"] or item["artifact_digest"] != spec["artifact_digest"] \
                 or item["role"] != role or item["verdict"] not in ("clear", "findings", "needs-info") \
                 or not isinstance(item["findings"], list) or len(item["findings"]) > 25:
             raise ValueError("invalid council specialist output")
-        needs_info |= item["verdict"] == "needs-info"
+        if "needs_info" in item and (not isinstance(item["needs_info"], str)
+                or not item["needs_info"].strip() or len(item["needs_info"]) > 2000):
+            raise ValueError("invalid council specialist needs-info reason")
+        needs_info |= item["verdict"] == "needs-info" or "needs_info" in item
         for finding in item["findings"]:
             normalized = canonical_finding(spec, finding)
             required |= _valid_finding(spec, normalized)
+            needs_info |= normalized["severity"] == "needs-info"
             needed.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
+    if ("needs_info" in synthesis and (not isinstance(synthesis["needs_info"], str)
+            or not synthesis["needs_info"].strip() or len(synthesis["needs_info"]) > 2000)):
+        raise ValueError("invalid synthesis needs-info reason")
+    if ("parent_verdicts" in synthesis and synthesis["parent_verdicts"] !=
+            {role:item["verdict"] for role,item in outputs.items()}):
+        raise ValueError("synthesis parent verdicts differ")
+    paths = synthesis.get("unreviewable_paths", [])
+    if (not isinstance(paths, list) or len(paths) > 250
+            or any(not isinstance(path, str) or len(path) > 512 or path not in spec["changed_paths"]
+                   for path in paths)):
+        raise ValueError("invalid synthesis unreviewable paths")
+    needs_info |= "needs_info" in synthesis or bool(paths)
     included = set()
     for finding in synthesis["findings"]:
         normalized = canonical_finding(spec, finding)
         required |= _valid_finding(spec, normalized)
+        needs_info |= normalized["severity"] == "needs-info"
         included.add(json.dumps(normalized, sort_keys=True, separators=(",", ":")))
     if not needed <= included:
         raise ValueError("synthesis omitted a specialist finding")
     verdict = synthesis["verdict"]
+    if (verdict == "needs-info" and not synthesis["findings"] and not synthesis.get("needs_info")
+            and not (paths or spec.get("unreviewable_paths"))):
+        raise ValueError("council needs-info verdict lacks actionable evidence")
     if (verdict == "approve" and (required or needs_info or spec.get("unreviewable_paths"))
             or verdict == "request-changes" and not required
             or verdict == "needs-info" and required):

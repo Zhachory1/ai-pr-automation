@@ -208,6 +208,19 @@ class CouncilPlanTest(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT count(*) FROM tasks').fetchone()[0],4)
         with tempfile.TemporaryDirectory() as temp:
             root=pathlib.Path(temp).resolve()
+            self.assertEqual(council.queue(enqueue,root,request),'council')
+            fresh=sqlite3.connect(':memory:');self.addCleanup(fresh.close);fresh.row_factory=sqlite3.Row
+            fresh.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT);'
+                                'CREATE TABLE task_links(parent_id TEXT,child_id TEXT);')
+            admitted=council.admit(KB,fresh,enqueue,GitHub(),root,request)
+            self.assertEqual(admitted['route'],'council')
+            self.assertEqual(fresh.execute('SELECT count(*) FROM tasks').fetchone()[0],4)
+            self.assertTrue((root/request['operation_id']/'input/identity.json').exists())
+            (root/request['operation_id']/'input/identity.json').unlink()
+            with self.assertRaisesRegex(ValueError,'incomplete council'):
+                council.admit(KB,fresh,enqueue,GitHub(),root,request)
+        with tempfile.TemporaryDirectory() as temp:
+            root=pathlib.Path(temp).resolve()
             workspace=enqueue.safe_dir(root/request['operation_id'],True)
             enqueue.immutable(workspace/'request.json',enqueue.canonical(request))
             self.assertEqual(council.admit(KB,conn,enqueue,GitHub(),root,request),{'route':'legacy'})
@@ -296,11 +309,15 @@ class CouncilPlanTest(unittest.TestCase):
                    for role in spec["specialists"]}
         def synthesis(verdict, findings=()):
             return {"operation_id": spec["operation_id"], "artifact_digest": spec["artifact_digest"],
-                    "role": "synthesis", "verdict": verdict, "findings": list(findings)}
+                    "role": "synthesis", "verdict": verdict, "findings": list(findings),
+                    **({"needs_info": "contract evidence is missing"} if verdict == "needs-info" else {})}
         with self.assertRaises(ValueError):
             council.check_verdict(spec, outputs, "approve")
         self.assertEqual(council.check_verdict(spec, outputs, synthesis("approve")), "approve")
         self.assertEqual(council.check_verdict(spec, outputs, synthesis("needs-info")), "needs-info")
+        without_reason=synthesis("needs-info");without_reason.pop("needs_info")
+        with self.assertRaises(ValueError):
+            council.check_verdict(spec, outputs, without_reason)
         outputs["reliability"]["verdict"] = "needs-info"
         with self.assertRaises(ValueError):
             council.check_verdict(spec, outputs, synthesis("approve"))
@@ -330,6 +347,45 @@ class CouncilPlanTest(unittest.TestCase):
         outputs.pop("reliability")
         with self.assertRaises(ValueError):
             council.check_verdict(spec, outputs, synthesis("approve"))
+
+    def test_nonrequired_needs_info_finding_requires_a_needs_info_verdict(self):
+        spec=council.plan(self.fixture())
+        outputs={role:{'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                       'role':role,'verdict':'clear','findings':[]} for role in spec['specialists']}
+        finding={'severity':'needs-info','required':False,'path':'src/worker.py','line':7,
+                 'claim':'source incomplete','evidence':'changed path lacks required context',
+                 'suggestion':'supply missing context'}
+        outputs['generalist']['verdict']='needs-info'
+        outputs['generalist']['findings']=[finding]
+        synthesis={'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                   'role':'synthesis','verdict':'needs-info','findings':[finding]}
+        self.assertEqual(council.check_verdict(spec,outputs,synthesis),'needs-info')
+        synthesis['verdict']='approve'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+        finding['required']=True
+        synthesis['verdict']='needs-info'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+        finding['required']=False
+        outputs['generalist']['verdict']='clear';outputs['generalist']['findings']=[]
+        synthesis['verdict']='approve'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+
+    def test_bounded_needs_info_handoff_fields_preserve_core_contract(self):
+        spec=council.plan(self.fixture())
+        outputs={role:{'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                       'role':role,'verdict':'clear','findings':[]} for role in spec['specialists']}
+        outputs['reliability'].update(verdict='needs-info',needs_info='missing test evidence')
+        synthesis={'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                   'role':'synthesis','verdict':'needs-info','findings':[],
+                   'needs_info':'manual check needed',
+                   'parent_verdicts':{role:item['verdict'] for role,item in outputs.items()},
+                   'unreviewable_paths':['src/worker.py']}
+        self.assertEqual(council.check_verdict(spec,outputs,synthesis),'needs-info')
+        synthesis['parent_verdicts']['reliability']='clear'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+        synthesis['parent_verdicts']['reliability']='needs-info'
+        synthesis['needs_info']='x'*2001
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
 
     def test_tool_prefix_and_escaped_quotes_do_not_drop_specialist_finding(self):
         spec = council.plan(self.fixture())
