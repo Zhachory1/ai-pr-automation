@@ -243,11 +243,15 @@ class CouncilWorkerTest(unittest.TestCase):
                 worker.INGRESS.ENQUEUE.immutable(workspace/'request.json',worker.INGRESS.ENQUEUE.canonical(owner))
             config=worker.INGRESS.Config(root,root/'authority',root,root/'hermes',{},
                                           council_install=root/'runtime',council_enabled=True)
+            class GitHub:
+                def state(self,*_):return {'state':'open','head_sha':'a'*40,'base_sha':'b'*40}
             with mock.patch.object(worker.INGRESS,'validate_council_runtime'),\
-                 mock.patch.object(worker.LOCAL,'resolve',return_value=root/'checkout'),\
+                 mock.patch.object(worker.INGRESS.GITHUB,'GitHub',return_value=GitHub()),\
+                 mock.patch.object(worker.LOCAL,'resolve',return_value=root/'checkout') as located,\
                  mock.patch.object(worker.INGRESS,'invoke_council',return_value={'status':'active'}) as invoked:
                 self.assertEqual(worker.tick(config)['status'],'active')
             self.assertEqual(invoked.call_count,2)
+            self.assertEqual(located.call_count,4)
 
     def test_revisits_pending_owner_without_another_discovery_event(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -272,7 +276,8 @@ class CouncilWorkerTest(unittest.TestCase):
                 self.assertEqual(worker.tick(config)['status'],'active')
             invoked.assert_called_once()
             request = invoked.call_args.args[1]
-            located.assert_called_once_with('example/repo','a'*40)
+            self.assertEqual(located.call_args_list,[mock.call('example/repo','a'*40),
+                                                      mock.call('example/repo','b'*40)])
             self.assertEqual(invoked.call_args.args[2],root/'checkout')
             self.assertEqual(request['operation_id'],operation)
             self.assertEqual(request['url'],'https://github.com/example/repo/pull/17')

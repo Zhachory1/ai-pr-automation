@@ -213,7 +213,14 @@ def tick(config, *, stale_gc=False):
                         result = stale_pending(config, request, INGRESS.GITHUB.GitHub())
                         cleaned += bool(result)
                     continue
-                source = None if outcome else LOCAL.resolve(request["repo"], request["head_sha"])
+                source = None
+                if not outcome:
+                    state = INGRESS.GITHUB.GitHub().state(request["repo"], request["number"])
+                    if state["state"] != "open" or state["head_sha"] != request["head_sha"]:
+                        raise ValueError("review head changed before local checkout")
+                    source = LOCAL.resolve(request["repo"], request["head_sha"])
+                    if LOCAL.resolve(request["repo"], state["base_sha"]) != source:
+                        raise ValueError("review base resolves to another checkout")
                 result = INGRESS.invoke_council(config, request, source)
                 processed += 1
                 latest_status = result["status"]
