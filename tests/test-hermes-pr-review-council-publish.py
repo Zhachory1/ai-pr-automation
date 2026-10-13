@@ -175,6 +175,12 @@ class PublisherTest(unittest.TestCase):
         self.assertIn('Contract checks cannot be confirmed',self.gh.posts[0][4])
         self.assertNotIn('missing GitHub patches',self.gh.posts[0][4])
 
+    def test_needs_info_reason_alias_is_included_in_comment(self):
+        self.synthesis.update(verdict='needs-info',needs_info_reason='Verify service contract manually')
+        self.body=publisher.render(self.synthesis,self.plan)
+        self.post('COMMENT')
+        self.assertIn('Verify service contract manually',self.gh.posts[0][4])
+
     def test_required_changes_review_preserves_concurrent_needs_info_reason(self):
         finding={'severity':'major','required':True,'path':'src/file.py','line':7,
                  'claim':'required fix','evidence':'changed code loses work','suggestion':'persist before I/O'}

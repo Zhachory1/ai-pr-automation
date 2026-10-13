@@ -387,6 +387,20 @@ class CouncilPlanTest(unittest.TestCase):
         synthesis['needs_info']='x'*2001
         with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
 
+    def test_low_severity_source_role_and_needs_info_reason_preserve_handoff(self):
+        spec=council.plan(self.fixture())
+        outputs={role:{'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                       'role':role,'verdict':'clear','findings':[]} for role in spec['specialists']}
+        finding={'severity':'low','required':False,'path':'src/worker.py','line':7,
+                 'claim':'minor risk','evidence':'changed line needs contract check','suggestion':'check contract'}
+        outputs['mvp'].update(verdict='findings',findings=[finding])
+        synthesis={'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                   'role':'synthesis','verdict':'needs-info','findings':[{**finding,'source_role':'mvp'}],
+                   'needs_info_reason':'verify runtime contract'}
+        self.assertEqual(council.check_verdict(spec,outputs,synthesis),'needs-info')
+        synthesis['findings'][0]['source_role']='reliability'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+
     def test_tool_prefix_and_escaped_quotes_do_not_drop_specialist_finding(self):
         spec = council.plan(self.fixture())
         outputs = {role: {'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],

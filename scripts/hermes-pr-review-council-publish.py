@@ -169,8 +169,9 @@ def render(synthesis, spec=None):
         lines.append("No required changes identified." if synthesis["verdict"] == "approve"
                      else "No changed-line findings supplied; more information is required.")
     unreviewable = spec.get("unreviewable_paths", []) if spec else []
-    if synthesis.get("needs_info"):
-        lines.append("More information needed: " + synthesis["needs_info"])
+    reason = synthesis.get("needs_info") or synthesis.get("needs_info_reason")
+    if reason:
+        lines.append("More information needed: " + reason)
     if synthesis["verdict"] == "needs-info" and unreviewable:
         listed = ", ".join(unreviewable[:10])
         lines.append(f"Manual review required for missing GitHub patches: {listed}"
