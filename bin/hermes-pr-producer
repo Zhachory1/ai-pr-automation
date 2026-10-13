@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # hermes-pr-producer — discovery producer for the host-native fleet. Finds matching open PRs and
-# enqueues one requests row per PR head for the dispatcher to consume. Never invokes a model.
+# admits eligible PRs to Hermes without invoking a model.
 #
 #   hermes-pr-producer review    -> PRs assigned to the fleet account   (kind=pr-review)
 #   hermes-pr-producer maintain  -> PRs authored by the fleet account   (kind=pr-maintain)
@@ -19,8 +19,6 @@ case "$MODE" in
 esac
 
 HERE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd || echo /usr/local/libexec/ai-pr-automation)"
-: "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
-: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
 GH_TIMEOUT_SECONDS="${PR_PRODUCER_GH_TIMEOUT_SECONDS:-60}"
 MAX_UPDATED_AGE_DAYS="${PR_PRODUCER_MAX_UPDATED_AGE_DAYS:-0}"   # 0 disables
 if [[ "$MODE" == review ]]; then DISCOVER_ALL_OWNERS="${PR_REVIEW_DISCOVER_ALL_OWNERS:-}"; else DISCOVER_ALL_OWNERS="${PR_MAINTAIN_DISCOVER_ALL_OWNERS:-}"; fi
@@ -28,9 +26,9 @@ AUTHORITY="${HERMES_AUTHORITY_FILE:-/usr/local/etc/ai-pr-automation/authority.ya
 AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
 if [[ "$MODE" == review ]]; then QUEUE_VAR=PR_REVIEW_QUEUE_ENGINE; else QUEUE_VAR=PR_MAINTAIN_QUEUE_ENGINE; fi
-QUEUE_ENGINE="${!QUEUE_VAR:-postgres}"
-[[ "$QUEUE_ENGINE" == postgres || "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge ]] \
-  || { echo "$QUEUE_VAR must be postgres, kanban, api, or bridge" >&2; exit 2; }
+QUEUE_ENGINE="${!QUEUE_VAR:-bridge}"
+[[ "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge ]] \
+  || { echo "$QUEUE_VAR must be kanban, api, or bridge" >&2; exit 2; }
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) hermes-pr-producer[$MODE] $*" >&2; }
@@ -38,9 +36,7 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2;
 need gh; need jq; need python3
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
-if [[ "$QUEUE_ENGINE" == postgres ]]; then
-  need psql
-elif [[ "$QUEUE_ENGINE" == bridge ]]; then
+if [[ "$QUEUE_ENGINE" == bridge ]]; then
   HERMES_KANBAN_SUBMIT_BIN="${HERMES_KANBAN_SUBMIT_BIN:-$HERE/scripts/hermes-kanban-submit.py}"
   [[ -f "$HERMES_KANBAN_SUBMIT_BIN" ]] || { echo "Kanban ingress client unavailable" >&2; exit 2; }
   HERMES_PYTHON=python3
@@ -62,7 +58,6 @@ else
     || { echo "host Hermes Kanban enqueue support is unavailable" >&2; exit 2; }
   mkdir -p "$HERMES_PR_KANBAN_WORK_ROOT"; chmod 0700 "$HERMES_PR_KANBAN_WORK_ROOT"
 fi
-psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
 gh_read() { "$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" gh "$@"; }
 
 direct_enqueue() {
@@ -219,12 +214,12 @@ prs="$(awk -F '\t' 'NF && !seen[$1 FS $2]++' <<<"$prs")"
 if [[ -z "$prs" ]]; then log "no matching open PRs"; exit 0; fi
 
 DISCOVERY_TMP=""; login=""; login_attempted=0; login_ok=0
-if [[ ( "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge ) && "$KIND" == pr-maintain ]]; then
+if [[ "$KIND" == pr-maintain ]]; then
   DISCOVERY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/hermes-pr-producer.XXXXXX")"
   trap 'rm -rf "$DISCOVERY_TMP"' EXIT
 fi
 now_epoch="$(date +%s)"; cutoff=$(( now_epoch - (MAX_UPDATED_AGE_DAYS * 86400) ))
-enq=0 dedupe=0 skip=0 failed=0
+enq=0 skip=0 failed=0
 while IFS=$'\t' read -r repo number url title updated_epoch; do
   [[ -z "$repo" ]] && continue
   if ! repo_granted "$repo"; then skip=$((skip+1)); continue; fi
@@ -234,7 +229,7 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   sha="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" gh pr view "$number" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
   if [[ -z "$sha" ]]; then log "skip $repo#$number: could not resolve head sha"; skip=$((skip+1)); continue; fi
   feedback=""
-  if [[ "$KIND" == pr-maintain && "$QUEUE_ENGINE" != postgres ]]; then
+  if [[ "$KIND" == pr-maintain ]]; then
     if (( login_attempted == 0 )); then
       login_attempted=1
       if login="$(gh_read api user --jq .login 2>/dev/null)" && [[ -n "$login" ]]; then login_ok=1; fi
@@ -306,19 +301,7 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
     fi
     continue
   fi
-  payload="$(jq -cn --arg repo "$repo" --arg pr "$number" --arg url "$url" --arg title "$title" \
-    '{repo:$repo, number:($pr|tonumber), url:$url, title:$title}')"
-  dedupe_key="${repo}#${number}@${sha}"
-  # psql -c does NOT interpolate :'var'; feed the SQL via stdin so :'var' substitution applies.
-  # A NULL return (dedupe/cap skip) prints empty; a numeric id means a row was inserted.
-  inserted="$(psqlq -v payload="$payload" -v dk="$dedupe_key" -v kind="$KIND" \
-    <<<"SELECT hermes_enqueue_request(:'kind', :'payload'::jsonb, :'dk');" 2>/dev/null || true)"
-  if [[ "$inserted" =~ ^[0-9]+$ ]]; then enq=$((enq+1)); log "enqueued $KIND $dedupe_key (#$inserted)"; else dedupe=$((dedupe+1)); fi
 done <<< "$prs"
 
-if [[ "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge ]]; then
-  log "done: admitted=$enq failed=$failed skipped=$skip"
-  (( failed == 0 )) || exit 1
-else
-  log "done: enqueued=$enq deduped=$dedupe skipped=$skip"
-fi
+log "done: admitted=$enq failed=$failed skipped=$skip"
+(( failed == 0 )) || exit 1

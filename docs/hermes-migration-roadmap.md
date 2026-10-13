@@ -2,7 +2,7 @@
 
 Date: 2026-09-14
 
-Status: active; M0 merged and validated
+Status: historical; request-Postgres migration path superseded by the personal Hermes Kanban fleet. Use [current operations](operations.md), not this plan, for startup or recovery.
 
 Owner: Zhach
 
@@ -88,10 +88,10 @@ Known current gaps:
 - expired `doc-write` and `swe-implement` attempts can requeue after side-effect intent because generic reclaim only special-cases `pr-maintain`;
 - M2 and M5 must fix and fault-test these gaps before Hermes activation. Migration cannot preserve known unsafe behavior as parity.
 
-Canonical evidence:
+Historical evidence (request-DB queue/controller source was removed; use Git history, not these paths):
 
-- queue and effect recovery: [`lib/queue.sh`](../lib/queue.sh), [`bin/agent-server`](../bin/agent-server);
-- runtime topology: [`docker-compose.yml`](../docker-compose.yml), [`docker/README.md`](../docker/README.md);
+- queue and effect recovery: former `lib/queue.sh` and `bin/agent-server`;
+- current runtime topology: [`docker-compose.yml`](../docker-compose.yml), [`docker/README.md`](../docker/README.md);
 - PR-safety contract: [`pr-safety-review.md`](pr-safety-review.md);
 - decision publishing: [`decision-approval.md`](decision-approval.md);
 - doc human loop: [`doc-writer.md`](doc-writer.md);

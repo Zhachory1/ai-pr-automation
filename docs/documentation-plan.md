@@ -1,4 +1,6 @@
-# Documentation rollout plan
+# Historical documentation rollout plan
+
+> Superseded by the personal Hermes Kanban fleet. This checklist describes a retired service-account/controller deployment; do not use it for current setup. See [getting started](getting-started.md).
 
 ## Goal
 

@@ -1,4 +1,6 @@
-# Fleet memory: read-only agents + trusted server writers
+# Historical fleet memory curator
+
+> Retired container/status-server workflow. The commands below are historical and must not be run: they describe publishing private documents into shared memory. Current Hindsight remains a separate support service; the request database and its memory queues are gone. `bin/hermes-memory-curate` is an explicit `--direct`-only path, not an enabled scheduled writer.
 
 ## Who writes shared memory
 

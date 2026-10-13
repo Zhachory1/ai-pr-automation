@@ -1,10 +1,10 @@
 # Documentation
 
 - **[From-zero host-native setup](getting-started.md)** — prerequisites, credentials, TLS, and explicit live-activation gate.
-- **[Documentation rollout plan](documentation-plan.md)** — implementation status and remaining clean-host trial.
-- **[Historical configuration](configuration.md)** — retired service-account settings; use [getting started](getting-started.md) for the personal fleet.
-- **[Historical architecture](architecture.md)** — retired service-account/controller control plane; see [getting started](getting-started.md) for the current fleet.
-- **[Operations](operations.md)** — status, queue inspection, reconciliation, safe stop, and recovery limits.
+- **[Configuration](configuration.md)** — current credentials and process boundaries.
+- **[Architecture](architecture.md)** — current GitHub → Kanban → Hermes PR flow.
+- **[Historical documentation plan](documentation-plan.md)** — superseded rollout checklist.
+- **[Operations](operations.md)** — Kanban status, reconciliation, safe stop, and recovery limits.
 - **[Contributing](contributing.md)** — source map and focused checks.
 - **[Compose substrate](../docker/README.md)** — current container contracts. **[Historical Hermes runtime](hermes/README.md)** — retired controller/Runs API design.
 
@@ -17,5 +17,4 @@
   from the design vault; where it differs from shipped code, `m0/DD.md` and code are authoritative.
 - **[m0/](m0/)** — the M0 (compose substrate) run: `PRD.md`, `DD.md`, `PLAN.md`. Produced by the
   plan-to-launch workflow for the substrate delivered in `docker-compose.yml` + `docker/`.
-- **[pr-safety-review.md](pr-safety-review.md)** — merged-PR producer and dedicated PR-safety agent
-  server. Agent runs directly in worker container; only dedicated PR-safety memory is writable.
+- **[pr-safety-review.md](pr-safety-review.md)**, **[decision-approval.md](decision-approval.md)**, **[memory-curation.md](memory-curation.md)**, and **[doc-writer.md](doc-writer.md)** — retired request-DB workflows; not activation guides.

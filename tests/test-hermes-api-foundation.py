@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
-import os
 import pathlib
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
-from types import SimpleNamespace
-from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -20,13 +17,12 @@ def load(name, path):
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); return module
 
 
-config = load("configure_hermes_api", ROOT / "scripts/configure-hermes-api.py")
 conformance = load("hermes_api_conformance", ROOT / "scripts/hermes-api-conformance.py")
 
 
 class FakeHermes(BaseHTTPRequestHandler):
     keys = {name: f"profile-key-{index:02d}-1111111111111111111111111111"
-            for index, name in enumerate(config.PROFILES, 1)}
+            for index, name in enumerate(("pr-review-v1", "pr-maintain-v1"), 1)}
     default_key = "default-key-000000000000000000000000000"
     runs = {}
 
@@ -81,47 +77,12 @@ class FlakyAuthClient:
 
 
 class FoundationTest(unittest.TestCase):
-    def test_github_cli_uses_private_service_store_without_token_in_args(self):
-        with tempfile.TemporaryDirectory() as td:
-            user = SimpleNamespace(pw_dir=td, pw_uid=os.getuid(), pw_gid=os.getgid())
-            calls = []
-            def run(command, **kwargs):
-                calls.append((command, kwargs))
-                if "login" in command:
-                    path = pathlib.Path(td) / ".config/gh/hosts.yml"
-                    path.write_text("github.com: {}\n"); path.chmod(0o600)
-                return SimpleNamespace(returncode=0, stdout="zhach1\n", stderr="")
-            with mock.patch.object(config.subprocess, "run", side_effect=run):
-                path = config.configure_github_cli(user, "hermes-agent", "secret-token")
-            self.assertEqual(path, str(pathlib.Path(td) / ".config/gh"))
-            self.assertIn("--insecure-storage", calls[0][0])
-            self.assertEqual(calls[0][1]["input"], "secret-token\n")
-            self.assertFalse(any("secret-token" in arg for command, _ in calls for arg in command))
-
     def test_readiness_warms_every_profile_and_auth_retries_timeout(self):
         client = FlakyAuthClient(FakeHermes.keys)
         keys = {"profiles": FakeHermes.keys}
         conformance.wait_ready(client, keys, 5)
         self.assertEqual(client.correct_seen, set(FakeHermes.keys))
         conformance.auth_probe(client, keys, 2)
-
-    def test_key_bundle_is_stable_unique_and_private(self):
-        with tempfile.TemporaryDirectory() as td:
-            parent = pathlib.Path(td) / "private"; parent.mkdir(mode=0o700)
-            path = parent / "keys.json"
-            first = config.load_or_create(path); second = config.load_or_create(path)
-            self.assertEqual(first, second)
-            keys = list(first["profiles"].values())
-            self.assertEqual(len(keys), len(set(keys)))
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(set(first["profiles"]), set(config.PROFILES))
-
-    def test_env_rewrite_preserves_unmanaged_values(self):
-        with tempfile.TemporaryDirectory() as td:
-            path = pathlib.Path(td) / ".env"; path.write_text("GH_TOKEN=keep\nAPI_SERVER_KEY=old\n")
-            config.rewrite_env(path, {"API_SERVER_KEY": "new", "API_SERVER_ENABLED": "true"}, os.getuid(), os.getgid())
-            self.assertEqual(path.read_text(), "GH_TOKEN=keep\nAPI_SERVER_KEY=new\nAPI_SERVER_ENABLED=true\n")
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_auth_replay_conflict_and_terminal_poll(self):
         FakeHermes.runs = {}

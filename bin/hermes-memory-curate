@@ -9,15 +9,12 @@
 # check runs, before anything reaches a bank. Two tiers: every keeper goes to the team bank
 # (team-ads-success); a keeper additionally goes to the org bank ONLY if it also passes a stricter
 # gate (>=2 sources, longer min length, no colleague names, no internal-topic terms). The model never
-# holds the write. The Postgres claim/lease/settle path matches bin/hermes-queue-runner. Watermark
-# advances only on a successful model run.
+# holds the write. Watermark advances only on a successful model run.
 set -euo pipefail
 umask 077
 
 : "${HERMES_BIN:=hermes}"
 profile=memory-curate-v1
-: "${REQUESTS_DB_USER:=hermes_runtime}"; : "${REQUESTS_DB_NAME:=fleet}"
-: "${REQUESTS_DB_HOST:=127.0.0.1}"; : "${REQUESTS_DB_PORT:=5432}"
 # Remote agent-memory MCP endpoints (Streamable HTTP, stateless JSON-RPC). Team bank is the default
 # store; org bank receives only keepers that also pass the stricter Tier-2 gate.
 MEM_BASE="${HERMES_MEMORY_MCP_BASE:-https://rokt-agent-memory.eng.roktinternal.com/mcp}"
@@ -36,31 +33,16 @@ MAX_SOURCE_DOCS="${MEMORY_CURATOR_MAX_SOURCE_DOCS:-40}"
 LOOKBACK_HOURS="${MEMORY_CURATOR_LOOKBACK_HOURS:-24}"
 PROMPT_MAX_BYTES="${MEMORY_CURATOR_PROMPT_MAX_BYTES:-96000}"
 PER_DOC_BYTES="${MEMORY_CURATOR_PER_DOC_BYTES:-8000}"
-lease="${HERMES_QUEUE_LEASE_SECONDS:-1200}"
-mode=consume
-if (( $# > 1 )); then
-  echo "usage: hermes-memory-curate [--enqueue|--enqueue-only|--direct]" >&2; exit 2
-elif (( $# == 1 )); then
-  case "$1" in
-    --enqueue) mode=enqueue ;;
-    --enqueue-only) mode=enqueue-only ;;
-    --direct) mode=direct ;;
-    *) echo "usage: hermes-memory-curate [--enqueue|--enqueue-only|--direct]" >&2; exit 2 ;;
-  esac
-fi
-direct=0; [[ "$mode" == direct ]] && direct=1
-if (( ! direct )); then
-  nonce="$(openssl rand -hex 16)"; run_id="$(date -u '+%Y%m%dT%H%M%SZ')-$nonce"
-fi
+[[ $# == 1 && "$1" == --direct ]] \
+  || { echo "usage: hermes-memory-curate --direct" >&2; exit 2; }
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2; exit 2; }; }
 need jq; need curl; need find; need python3
 log() { printf '%s memory-curate %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; }
-psqlq() { psql -qAt -v ON_ERROR_STOP=1 -h "$REQUESTS_DB_HOST" -p "$REQUESTS_DB_PORT" -U "$REQUESTS_DB_USER" -d "$REQUESTS_DB_NAME" "$@"; }
 mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || { log "WARN: cannot stat $1; epoch 0"; echo 0; }; }
 mkdir -p "$STATE_DIR"
 
-if (( direct )) && [[ "${HERMES_MEMORY_DIRECT_LOCKED:-}" != 1 ]]; then
+if [[ "${HERMES_MEMORY_DIRECT_LOCKED:-}" != 1 ]]; then
   python3 -c 'import fcntl,os,sys
 try:
  f=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o600); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -71,45 +53,10 @@ os.execve(sys.argv[2],sys.argv[2:],os.environ)' "$STATE_DIR/direct.lock" "$0" "$
   exit $?
 fi
 
-# memory-curate is a scheduled sweep with no event source. The producer timer enqueues only; the
-# continuous dispatcher observes depth and starts the consumer under its per-kind cap. `--enqueue`
-# remains enqueue+consume for manual compatibility; `--enqueue-only` preserves producer/consumer
-# separation for standing operation. Hourly dedupe prevents pile-up if a timer is retriggered.
-if [[ "$mode" == enqueue || "$mode" == enqueue-only ]]; then
-  psqlq <<<"SELECT hermes_enqueue_request('memory-curate','{}'::jsonb,'memory-curate:'||to_char(now(),'YYYYMMDDHH24'));" >/dev/null || true
-  [[ "$mode" != enqueue-only ]] || exit 0
-fi
-
-if (( ! direct )); then
-  claim="$(psqlq -c "SELECT hermes_claim_request('memory-curate','$run_id','$nonce',$lease);")"
-  [[ -n "$claim" ]] || exit 0
-  id="$(jq -r .id <<<"$claim")"
-fi
 srcdir="$(mktemp -d)"; trap 'rm -rf "$srcdir"' EXIT
-if (( ! direct )); then
-  (
-    while sleep "$((lease / 4))"; do
-      [[ "$(psqlq -c "SELECT hermes_renew_request($id,'$nonce',$lease);")" == t ]] || { kill -TERM "$PPID"; exit 1; }
-    done
-  ) & heartbeat=$!
-  stop_heartbeat() { kill "$heartbeat" 2>/dev/null || true; wait "$heartbeat" 2>/dev/null || true; }
-fi
-
-finish() { # $1 status  $2 detail
-  if (( direct )); then
-    echo "status=$1"
-  else
-    stop_heartbeat
-    psqlq -v detail="$2" <<<"SELECT hermes_settle_request($id,'$nonce','$1',:'detail');" >/dev/null
-    echo "request=$id status=$1"
-  fi
-}
-direct_fatal() { log "$1; watermark held for retry"; finish reconcile "$1; watermark held for retry"; exit 1; }
-proposal_fatal() {
-  (( direct )) && direct_fatal "$1"
-  finish reconcile "$1; watermark held for retry"
-  exit 0
-}
+finish() { echo "status=$1"; }
+direct_fatal() { log "$1; watermark held for retry"; finish reconcile; exit 1; }
+proposal_fatal() { direct_fatal "$1"; }
 
 # --- gather bounded source slice since the watermark ---------------------------------------------
 since_epoch=0
@@ -169,9 +116,7 @@ agent_ok=1
 HERMES_WRITE_SAFE_ROOT="$srcdir" "$HERMES_BIN" -p "$profile" chat --query-file "$prompt" --oneshot \
   --toolsets file --max-turns 40 --run-budget 1200 --ignore-rules --yolo --in "$srcdir" >/dev/null 2>&1 || agent_ok=0
 if (( agent_ok == 0 )) || [[ ! -f "$result" ]]; then
-  (( direct )) && direct_fatal "curate model run failed"
-  finish reconcile "curate model run failed; watermark held for retry"
-  exit 0
+  direct_fatal "curate model run failed"
 fi
 if ! json="$(python3 -c '
 import sys,re,json
@@ -211,7 +156,7 @@ r=d.get("result",{})
 if sys.argv[1]=="1" and ("error" in d or not isinstance(r,dict) or r.get("isError")): sys.exit(2)
 c=r.get("content",[])
 for b in c:
-    if isinstance(b,dict) and b.get("type")=="text": print(b.get("text",""))' "$direct" 2>/dev/null || return 2
+    if isinstance(b,dict) and b.get("type")=="text": print(b.get("text",""))' 1 2>/dev/null || return 2
 }
 mcp_retain_ok() { # $1 url  $2 content  $3 tagsjson  -> "ok" on success
   mcp_call "$1" retain "$(jq -cn --arg c "$2" --argjson tags "$3" --arg ver "$CURATOR_VERSION" \
@@ -221,7 +166,7 @@ try: d=json.load(sys.stdin)
 except Exception: sys.exit(1)
 r=d.get("result",{})
 if sys.argv[1]=="1" and ("error" in d or not isinstance(r,dict)): sys.exit(1)
-sys.exit(0 if not r.get("isError") else 1)' "$direct" && echo ok
+sys.exit(0 if not r.get("isError") else 1)' 1 && echo ok
 }
 
 # --- deterministic gates (the model output is never trusted verbatim) -----------------------------
@@ -243,7 +188,7 @@ org_gate_pass() { # stricter Tier-2 gate for the org bank. $1 content  $2 n_sour
 }
 dedup_hit() { # $1 url  $2 content -> 0 if a >=0.6 Jaccard near-dup already exists in that bank
   local hits rc
-  hits="$(mcp_recall_texts "$1" "$2")" || { rc=$?; (( direct )) && return "$rc"; return 1; }
+  hits="$(mcp_recall_texts "$1" "$2")" || return $?
   [[ -n "$hits" ]] || return 1
   printf '%s' "$hits" | python3 -c '
 import sys
@@ -275,16 +220,15 @@ for (( i=0; i<count; i++ )); do
   team_exists=0
   if dedup_hit "$TEAM_URL" "$content"; then
     deduped=$((deduped+1))
-    (( direct )) && team_exists=1 || continue
+    team_exists=1
   else
-    rc=$?; (( direct && rc == 2 )) && direct_fatal "team recall transport failed"
+    rc=$?; (( rc == 2 )) && direct_fatal "team recall transport failed"
   fi
   if (( ! team_exists )); then
     tags="$(jq -cn --arg ver "$CURATOR_VERSION" '["curator",$ver]')"
     retain="$(mcp_retain_ok "$TEAM_URL" "$content" "$tags")" || retain=""
     if [[ "$retain" != ok ]]; then
-      (( direct )) && direct_fatal "team retain transport failed"
-      log "team retain failed: ${content:0:60}"; continue
+      direct_fatal "team retain transport failed"
     fi
     written=$((written+1))
   fi
@@ -293,13 +237,13 @@ for (( i=0; i<count; i++ )); do
     if dedup_hit "$ORG_URL" "$content"; then
       continue
     else
-      rc=$?; (( direct && rc == 2 )) && direct_fatal "org recall transport failed"
+      rc=$?; (( rc == 2 )) && direct_fatal "org recall transport failed"
     fi
     org_tags="$(jq -cn --arg ver "$CURATOR_VERSION" '["curator",$ver,"org"]')"
     retain="$(mcp_retain_ok "$ORG_URL" "$content" "$org_tags")" || retain=""
     if [[ "$retain" == ok ]]; then
       org_written=$((org_written+1))
-    elif (( direct )); then
+    else
       direct_fatal "org retain transport failed"
     fi
   fi

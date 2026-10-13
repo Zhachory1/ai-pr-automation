@@ -1,10 +1,9 @@
 # PR Safety Review Contract
 
-Status: historical Docker-worker design. The active runtime is host-native
-(`bin/hermes-pr-safety-producer` + `bin/hermes-pr-safety-runner` + `pr-safety-v1` profile); see
-[`docs/hermes/README.md`](hermes/README.md) (Host-Native Runtime section). Contract below (identity, policy
-digest, immutable handoff, incident-only human-review routing) is preserved verbatim under the
-native runner.
+> Historical Docker-worker/request-DB contract. The runner, queue, and activation commands below
+> have been removed; do not run them. The optional PR-safety producer now requires explicit Kanban
+> selection and uses [`hermes-pr-safety-kanban-enqueue.py`](../scripts/hermes-pr-safety-kanban-enqueue.py)
+> with the Kanban risk council. This archived contract is not the current runtime guide.
 
 ## Purpose
 
