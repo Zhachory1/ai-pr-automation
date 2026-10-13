@@ -17,6 +17,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hermes_direct_pr_journal import identity
 
@@ -227,6 +229,33 @@ def validate_council_runtime(config):
             raise ValueError("review profile snapshot/tool roots differ")
 
 
+def validate_review_parent(config):
+    profile = config.home / "profiles/pr-review-v1"
+    source = HERE.parent / "agent-config/hermes/profiles/pr-review-v1"
+    if (profile.is_symlink() or not profile.is_dir()
+            or any(not (profile / name).is_file() or (profile / name).is_symlink()
+                   or (profile / name).read_bytes() != (source / name).read_bytes()
+                   for name in ("SOUL.md", "skills/pr-review/SKILL.md"))):
+        raise ValueError("review orchestrator profile prompt is not installed")
+    config_path = profile / "config.yaml"
+    env_path = profile / ".env"
+    if (config_path.is_symlink() or not config_path.is_file() or env_path.is_symlink()
+            or not env_path.is_file() or env_path.stat().st_mode & 0o077):
+        raise ValueError("review orchestrator profile config is not owner-only")
+    settings = yaml.safe_load(config_path.read_text())
+    model = settings.get("model") if isinstance(settings, dict) else None
+    terminal = settings.get("terminal") if isinstance(settings, dict) else None
+    if (not isinstance(model, dict) or not isinstance(terminal, dict)
+            or (model.get("provider"), model.get("default")) != ("openai-codex", "gpt-6-sol")
+            or not isinstance(terminal.get("env_passthrough"), list)
+            or "PR_REVIEW_SNAPSHOT_BIN" not in terminal["env_passthrough"]):
+        raise ValueError("review orchestrator profile model/tool routing differs")
+    tool = str(HERE / "hermes-pr-review-snapshot.py")
+    if not any(line == f"PR_REVIEW_SNAPSHOT_BIN={tool}" or
+               line == f'PR_REVIEW_SNAPSHOT_BIN="{tool}"' for line in env_path.read_text().splitlines()):
+        raise ValueError("review orchestrator profile snapshot helper is not configured")
+
+
 def council_capacity(config, operation):
     active = 0
     for entry in config.work.iterdir():
@@ -409,7 +438,9 @@ def admit(config, kind, key, payload):
                             raise
                         if config.history_dirs is not None:
                             config.history_dirs.add(entry.name)
-        return queue_review(config, request) if kind == "pr-review" and config.council_enabled else invoke(config, kind, request)
+        if kind == "pr-review" and config.council_enabled:
+            validate_review_parent(config)
+        return invoke(config, kind, request)
     finally:
         LOCK.release()
 

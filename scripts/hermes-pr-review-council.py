@@ -479,25 +479,34 @@ def _verified_snapshot(workspace, spec):
         raise ValueError("council snapshot content differs from contract")
 
 
-def setup(kb, conn, spec, workspace):
-    """Create/adopt the exact effect-free specialist graph; never publish a review."""
+def prepare_role_workspace(spec, workspace, role):
     _verified_snapshot(workspace, spec)
+    if role not in (*spec["specialists"], "synthesis"):
+        raise ValueError("unknown review role")
     root = Path(workspace)
     workspaces = root / "workspaces"
     workspaces.mkdir(mode=0o700, exist_ok=True)
     _private_dir(workspaces)
+    role_workspace = workspaces / role
+    role_workspace.mkdir(mode=0o700, exist_ok=True)
+    _private_dir(role_workspace)
+    local = bool(spec.get("repository_path"))
+    binding = json.dumps({"schema_version": 2 if local else 1,
+                          "snapshot_root": spec["repository_path"] if local else str(root / "snapshot"),
+                          "input_root": str(root / "input"),
+                          **({"head_sha": spec["head_sha"], "base_sha": spec["base_sha"]} if local else {})},
+                         sort_keys=True, separators=(",", ":")).encode()
+    _immutable_file(role_workspace / ".council-tools.json", binding, mode=0o440, max_bytes=4096)
+    return role_workspace
+
+
+def setup(kb, conn, spec, workspace):
+    """Create/adopt the exact effect-free specialist graph; never publish a review."""
+    _verified_snapshot(workspace, spec)
     tasks = {}
     for role, profile in [*spec["specialists"].items(), ("synthesis", spec["synthesis"]["profile"])]:
-        role_workspace = workspaces / role
-        role_workspace.mkdir(mode=0o700, exist_ok=True)
-        _private_dir(role_workspace)
+        role_workspace = prepare_role_workspace(spec, workspace, role)
         local = bool(spec.get("repository_path"))
-        binding = json.dumps({"schema_version": 2 if local else 1,
-                              "snapshot_root": spec["repository_path"] if local else str(root / "snapshot"),
-                              "input_root": str(root / "input"),
-                              **({"head_sha": spec["head_sha"], "base_sha": spec["base_sha"]} if local else {})},
-                             sort_keys=True, separators=(",", ":")).encode()
-        _immutable_file(role_workspace / ".council-tools.json", binding, mode=0o440, max_bytes=4096)
         parents = list(tasks.values()) if role == "synthesis" else []
         key = f'{spec["workflow_id"]}:{role}'
         payload = {"workflow_id": spec["workflow_id"], "artifact_digest": spec["artifact_digest"],

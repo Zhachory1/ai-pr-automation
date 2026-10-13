@@ -1,5 +1,5 @@
 name: pr-review-v1
 version: 1.0.0
-description: Autonomously reviews an enrolled pull request and posts one review for the exact head.
+description: Orchestrates Luna PR-review tasks and posts one exact-head review from a Sol synthesis card.
 hermes_requires: ">=0.21.3"
 distribution_owned: [mcp.json, SOUL.md, config.yaml, distribution.yaml, .no-bundled-skills, skills/pr-review/SKILL.md]

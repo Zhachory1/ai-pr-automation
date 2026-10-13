@@ -83,7 +83,7 @@ class EnqueueTest(unittest.TestCase):
                          ('gpt-6-sol','openai-codex'))
         self.assertEqual((cli.tasks[first['task_id']]['task']['model_override'],
                           cli.tasks[first['task_id']]['task']['provider_override']),
-                         (enqueue.MODEL,'anthropic'))
+                         ('gpt-6-sol','openai-codex'))
         self.assertEqual(cli.boards,{"pr-review":"PR Review","pr-maintain":"PR Maintain"})
         cards=[item["task"] for item in cli.tasks.values()]; self.assertTrue(all(set(card) == enqueue.TASK_KEYS for card in cards)); self.assertEqual([c["max_runtime_seconds"] for c in cards],[1800,1800,2400])
         workspace=args.workspace_root/first["operation_id"]; self.assertEqual(tuple((workspace/name).stat().st_mode & 0o777 for name in ("request.json","create-intent.json","task-id.json")),(0o440,0o440,0o440))
@@ -100,6 +100,17 @@ class EnqueueTest(unittest.TestCase):
         self.assertNotIn('create',self.actions(cli))
         shown['task']['model_override']='unapproved-model'
         self.assert_inert(args,cli,'card drift')
+
+    def test_review_orchestrator_children_replay_and_old_model_remain_bound(self):
+        args,cli=self.fixture();first=self.admit(args,cli)
+        shown=cli.tasks[first['task_id']]
+        shown['children']=['t_00000002','t_00000003']
+        self.assertEqual(self.admit(args,cli),first)
+        shown['task'].update(model_override=enqueue.MODEL,provider_override='anthropic')
+        shown['events'][0]['payload'].update(model_override=enqueue.MODEL,provider_override='anthropic')
+        self.assertEqual(self.admit(args,cli),first)
+        shown['children']=['not-a-task-id']
+        self.assert_inert(args,cli,'task graph drift')
 
     def test_lost_create_response_fails_closed_without_duplicate_on_every_replay(self):
         args,cli=self.fixture(); cli.interrupt=True

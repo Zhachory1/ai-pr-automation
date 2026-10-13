@@ -5,7 +5,7 @@ from hermes_direct_pr_journal import identity
 
 CONFIG = {"pr-review": ("pr-review", "PR Review", "pr-review-v1", 1800), "pr-maintain": ("pr-maintain", "PR Maintain", "pr-maintain-v1", 2400)}
 MODEL = "claude-sonnet-4-6"
-MAINTAIN_MODEL = ("gpt-6-sol", "openai-codex")
+CODEX_MODEL = ("gpt-6-sol", "openai-codex")
 REVIEW_SUMMARY = "Automatic execution stopped; human review required."
 TASK_KEYS = {"id","title","body","assignee","status","priority","tenant","workspace_kind","workspace_path","branch_name","project_id","created_by","created_at","started_at","completed_at","result","skills","max_runtime_seconds","max_retries","model_override","provider_override","session_id","workflow_template_id","current_step_key","completion_contract","last_failure_error"}
 BOARD_KEYS = {"slug","name","description","icon","color","default_workdir","project_id","created_at","archived","db_path","is_current","counts","total"}
@@ -16,9 +16,9 @@ TASK_ID = re.compile(r"t_[0-9a-f]{8}\Z"); MAX_ITEMS = 256; MAX_VALUE = 16384; LO
 
 def fail(message): raise ValueError(message)
 def model_policy(operation, task=None):
-    if operation.startswith("pr-maintain-") and (task is None or
+    if operation.startswith(("pr-maintain-", "pr-review-")) and (task is None or
             (task.get("model_override"), task.get("provider_override")) != (MODEL, "anthropic")):
-        return MAINTAIN_MODEL
+        return CODEX_MODEL
     return MODEL, "anthropic"
 def canonical(value): return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
 def exact(value, keys, label):
@@ -128,7 +128,14 @@ def closed(runs): return all(run["ended_at"] is not None and run["worker_pid"] i
 
 def history(value):
     exact(value, SHOW_KEYS, "show")
-    if value["parents"] != [] or value["children"] != []: fail("task graph drift")
+    children = value["children"]
+    task = value["task"]
+    if (value["parents"] != [] or not isinstance(children, list) or
+            (children and (not isinstance(task, dict) or not isinstance(task.get("tenant"), str)
+                           or not task["tenant"].startswith("pr-review-") or len(children) > 4
+                           or any(not isinstance(child, str) or not TASK_ID.fullmatch(child) for child in children)
+                           or len(set(children)) != len(children)))):
+        fail("task graph drift")
     comments = value["comments"]
     if not isinstance(comments, list) or len(comments) > 100: fail("comment history drift")
     for comment in comments:

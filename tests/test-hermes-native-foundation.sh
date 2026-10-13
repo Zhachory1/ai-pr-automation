@@ -331,15 +331,18 @@ grep -Fq 'values["GH_CONFIG_DIR"] = github_config' scripts/configure-hermes-api.
 for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1 doc-write-v1 memory-curate-v1 pr-safety-v1; do
   grep -A2 '^gateway:' "agent-config/hermes/profiles/$profile/config.yaml" | grep -Fq 'enabled: false'
 done
-for profile in pr-review-v1 pr-maintain-v1 swe-implement-v1; do
+for profile in pr-maintain-v1 swe-implement-v1; do
   grep -Fq 'env_passthrough: [GH_CONFIG_DIR]' "agent-config/hermes/profiles/$profile/config.yaml"
   grep -Fq 'disabled_toolsets: [delegation]' "agent-config/hermes/profiles/$profile/config.yaml"
   grep -Fq 'never delegate or start background work' "agent-config/hermes/profiles/$profile/SOUL.md"
 done
+grep -Fq 'env_passthrough: [GH_CONFIG_DIR, PR_REVIEW_SNAPSHOT_BIN]' agent-config/hermes/profiles/pr-review-v1/config.yaml
+grep -Fq 'disabled_toolsets: [delegation]' agent-config/hermes/profiles/pr-review-v1/config.yaml
 grep -Fq 'skills/pr-review/SKILL.md' agent-config/hermes/profiles/pr-review-v1/distribution.yaml
-grep -Fq 'Your Kanban task body is immutable JSON' agent-config/hermes/profiles/pr-review-v1/SOUL.md
+grep -Fq 'Parent card (no `role` field): orchestrate; do not post' agent-config/hermes/profiles/pr-review-v1/SOUL.md
+grep -Fq 'parents=[your task ID, all selected reviewer task IDs]' agent-config/hermes/profiles/pr-review-v1/SOUL.md
 grep -Fq 'call `kanban_complete`' agent-config/hermes/profiles/pr-review-v1/SOUL.md
-grep -Fq 'metadata `posted_ref`' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
+grep -Fq 'exact marker as `posted_ref`' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
 grep -Fq '`kanban_block` with `kind=needs_input`' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
 grep -Fq 'complete this old task as `superseded`' agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md
 ! grep -Fq 'Runs API override is authoritative' agent-config/hermes/profiles/pr-review-v1/SOUL.md

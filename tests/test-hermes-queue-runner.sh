@@ -53,7 +53,7 @@ PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK
 grep -Fxq 'pr-review-v1' "$tmp/hermes.args"
 grep -q 'hermes_settle_request' "$tmp/settle-generic.sql"
 grep -q 'untrusted-pr-data' "$tmp/work/8-"*/prompt.md
-grep -Fq 'provider: anthropic' agent-config/hermes/profiles/pr-review-v1/config.yaml
+grep -Fq 'provider: openai-codex' agent-config/hermes/profiles/pr-review-v1/config.yaml
 
 rm -f "$tmp/hermes.args" "$tmp/settle-generic.sql"
 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" HERMES_BIN="$tmp/bin/hermes" HERMES_WORK_ROOT="$tmp/work" \
