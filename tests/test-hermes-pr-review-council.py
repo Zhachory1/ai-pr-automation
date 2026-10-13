@@ -309,11 +309,15 @@ class CouncilPlanTest(unittest.TestCase):
                    for role in spec["specialists"]}
         def synthesis(verdict, findings=()):
             return {"operation_id": spec["operation_id"], "artifact_digest": spec["artifact_digest"],
-                    "role": "synthesis", "verdict": verdict, "findings": list(findings)}
+                    "role": "synthesis", "verdict": verdict, "findings": list(findings),
+                    **({"needs_info": "contract evidence is missing"} if verdict == "needs-info" else {})}
         with self.assertRaises(ValueError):
             council.check_verdict(spec, outputs, "approve")
         self.assertEqual(council.check_verdict(spec, outputs, synthesis("approve")), "approve")
         self.assertEqual(council.check_verdict(spec, outputs, synthesis("needs-info")), "needs-info")
+        without_reason=synthesis("needs-info");without_reason.pop("needs_info")
+        with self.assertRaises(ValueError):
+            council.check_verdict(spec, outputs, without_reason)
         outputs["reliability"]["verdict"] = "needs-info"
         with self.assertRaises(ValueError):
             council.check_verdict(spec, outputs, synthesis("approve"))
@@ -364,6 +368,23 @@ class CouncilPlanTest(unittest.TestCase):
         finding['required']=False
         outputs['generalist']['verdict']='clear';outputs['generalist']['findings']=[]
         synthesis['verdict']='approve'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+
+    def test_bounded_needs_info_handoff_fields_preserve_core_contract(self):
+        spec=council.plan(self.fixture())
+        outputs={role:{'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                       'role':role,'verdict':'clear','findings':[]} for role in spec['specialists']}
+        outputs['reliability'].update(verdict='needs-info',needs_info='missing test evidence')
+        synthesis={'operation_id':spec['operation_id'],'artifact_digest':spec['artifact_digest'],
+                   'role':'synthesis','verdict':'needs-info','findings':[],
+                   'needs_info':'manual check needed',
+                   'parent_verdicts':{role:item['verdict'] for role,item in outputs.items()},
+                   'unreviewable_paths':['src/worker.py']}
+        self.assertEqual(council.check_verdict(spec,outputs,synthesis),'needs-info')
+        synthesis['parent_verdicts']['reliability']='clear'
+        with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
+        synthesis['parent_verdicts']['reliability']='needs-info'
+        synthesis['needs_info']='x'*2001
         with self.assertRaises(ValueError):council.check_verdict(spec,outputs,synthesis)
 
     def test_tool_prefix_and_escaped_quotes_do_not_drop_specialist_finding(self):
