@@ -87,6 +87,22 @@ class IngressTest(unittest.TestCase):
             ingress.ENQUEUE.canonical({'operation_id':first.name,'review_id':7}))
         ingress.council_capacity(self.config,'pr-review-'+'3'*64)
 
+    def test_new_review_requires_installed_parent_prompt_and_snapshot_helper(self):
+        config=self.config._replace(council_enabled=True,council_install=self.root/'runtime')
+        with mock.patch.object(ingress,'invoke') as direct:
+            with self.assertRaisesRegex(ValueError,'review orchestrator profile'):
+                ingress.admit(config,'pr-review','a'*64,self.review)
+            direct.assert_not_called()
+        profile=self.root/'profiles/pr-review-v1';(profile/'skills/pr-review').mkdir(parents=True)
+        source=ROOT/'agent-config/hermes/profiles/pr-review-v1'
+        for target in ('SOUL.md','config.yaml','skills/pr-review/SKILL.md'):
+            dest=profile/target;dest.write_bytes((source/target).read_bytes())
+        env=profile/'.env';env.write_text(f'PR_REVIEW_SNAPSHOT_BIN={ROOT/"scripts/hermes-pr-review-snapshot.py"}\n');env.chmod(0o600)
+        ingress.validate_review_parent(config)
+        (profile/'SOUL.md').write_text('stale Runs API prompt')
+        with self.assertRaisesRegex(ValueError,'review orchestrator profile'):
+            ingress.validate_review_parent(config)
+
     def test_uninstalled_council_profiles_block_enablement(self):
         config=self.config._replace(council_enabled=True,council_install=self.root/'runtime')
         with self.assertRaises(ValueError):ingress.validate_council_runtime(config)
@@ -112,33 +128,39 @@ class IngressTest(unittest.TestCase):
         (home/'profiles/pr-review-mvp-v2/.env').chmod(0o644)
         with self.assertRaises(ValueError):ingress.validate_council_runtime(config)
 
-    def test_council_ingress_claims_fast_without_github_or_kanban_calls(self):
+    def test_bound_council_ingress_replays_without_github_or_kanban_calls(self):
         config=self.config._replace(council_enabled=True,council_install=self.root/'runtime')
+        operation=ingress.validate(self.review,'pr-review')['operation_id']
+        workspace=ingress.ENQUEUE.safe_dir(self.work/operation,True)
+        owner={'route':'council-v2','operation_id':operation,'repo':self.review['repo'],
+               'number':self.review['number'],'head_sha':self.review['head_sha'],'title':self.review['title']}
+        ingress.ENQUEUE.immutable(workspace/'request.json',ingress.ENQUEUE.canonical(owner))
         with mock.patch.object(ingress.GITHUB,'GitHub',side_effect=AssertionError('GitHub in ingress')),\
-             mock.patch.object(ingress,'invoke_council',side_effect=AssertionError('worker in ingress')):
+             mock.patch.object(ingress,'invoke_council',side_effect=AssertionError('worker in ingress')),\
+             mock.patch.object(ingress,'invoke',side_effect=AssertionError('legacy in ingress')):
             first=ingress.admit(config,'pr-review','a'*64,self.review)
-            self.assertEqual(first['status'],'deferred')
-            self.assertIsNone(first['task_id'])
+            self.assertEqual((first['status'],first['task_id']),('deferred',None))
             self.assertEqual(first,ingress.admit(config,'pr-review','a'*64,self.review))
-        owner=self.work/first['operation_id']/'request.json'
-        self.assertEqual(json.loads(owner.read_text())['route'],'council-v2')
+        self.assertEqual(json.loads((workspace/'request.json').read_text()),owner)
 
-    def test_council_flag_routes_only_unbound_review_heads(self):
+    def test_new_review_heads_use_kanban_and_bound_council_heads_keep_owner(self):
         config=self.config._replace(council_enabled=True,council_install=self.root/'runtime')
         expected={'kind':'pr-review','board':'pr-review','operation_id':'placeholder',
                   'task_id':'t_00000001','status':'ready'}
-        def new_route(config,request):return {**expected,'operation_id':request['operation_id']}
         with mock.patch.object(ingress,'invoke_council',side_effect=AssertionError('worker in ingress')),\
-             mock.patch.object(ingress,'invoke',side_effect=lambda cfg,kind,req:new_route(cfg,req)) as legacy:
-            self.assertEqual(ingress.admit(config,'pr-review','a'*64,self.review)['status'],'deferred')
-            legacy.assert_not_called()
+             mock.patch.object(ingress,'validate_review_parent'),\
+             mock.patch.object(ingress,'invoke',side_effect=lambda cfg,kind,req:
+                 {**expected,'operation_id':req['operation_id']}) as direct:
+            self.assertEqual(ingress.admit(config,'pr-review','a'*64,self.review)['status'],'ready')
+            direct.assert_called_once()
             old={**self.review,'head_sha':'b'*40}
             op=ingress.validate(old,'pr-review')['operation_id']
             workspace=ingress.ENQUEUE.safe_dir(self.work/op,True)
-            prior={'operation_id':op,**old}
-            ingress.ENQUEUE.immutable(workspace/'request.json',ingress.ENQUEUE.canonical(prior))
-            self.assertEqual(ingress.admit(config,'pr-review','a'*64,old)['status'],'ready')
-            legacy.assert_called_once()
+            owner={'route':'council-v2','operation_id':op,'repo':old['repo'],
+                   'number':old['number'],'head_sha':old['head_sha'],'title':old['title']}
+            ingress.ENQUEUE.immutable(workspace/'request.json',ingress.ENQUEUE.canonical(owner))
+            self.assertEqual(ingress.admit(config,'pr-review','a'*64,old)['status'],'deferred')
+            direct.assert_called_once()
 
     def test_overlapping_kinds_wait_for_the_admission_lock(self):
         entered = threading.Event()

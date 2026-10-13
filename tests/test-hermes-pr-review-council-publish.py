@@ -188,8 +188,51 @@ class PublisherTest(unittest.TestCase):
         self.synthesis.update(verdict='request-changes',findings=[finding],
                               needs_info='Other paths need a manual contract check')
         self.body=publisher.render(self.synthesis,self.plan)
-        self.post('REQUEST_CHANGES')
+        with self.assertRaises(ValueError):self.post('REQUEST_CHANGES')
+        self.assertEqual(self.gh.posts,[])
+        result=self.post('COMMENT')
+        self.assertEqual(result['event'],'COMMENT')
+        self.assertIn('required fix',self.gh.posts[0][4])
         self.assertIn('Other paths need a manual contract check',self.gh.posts[0][4])
+
+    def test_existing_historical_change_request_is_reconciled_without_new_post(self):
+        finding={'severity':'major','required':True,'path':'src/file.py','line':7,
+                 'claim':'required fix','evidence':'changed code loses work','suggestion':'persist before I/O'}
+        self.outputs['generalist'].update(verdict='findings',findings=[finding])
+        self.synthesis.update(verdict='request-changes',findings=[finding])
+        self.body=publisher.render(self.synthesis,self.plan)
+        marker='<!-- ai-pr-automation head='+'a'*40+' -->'
+        content=self.body+'\n\n'+marker
+        self.gh.reviews.append({'id':7,'commit_id':'a'*40,'state':'REQUEST_CHANGES',
+                                'body':content,'author':'review-bot'})
+        legacy=publisher._db(self.db)
+        with legacy:
+            legacy.execute('INSERT INTO effects VALUES (?,?,?,?,?,?,?,?,?,?)',
+                           (self.request['operation_id'],self.request['repo'],self.request['number'],
+                            self.request['head_sha'],self.request['base_sha'],self.request['artifact_digest'],
+                            hashlib.sha256(content.encode()).hexdigest(),'REQUEST_CHANGES','post_started',None))
+        legacy.close()
+        result=self.post('COMMENT')
+        self.assertEqual((result['event'],result['review_id']),('REQUEST_CHANGES',7))
+        self.assertEqual(self.gh.posts,[])
+        with sqlite3.connect(self.db) as db:
+            self.assertEqual(db.execute('SELECT event,phase FROM effects').fetchone(),
+                             ('REQUEST_CHANGES','verified'))
+
+    def test_existing_self_authored_change_request_comment_is_reconciled(self):
+        self.gh.pr_author='review-bot'
+        finding={'severity':'major','required':True,'path':'src/file.py','line':7,
+                 'claim':'required fix','evidence':'changed code loses work','suggestion':'persist before I/O'}
+        self.outputs['generalist'].update(verdict='findings',findings=[finding])
+        self.synthesis.update(verdict='request-changes',findings=[finding])
+        self.body=publisher.render(self.synthesis,self.plan)
+        marker='<!-- ai-pr-automation head='+'a'*40+' -->'
+        content=self.body+'\n\nRecommendation: REQUEST_CHANGES\n\n'+marker
+        self.gh.reviews.append({'id':7,'commit_id':'a'*40,'state':'COMMENT',
+                                'body':content,'author':'review-bot'})
+        result=self.post('COMMENT')
+        self.assertEqual((result['event'],result['review_id']),('COMMENT',7))
+        self.assertEqual(self.gh.posts,[])
 
     def test_missing_or_conflicting_synthesis_cannot_publish(self):
         with self.assertRaises((TypeError,ValueError)):
