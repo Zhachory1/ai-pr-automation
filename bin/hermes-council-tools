@@ -4,6 +4,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -61,6 +62,11 @@ TOOLS = [
     {
         "name": "kanban_show",
         "description": "Show only the Kanban task assigned to this worker.",
+        "inputSchema": object_schema({}),
+    },
+    {
+        "name": "kanban_parent_handoffs",
+        "description": "Read complete validated parent findings of this PR-review synthesis task only.",
         "inputSchema": object_schema({}),
     },
     {
@@ -179,8 +185,14 @@ def safe_binding(aliases):
         data = json.loads(os.read(fd, MAX_BINDING_BYTES + 1))
     finally:
         os.close(fd)
-    if not isinstance(data, dict) or set(data) != {"schema_version", "snapshot_root", "input_root"} \
-            or data["schema_version"] != 1:
+    legacy = {"schema_version", "snapshot_root", "input_root"}
+    pinned = legacy | {"head_sha", "base_sha"}
+    if not isinstance(data, dict) or not (set(data) == legacy and data.get("schema_version") == 1
+                                          or set(data) == pinned and data.get("schema_version") == 2
+                                          and aliases["profile"].startswith("pr-review-")
+                                          and aliases["board"] == "pr-review"
+                                          and all(isinstance(data[key], str) and re.fullmatch(r"[0-9a-f]{40}", data[key])
+                                                  for key in ("head_sha", "base_sha"))):
         fail("invalid council tools binding")
     roots = {}
     for name, alias_name in (("snapshot", "snapshot_root"), ("input", "workflow_root")):
@@ -203,6 +215,8 @@ def safe_binding(aliases):
         if allowed_path.is_symlink() or bound_path.is_symlink() or not allowed.is_dir() or not bound.is_dir():
             fail(f"unsafe {name} root")
         roots[name] = bound
+    if data["schema_version"] == 2:
+        roots.update(head_sha=data["head_sha"], base_sha=data["base_sha"])
     return roots
 
 
@@ -248,9 +262,28 @@ def read_fd(fd):
         fail("file is not UTF-8 text")
 
 
+def git_read(roots, *args, allow_no_match=False):
+    command = ["git", "-C", str(roots["snapshot"]), *args]
+    env = {key:value for key,value in os.environ.items() if not key.startswith("GIT_")}
+    env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_TERMINAL_PROMPT="0", GIT_PAGER="cat")
+    result = subprocess.run(command, capture_output=True, timeout=20, env=env)
+    if (result.returncode and not (allow_no_match and result.returncode == 1 and not result.stdout)) \
+            or len(result.stdout) > MAX_FILE_BYTES:
+        fail("pinned local Git read failed or exceeded limit")
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        fail("pinned local Git content is not UTF-8 text")
+
+
 def snapshot_read(arguments, aliases):
     roots = safe_binding(aliases)
     name, parts = logical_path(arguments["path"])
+    if name == "snapshot" and "head_sha" in roots:
+        if parts == ("diff.patch",):
+            return git_read(roots, "diff", "--no-ext-diff", "--no-textconv", "--binary",
+                            f'{roots["base_sha"]}...{roots["head_sha"]}', "--")
+        return git_read(roots, "show", f'{roots["head_sha"]}:{"/".join(parts)}')
     fd = open_beneath(roots[name], parts)
     try:
         return read_fd(fd)
@@ -262,6 +295,21 @@ def snapshot_search(arguments, aliases):
     query, limit = arguments["query"], arguments.get("max_results", MAX_SEARCH_RESULTS)
     roots = safe_binding(aliases)
     name, parts = logical_path(arguments["path"], allow_root=True)
+    if name == "snapshot" and "head_sha" in roots:
+        args = ["grep", "--no-color", "-n", "-I", "-F", "-e", query, roots["head_sha"], "--"]
+        if parts:
+            args.append("/".join(parts))
+        text = git_read(roots, *args, allow_no_match=True)
+        matches = []
+        for line in text.splitlines():
+            match = re.fullmatch(r"[0-9a-f]{40}:(.+):([0-9]+):(.*)", line)
+            if match:
+                matches.append({"path":"snapshot/" + match[1], "line":int(match[2]),
+                                "text":match[3][:MAX_LINE_CHARS]})
+            if len(matches) > limit:
+                break
+        return json.dumps({"matches":matches[:limit], "truncated":len(matches) > limit},
+                          sort_keys=True, separators=(",", ":"))
     start = open_beneath(roots[name], parts)
     base = "/".join((name, *parts))
     files = entries = bytes_seen = 0
@@ -391,6 +439,8 @@ def kanban_call(name, arguments, aliases):
         from tools import kanban_tools
         handler = getattr(kanban_tools, KANBAN_HANDLERS[name])
         forwarded = {"task_id":aliases["task"],"board":aliases["board"],**arguments}
+        if name == "kanban_complete" and aliases["profile"].startswith("pr-review-"):
+            forwarded["summary"] = "Council handoff recorded"
         text = handler(forwarded)
     if not isinstance(text, str) or len(text) > MAX_TOOL_RESULT_CHARS:
         fail(f"{name} returned an invalid or oversized result")
@@ -400,6 +450,59 @@ def kanban_call(name, arguments, aliases):
     except json.JSONDecodeError:
         is_error = False
     return text, is_error
+
+
+def parent_handoffs(aliases):
+    if aliases["profile"] != "pr-review-synthesis-v2" or aliases["board"] != "pr-review":
+        fail("parent handoffs are restricted to PR-review synthesis")
+    safe_binding(aliases)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    if Path(kb.kanban_db_path(board=aliases["board"])).resolve() != Path(aliases["db"]).resolve():
+        fail("council DB/board binding mismatch")
+    with kbc.connect_closing(board=aliases["board"]) as conn:
+        task = kb.get_task(conn, aliases["task"])
+        run = conn.execute("SELECT task_id,claim_lock,status FROM task_runs WHERE id=?",
+                           (int(aliases["run_id"]),)).fetchone()
+        if (task is None or task.assignee != aliases["profile"] or task.workspace_path != aliases["workspace"]
+                or run is None or run["task_id"] != aliases["task"]
+                or run["claim_lock"] != aliases["claim_lock"] or run["status"] != "running"):
+            fail("council synthesis task claim differs")
+        body = json.loads(task.body)
+        if body.get("role") != "synthesis" or not body.get("artifact_digest") or not body.get("operation_id"):
+            fail("council synthesis identity differs")
+        profiles = {"generalist":"pr-review-generalist-v2", "reliability":"pr-review-reliability-v2",
+                    "mvp":"pr-review-mvp-v2", "security":"pr-review-security-v2"}
+        parents = kb.parent_ids(conn, aliases["task"])
+        if len(parents) not in (3, 4) or set(parents) != set(body.get("parents", [])):
+            fail("council synthesis parents differ")
+        result = {}
+        for parent_id in parents:
+            parent = kb.get_task(conn, parent_id)
+            if parent is None or parent.status != "done":
+                fail("council parent handoff incomplete")
+            parent_body = json.loads(parent.body)
+            role = parent_body.get("role")
+            if (role not in profiles or role in result or parent.assignee != profiles[role]
+                    or parent_body.get("operation_id") != body["operation_id"]
+                    or parent_body.get("artifact_digest") != body["artifact_digest"]):
+                fail("council parent identity differs")
+            runs = kb.list_runs(conn, parent_id)
+            if len(runs) != 1 or runs[0].outcome != "completed" or runs[0].profile != profiles[role] \
+                    or not isinstance(runs[0].metadata, dict):
+                fail("council parent run differs")
+            metadata = runs[0].metadata
+            if (metadata.get("role") != role or metadata.get("operation_id") != body["operation_id"]
+                    or metadata.get("artifact_digest") != body["artifact_digest"]):
+                fail("council parent metadata differs")
+            result[role] = metadata
+        if set(result) not in ({"generalist", "reliability", "mvp"},
+                               {"generalist", "reliability", "mvp", "security"}):
+            fail("council parent roster differs")
+        text = json.dumps(result, sort_keys=True, separators=(",", ":"))
+        if len(text) > 262144:
+            fail("council handoffs exceed tool limit")
+        return text
 
 
 def send(value):
@@ -481,6 +584,8 @@ def main():
                     text, is_error = snapshot_read(arguments, aliases), False
                 elif name == "snapshot_search":
                     text, is_error = snapshot_search(arguments, aliases), False
+                elif name == "kanban_parent_handoffs":
+                    text, is_error = parent_handoffs(aliases), False
                 else:
                     text, is_error = kanban_call(name, arguments, aliases)
                 if reply:

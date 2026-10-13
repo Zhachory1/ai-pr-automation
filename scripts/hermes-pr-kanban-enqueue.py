@@ -86,17 +86,16 @@ def immutable(path, data):
     if existing is not None:
         if existing != data: fail("existing immutable file differs")
         return
-    pattern = re.compile(rf"\.{re.escape(path.name)}\.tmp-[0-9]+-[0-9a-f]{{16}}\Z"); removed = False
-    for temporary in path.parent.iterdir():
-        if pattern.fullmatch(temporary.name): read_immutable(temporary); temporary.unlink(); removed = True
-    if removed: fsync_dir(path.parent)
+    pattern = re.compile(rf"\.{re.escape(path.name)}\.tmp-[0-9]+-[0-9a-f]{{16}}\Z")
+    if any(pattern.fullmatch(item.name) for item in path.parent.iterdir()):
+        fail("unresolved prior immutable write")
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{os.urandom(8).hex()}")
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o440)
         with os.fdopen(descriptor, "wb") as stream:
             os.fchmod(descriptor, 0o440); stream.write(data); stream.flush(); os.fsync(descriptor)
-        if path.exists() or path.is_symlink(): fail("immutable file appeared during publish")
-        os.rename(temporary, path); fsync_dir(path.parent)
+        os.link(temporary, path, follow_symlinks=False)
+        temporary.unlink(); fsync_dir(path.parent)
     except BaseException:
         try: read_immutable(temporary); temporary.unlink(); fsync_dir(path.parent)
         except FileNotFoundError: pass

@@ -70,9 +70,10 @@ def submit(kind, repo, number, title, head, feedback=None):
             or (kind == "pr-review" and value["operation_id"] != operation["operation_id"])
             or (kind == "pr-maintain" and (not re.fullmatch(r"pr-maintain-[0-9a-f]{64}", value["operation_id"])
                 or (value["status"] in {"capped", "deferred"} and value["operation_id"] != operation["operation_id"])))
-            or value["status"] not in {"ready", "active", "review", "done", "capped", "deferred"}
-            or (kind == "pr-review" and value["status"] in {"capped", "deferred"})
-            or ((value["status"] in {"capped", "deferred"}) != (value["task_id"] is None))
+            or value["status"] not in {"ready", "active", "review", "done", "capped", "deferred", "superseded"}
+            or (kind == "pr-review" and value["status"] == "capped"
+                or kind == "pr-maintain" and value["status"] == "superseded")
+            or ((value["status"] in {"capped", "deferred", "superseded"}) != (value["task_id"] is None))
             or (value["task_id"] is not None and not re.fullmatch(r"t_[0-9a-f]{8}", value["task_id"]))):
         raise ValueError("invalid Kanban ingress result")
     return value

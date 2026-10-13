@@ -10,7 +10,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SERVER = ROOT / "bin/hermes-council-tools"
 TOOL_NAMES = [
-    "snapshot_read", "snapshot_search", "kanban_show", "kanban_comment",
+    "snapshot_read", "snapshot_search", "kanban_show", "kanban_parent_handoffs", "kanban_comment",
     "kanban_heartbeat", "kanban_complete", "kanban_block",
 ]
 CONFIG_ENV = {
@@ -205,6 +205,17 @@ print(json.dumps(_build_safe_env(_interpolate_env_vars(json.loads(sys.argv[1])))
             self.assertEqual(forwarded, {"task_id":"task-own","board":"board-own",**supplied})
             self.assertNotIn("run_id", forwarded); self.assertNotIn("claim_lock", forwarded)
             self.assertEqual(handler_env, expected_env)
+
+    def test_pr_review_summary_cannot_leak_private_evidence_into_role_history(self):
+        with tempfile.TemporaryDirectory() as td:
+            env,log=self.fake_pinned(pathlib.Path(td))
+            env['COUNCIL_PROFILE']='pr-review-generalist-v2'
+            result=self.call(env,'kanban_complete',{'summary':'private changed-line evidence',
+                                                     'metadata':{'role':'generalist','findings':[]}})
+            self.assertNotIn('isError',result)
+            forwarded=json.loads(log.read_text().splitlines()[0])[1]
+            self.assertEqual(forwarded['summary'],'Council handoff recorded')
+            self.assertNotIn('private changed-line evidence',log.read_text())
 
     def test_sdk_request_metadata_is_accepted_but_never_used_for_routing(self):
         with tempfile.TemporaryDirectory() as td:

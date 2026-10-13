@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.ai-pr-automation-pr-review-council-gc</string>
+  <key>ProgramArguments</key><array>
+    <string>/opt/homebrew/bin/timeout</string><string>--kill-after=5s</string><string>240s</string>
+    <string>__PYTHON__</string><string>-B</string><string>__REPO_ROOT__/scripts/hermes-pr-review-council-worker.py</string>
+    <string>--stale-gc</string>
+    <string>--work</string><string>__WORK_ROOT__</string>
+    <string>--authority</string><string>__AUTHORITY__</string>
+    <string>--hermes-home</string><string>__HERMES_HOME__</string>
+    <string>--hermes-install</string><string>__HERMES_INSTALL__</string>
+    <string>--hermes-bin</string><string>__HERMES_BIN__</string>
+  </array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__LOG_DIR__/pr-review-council-gc.out.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIR__/pr-review-council-gc.err.log</string>
+</dict></plist>
