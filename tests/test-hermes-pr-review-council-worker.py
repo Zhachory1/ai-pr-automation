@@ -3,6 +3,8 @@ import importlib.machinery
 import importlib.util
 import json
 import hashlib
+import os
+import time
 import subprocess
 import sqlite3
 import sys
@@ -156,6 +158,29 @@ class CouncilWorkerTest(unittest.TestCase):
                  mock.patch.object(worker.INGRESS,'invoke_council',return_value={'status':'done'}) as invoked:
                 self.assertEqual(worker.tick(config,stale_gc=True)['status'],'done')
             invoked.assert_called_once()
+
+    def test_daily_gc_releases_expired_unchanged_head_without_effect(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve();operation='pr-review-'+'a'*64;workspace=root/operation
+            workspace.mkdir(mode=0o700)
+            owner={'route':'council-v2','operation_id':operation,'repo':'example/repo',
+                   'number':17,'head_sha':'a'*40,'title':'synthetic'}
+            path=workspace/'request.json'
+            worker.INGRESS.ENQUEUE.immutable(path,worker.INGRESS.ENQUEUE.canonical(owner))
+            old=time.time()-481;os.utime(path,(old,old))
+            (root/'authority').write_text('repos:\n  - example/repo\n')
+            config=worker.INGRESS.Config(root,root/'authority',root,root/'hermes',{},
+                                          council_install=root/'runtime',council_enabled=True)
+            class GitHub:
+                def state(self,*_):return {'state':'open','head_sha':'a'*40,'base_sha':'b'*40}
+                def reviews_for_head(self,*_):return []
+                def comments(self,*_):return []
+            with mock.patch.object(worker.INGRESS,'validate_council_runtime'),\
+                 mock.patch.object(worker.INGRESS.GITHUB,'GitHub',return_value=GitHub()),\
+                 mock.patch.object(worker.INGRESS,'invoke_council',side_effect=AssertionError('expired post')):
+                self.assertEqual(worker.tick(config,stale_gc=True)['status'],'superseded')
+            self.assertEqual(json.loads((workspace/'review-outcome.json').read_text())['status'],'superseded')
+            worker.INGRESS.council_capacity(config,'pr-review-'+'b'*64)
 
     def test_stale_pending_head_releases_capacity_without_posting(self):
         with tempfile.TemporaryDirectory() as temp:

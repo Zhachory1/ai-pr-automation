@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("review_council_ingress", HERE / "hermes-kanban-ingress.py")
@@ -66,8 +67,6 @@ def gc_cards(config, spec, workspace):
 
 def stale_pending(config, request, github):
     state = github.state(request["repo"], request["number"])
-    if state["state"] == "open" and state["head_sha"] == request["head_sha"]:
-        return None
     workspace = config.work / request["operation_id"]
     if (workspace / "review-effects.sqlite").exists() or (workspace / "review-effects.sqlite").is_symlink():
         raise ValueError("stale head has an unresolved GitHub effect")
@@ -91,6 +90,10 @@ def stale_pending(config, request, github):
                                               (spec["workflow_id"]+':%',)).fetchone())
     elif (workspace / "input/context.json").exists() or (workspace / "snapshot/diff.patch").exists():
         raise ValueError("stale head has incomplete private input")
+    age = time.time() - (workspace / "request.json").stat().st_mtime
+    if (state["state"] == "open" and state["head_sha"] == request["head_sha"]
+            and 0 <= age <= 480 and (spec is None or state["base_sha"] == spec["base_sha"])):
+        return None
     marker = f'<!-- ai-pr-automation head={request["head_sha"]} -->'
     if any(marker in (item.get("body") or "") for item in
            [*github.reviews_for_head(request["repo"], request["number"]),

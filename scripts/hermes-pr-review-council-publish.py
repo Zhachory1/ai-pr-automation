@@ -160,7 +160,7 @@ def redact_verified(conn, ledger, root, receipt):
         os.close(directory)
 
 
-def render(synthesis):
+def render(synthesis, spec=None):
     lines = [f"Council verdict: {synthesis['verdict'].upper()}"]
     for finding in synthesis["findings"]:
         lines.extend((f"{finding['path']}:{finding['line']} [{finding['severity']}] "
@@ -169,6 +169,11 @@ def render(synthesis):
     if not synthesis["findings"]:
         lines.append("No required changes identified." if synthesis["verdict"] == "approve"
                      else "No changed-line findings supplied; more information is required.")
+    unreviewable = spec.get("unreviewable_paths", []) if spec else []
+    if synthesis["verdict"] == "needs-info" and unreviewable:
+        listed = ", ".join(unreviewable[:10])
+        lines.append(f"Manual review required for missing GitHub patches: {listed}"
+                     + (f" (+{len(unreviewable)-10} more)" if len(unreviewable) > 10 else ""))
     return "\n\n".join(lines)
 
 
@@ -180,7 +185,7 @@ def settle(kb, conn, tasks, spec, ledger, github, request, workspace):
     synthesis = outputs["synthesis"]
     event = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES",
              "needs-info": "COMMENT"}[synthesis["verdict"]]
-    result = publish(ledger, github, request, event, render(synthesis), spec,
+    result = publish(ledger, github, request, event, render(synthesis, spec), spec,
                      {role: outputs[role] for role in spec["specialists"]}, synthesis)
     purge_verified(ledger, workspace, spec, tasks["synthesis"])
     return result
@@ -208,7 +213,7 @@ def check_deadline(path, request, spec):
 
 def publish(path, github, request, event, body, spec, outputs, synthesis):
     verdict = COUNCIL.check_verdict(spec, outputs, synthesis)
-    if body != render(synthesis):
+    if body != render(synthesis, spec):
         raise ValueError("GitHub body omits or changes synthesis evidence")
     expected_event = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "needs-info": "COMMENT"}[verdict]
     if (not isinstance(request, dict) or event != expected_event or request.get("operation_id") != spec["operation_id"]

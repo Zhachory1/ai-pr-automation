@@ -166,6 +166,15 @@ class PublisherTest(unittest.TestCase):
         self.assertIn('naming inconsistency',self.gh.posts[0][4])
         self.assertIn('new variable name',self.gh.posts[0][4])
 
+    def test_needs_info_names_unreviewable_paths(self):
+        self.plan['unreviewable_paths']=['src/file.py']
+        self.synthesis['verdict']='needs-info'
+        self.body=publisher.render(self.synthesis,self.plan)
+        result=self.post('COMMENT')
+        self.assertEqual(result['event'],'COMMENT')
+        self.assertIn('src/file.py',self.gh.posts[0][4])
+        self.assertIn('manual',self.gh.posts[0][4].lower())
+
     def test_missing_or_conflicting_synthesis_cannot_publish(self):
         with self.assertRaises((TypeError,ValueError)):
             publisher.publish(self.db,self.gh,self.request,'APPROVE',self.body)
