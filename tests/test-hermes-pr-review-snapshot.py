@@ -28,6 +28,9 @@ class SnapshotTest(unittest.TestCase):
         self.assertIn('model=gpt-6-luna',soul)
         self.assertIn('role="synthesis"',soul)
         self.assertIn('only this card may publish',soul)
+        skill=(ROOT/'agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md').read_text()
+        self.assertIn('A required fix means `COMMENT`',skill)
+        self.assertNotIn('A required fix means `REQUEST_CHANGES`',skill)
 
     def test_pinned_luna_workspaces_replay_and_verified_cleanup(self):
         with tempfile.TemporaryDirectory() as temp:

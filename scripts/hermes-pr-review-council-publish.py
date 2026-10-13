@@ -189,7 +189,7 @@ def settle(kb, conn, tasks, spec, ledger, github, request, workspace):
         return None
     COUNCIL._verified_snapshot(workspace, spec)
     synthesis = outputs["synthesis"]
-    event = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES",
+    event = {"approve": "APPROVE", "request-changes": "COMMENT",
              "needs-info": "COMMENT"}[synthesis["verdict"]]
     result = publish(ledger, github, request, event, render(synthesis, spec), spec,
                      {role: outputs[role] for role in spec["specialists"]}, synthesis)
@@ -201,7 +201,7 @@ def publish(path, github, request, event, body, spec, outputs, synthesis):
     verdict = COUNCIL.check_verdict(spec, outputs, synthesis)
     if body != render(synthesis, spec):
         raise ValueError("GitHub body omits or changes synthesis evidence")
-    expected_event = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "needs-info": "COMMENT"}[verdict]
+    expected_event = {"approve": "APPROVE", "request-changes": "COMMENT", "needs-info": "COMMENT"}[verdict]
     if (not isinstance(request, dict) or event != expected_event or request.get("operation_id") != spec["operation_id"]
             or request.get("artifact_digest") != spec["artifact_digest"]
             or request.get("head_sha") != spec["head_sha"]
@@ -244,12 +244,20 @@ def publish(path, github, request, event, body, spec, outputs, synthesis):
     with closing(_db(path)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM effects WHERE operation_id=?", (request["operation_id"],)).fetchone()
+        existing = matches()
+        if len(existing) == 1 and verdict == "request-changes":
+            prior_event = "COMMENT" if actor.casefold() == author.casefold() else "REQUEST_CHANGES"
+            prior_body = body.rstrip() + ("\n\nRecommendation: REQUEST_CHANGES" if prior_event == "COMMENT" else "")
+            prior_content = prior_body + "\n\n" + marker
+            if (existing[0].get("author") == actor and existing[0].get("state") == prior_event
+                    and existing[0].get("body") == prior_content):
+                content, event = prior_content, prior_event
+                digest = hashlib.sha256(content.encode()).hexdigest()
         binding = (request["repo"], request["number"], request["head_sha"], request["base_sha"],
                    request["artifact_digest"], digest, event)
         if row and tuple(row[key] for key in
                          ("repo", "pr", "head_sha", "base_sha", "artifact_digest", "body_digest", "event")) != binding:
             raise ValueError("review effect differs from prior attempt")
-        existing = matches()
         if len(existing) > 1 or existing and (existing[0].get("author") != actor
                 or existing[0].get("state") != event or existing[0].get("body") != content):
             raise ValueError("GitHub reviews conflict with exact-head marker")
