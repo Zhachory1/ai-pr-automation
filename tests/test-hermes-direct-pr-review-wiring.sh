@@ -9,7 +9,7 @@ compose = Path("docker-compose.yml").read_text()
 review = compose.split("  pr-producer-review:\n", 1)[1].split("\n  pr-producer-maintain:", 1)[0]
 assert 'profiles:' not in review
 assert 'Dockerfile.hermes-pr-review-cron' in review
-assert 'github_discovery_token, pr_review_ingress_key' in review
+assert 'github_discovery_token, pr_review_legacy_owners' in review
 assert 'REQUESTS_DB_HOST' not in review and 'schema-migrate' not in review
 assert 'pr-producer-review-direct:' not in compose
 fleet = Path("scripts/fleet.sh").read_text()
@@ -31,8 +31,8 @@ printf '#!/bin/sh\nexit 0\n' > "$tmp/repo/scripts/hermes-authority.py"
 cat > "$tmp/repo/scripts/compose.sh" <<'SH'
 #!/bin/sh
 if [ "$*" = 'config --format json' ]; then
-  printf '{"secrets":{"github_discovery_token":{"file":"%s"},"pr_review_ingress_key":{"file":"%s"},"pr_maintain_ingress_key":{"file":"%s"}}}\n' \
-    "${MOCK_TOKEN_FILE:-/dev/null}" "${MOCK_KEY_FILE:-/dev/null}" "${MOCK_MAINTAIN_FILE:-/dev/null}"
+  printf '{"secrets":{"github_discovery_token":{"file":"%s"},"pr_review_legacy_owners":{"file":"%s"},"pr_maintain_ingress_key":{"file":"%s"}}}\n' \
+    "${MOCK_TOKEN_FILE:-/dev/null}" "${MOCK_OWNERS_FILE:-/dev/null}" "${MOCK_MAINTAIN_FILE:-/dev/null}"
 else
   printf 'compose %s\n' "$*" >> "$MOCK_LOG"
 fi
@@ -54,7 +54,7 @@ reject() {
   : > "$tmp/ops.log"
   if PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" HERMES_AUTHORITY_SOURCE_FILE="$tmp/authority.yaml" \
      HERMES_DOCKER_AUTHORITY_FILE="$mirror" MOCK_TOKEN_FILE="${MOCK_TOKEN_FILE:-/dev/null}" \
-     MOCK_KEY_FILE="${MOCK_KEY_FILE:-/dev/null}" MOCK_MAINTAIN_FILE="${MOCK_MAINTAIN_FILE:-/dev/null}" \
+     MOCK_OWNERS_FILE="${MOCK_OWNERS_FILE:-/dev/null}" MOCK_MAINTAIN_FILE="${MOCK_MAINTAIN_FILE:-/dev/null}" \
      bash "$tmp/repo/scripts/fleet.sh" up >"$tmp/output" 2>&1; then
     echo 'FAIL: fleet up accepted invalid direct-PR secrets' >&2; exit 1
   fi
@@ -64,11 +64,11 @@ reject() {
 reject
 mkdir -m 700 "$tmp/secrets"
 printf 'fake-token\n' > "$tmp/secrets/token"
-printf 'fake-review-key\n' > "$tmp/secrets/review"
+printf '[]\n' > "$tmp/secrets/owners"
 printf 'fake-maintain-key\n' > "$tmp/secrets/maintain"
 chmod 0600 "$tmp/secrets/"*
-export MOCK_TOKEN_FILE="$tmp/secrets/token" MOCK_KEY_FILE="$tmp/secrets/review" MOCK_MAINTAIN_FILE="$tmp/secrets/maintain"
-for secret in token review maintain; do
+export MOCK_TOKEN_FILE="$tmp/secrets/token" MOCK_OWNERS_FILE="$tmp/secrets/owners" MOCK_MAINTAIN_FILE="$tmp/secrets/maintain"
+for secret in token owners maintain; do
   chmod 0644 "$tmp/secrets/$secret"
   reject
   chmod 0600 "$tmp/secrets/$secret"
@@ -81,7 +81,7 @@ cmp "$tmp/authority.yaml" "$mirror"
 [[ "$(cat "$tmp/ops.log")" == 'compose up -d --build' ]]
 : > "$tmp/ops.log"
 PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" HERMES_AUTHORITY_SOURCE_FILE="$tmp/authority.yaml" \
-  HERMES_DOCKER_AUTHORITY_FILE="$mirror" MOCK_TOKEN_FILE=/dev/null MOCK_KEY_FILE=/dev/null \
+  HERMES_DOCKER_AUTHORITY_FILE="$mirror" MOCK_TOKEN_FILE=/dev/null MOCK_OWNERS_FILE=/dev/null \
   MOCK_MAINTAIN_FILE=/dev/null bash "$tmp/repo/scripts/fleet.sh" support-up
 [[ "$(cat "$tmp/ops.log")" == 'compose up -d --no-build hindsight-db hindsight coderag ui-proxy' ]]
 : > "$tmp/ops.log"

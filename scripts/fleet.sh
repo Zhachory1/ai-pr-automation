@@ -18,7 +18,7 @@ case "${1:-}" in
     "$ROOT/scripts/compose.sh" config --format json | python3 -c '
 import json, os, pathlib, stat, sys
 secrets = json.load(sys.stdin)["secrets"]
-for name in ("github_discovery_token", "pr_review_ingress_key", "pr_maintain_ingress_key"):
+for name in ("github_discovery_token", "pr_review_legacy_owners", "pr_maintain_ingress_key"):
     path = pathlib.Path(secrets[name]["file"])
     try:
         info, parent = path.lstat(), path.parent.lstat()
