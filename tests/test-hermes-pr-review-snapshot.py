@@ -32,6 +32,55 @@ class SnapshotTest(unittest.TestCase):
         self.assertIn('A required fix means `COMMENT`',skill)
         self.assertNotIn('A required fix means `REQUEST_CHANGES`',skill)
 
+    def test_direct_card_cannot_rebind_legacy_council_owner(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=pathlib.Path(temp).resolve();head='a'*40
+            operation=snapshot.COUNCIL.identity('pr-review','example/repo',17,head)['operation_id']
+            workspace=root/operation;workspace.mkdir(mode=0o700)
+            owner={'route':'council-v2','operation_id':operation,'repo':'example/repo',
+                   'number':17,'head_sha':head,'title':'synthetic'}
+            raw=snapshot.ENQUEUE.canonical(owner)
+            snapshot.ENQUEUE.immutable(workspace/'request.json',raw)
+            with self.assertRaisesRegex(ValueError,'exact head'):
+                snapshot.request_at(workspace)
+            self.assertEqual((workspace/'request.json').read_bytes(),raw)
+
+    def test_direct_kanban_parent_claims_owner_from_its_running_card(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home=pathlib.Path(temp).resolve();root=home/'.local/share/ai-pr-automation/pr-kanban'
+            root.mkdir(parents=True);root.chmod(0o700)
+            head='a'*40;operation=snapshot.COUNCIL.identity('pr-review','example/repo',17,head)['operation_id']
+            workspace=root/operation;workspace.mkdir(mode=0o755)
+            request={'operation_id':operation,'repo':'example/repo','number':17,
+                     'url':'https://github.com/example/repo/pull/17','title':'synthetic','head_sha':head}
+            board=home/'board.db'
+            with sqlite3.connect(board) as db:
+                db.execute('CREATE TABLE tasks(id TEXT,body TEXT,assignee TEXT,status TEXT,workspace_kind TEXT,workspace_path TEXT,tenant TEXT,idempotency_key TEXT,current_run_id INTEGER,claim_lock TEXT,model_override TEXT,provider_override TEXT)')
+                db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                    ('t_12345678',json.dumps(request,sort_keys=True,separators=(',',':')),'pr-review-v1',
+                     'running','dir',str(workspace),operation,operation,1,'claim-1',
+                     'gpt-6-sol','openai-codex'))
+            env={'HOME':str(home),'HERMES_KANBAN_BOARD':'pr-review','HERMES_KANBAN_DB':str(board),
+                 'HERMES_KANBAN_TASK':'t_12345678','HERMES_KANBAN_RUN_ID':'1',
+                 'HERMES_KANBAN_CLAIM_LOCK':'claim-1','HERMES_KANBAN_WORKSPACE':str(workspace),
+                 'HERMES_PROFILE':'pr-review-v1'}
+            with mock.patch.dict(os.environ,env):
+                self.assertEqual(snapshot.request_at(workspace),request)
+                self.assertEqual(snapshot.request_at(workspace),request)
+            self.assertEqual((workspace/'request.json').stat().st_mode & 0o777,0o440)
+            self.assertEqual(workspace.stat().st_mode & 0o777,0o700)
+            (workspace/'request.json').unlink()
+            with sqlite3.connect(board) as db:
+                db.execute("UPDATE tasks SET model_override='wrong-model' WHERE id='t_12345678'")
+            with mock.patch.dict(os.environ,env), self.assertRaisesRegex(ValueError,'pinned owner'):
+                snapshot.request_at(workspace)
+            with sqlite3.connect(board) as db:
+                db.execute('UPDATE tasks SET model_override=?,body=? WHERE id=?',
+                           ('gpt-6-sol',json.dumps(request,indent=2),'t_12345678'))
+            with mock.patch.dict(os.environ,env), self.assertRaisesRegex(ValueError,'pinned owner'):
+                snapshot.request_at(workspace)
+            self.assertFalse((workspace/'request.json').exists())
+
     def test_pinned_luna_workspaces_replay_and_verified_cleanup(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp).resolve()

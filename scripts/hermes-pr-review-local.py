@@ -42,7 +42,8 @@ def resolve(repository, head_sha, *, root=None, fetch=True):
         else:
             parsed = urlsplit(url)
             if parsed.scheme not in ("https", "ssh") or parsed.hostname != "github.com" \
-                    or parsed.password or parsed.scheme == "ssh" and parsed.username != "git":
+                    or parsed.password or (parsed.scheme == "https" and parsed.username) \
+                    or (parsed.scheme == "ssh" and parsed.username != "git"):
                 continue
             found = parsed.path.lstrip("/")
         if found.removesuffix(".git").lower() != repository.lower():
@@ -57,4 +58,26 @@ def resolve(repository, head_sha, *, root=None, fetch=True):
             if git(path, "cat-file", "-e", commit).returncode:
                 raise ValueError("review head was not fetched")
         return path
-    raise ValueError("matching local checkout not found; no clone was created")
+    if not fetch:
+        raise ValueError("matching local checkout not found")
+    parent = root / owner
+    if parent.is_symlink():
+        raise ValueError("review checkout parent is linked")
+    if not parent.exists():
+        parent.mkdir(mode=0o700)
+    if not parent.is_dir() or parent.stat().st_uid != os.geteuid() or parent.stat().st_mode & 0o022:
+        raise ValueError("review checkout parent is unsafe")
+    target = parent / name
+    if target.exists() or target.is_symlink():
+        raise ValueError("review checkout destination already exists; reconcile before retry")
+    previous_umask = os.umask(0o077)
+    try:
+        result = subprocess.run(["gh", "repo", "clone", repository, str(target), "--", "--no-checkout", "--no-tags"],
+                                capture_output=True, timeout=120, env={**env, "GH_PROMPT_DISABLED": "1"}, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("review checkout clone unavailable; inspect destination before retry") from error
+    finally:
+        os.umask(previous_umask)
+    if result.returncode:
+        raise ValueError("review checkout clone failed; inspect destination before retry")
+    return resolve(repository, head_sha, root=root, fetch=True)

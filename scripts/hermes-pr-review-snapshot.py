@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare pinned read-only PR evidence for native Kanban reviewer cards."""
 import argparse
+from contextlib import closing
 import importlib.util
 import json
 import os
@@ -24,9 +25,54 @@ LOCAL = load("review_snapshot_local", "hermes-pr-review-local.py")
 GITHUB = load("review_snapshot_github", "hermes_pr_review_github.py")
 
 
-def request_at(workspace):
+def _claim_native(workspace):
+    root = ENQUEUE.safe_dir(Path.home() / ".local/share/ai-pr-automation/pr-kanban")
+    if (workspace.parent != root or workspace.is_symlink() or not workspace.is_dir()
+            or workspace.stat().st_uid != os.geteuid() or any(workspace.iterdir())
+            or os.environ.get("HERMES_KANBAN_BOARD") != "pr-review"
+            or os.environ.get("HERMES_KANBAN_WORKSPACE") != str(workspace)
+            or os.environ.get("HERMES_PROFILE") != "pr-review-v1"):
+        raise ValueError("native review workspace is not bound to the operator")
+    board = Path(os.environ.get("HERMES_KANBAN_DB", ""))
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "")
+    if (not board.is_absolute() or board.is_symlink() or not board.is_file()
+            or board.stat().st_uid != os.geteuid() or not ENQUEUE.TASK_ID.fullmatch(task_id)):
+        raise ValueError("native review board or task is unavailable")
+    with closing(sqlite3.connect(f"file:{board}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        task = conn.execute("SELECT body,assignee,status,workspace_kind,workspace_path,tenant,"
+                            "idempotency_key,current_run_id,claim_lock,model_override,provider_override "
+                            "FROM tasks WHERE id=?", (task_id,)).fetchone()
+    try:
+        request = json.loads(task["body"])
+        encoded = ENQUEUE.canonical(request)
+        expected = COUNCIL.identity("pr-review", request["repo"], request["number"], request["head_sha"])["operation_id"]
+        valid = (type(request) is dict and set(request) ==
+                 {"operation_id", "repo", "number", "url", "title", "head_sha"}
+                 and type(request["number"]) is int and 0 < len(request["title"]) <= 256
+                 and request["operation_id"] == expected == workspace.name
+                 and request["url"] == f'https://github.com/{request["repo"]}/pull/{request["number"]}'
+                 and encoded == task["body"].encode())
+    except (TypeError, ValueError, KeyError, AttributeError) as error:
+        raise ValueError("native review card identity is invalid") from error
+    if (not valid or task["assignee"] != "pr-review-v1" or task["status"] != "running"
+            or task["workspace_kind"] != "dir" or task["workspace_path"] != str(workspace)
+            or task["tenant"] != expected or task["idempotency_key"] != expected
+            or task["model_override"] != "gpt-6-sol" or task["provider_override"] != "openai-codex"
+            or str(task["current_run_id"]) != os.environ.get("HERMES_KANBAN_RUN_ID")
+            or not task["claim_lock"] or task["claim_lock"] != os.environ.get("HERMES_KANBAN_CLAIM_LOCK")):
+        raise ValueError("native review card differs from pinned owner")
+    workspace.chmod(0o700)
     ENQUEUE.safe_dir(workspace)
-    request = json.loads(ENQUEUE.read_immutable(workspace / "request.json"))
+    ENQUEUE.immutable(workspace / "request.json", encoded)
+
+
+def request_at(workspace):
+    path = workspace / "request.json"
+    if not path.exists() and not path.is_symlink():
+        _claim_native(workspace)
+    ENQUEUE.safe_dir(workspace)
+    request = json.loads(ENQUEUE.read_immutable(path))
     if (not isinstance(request, dict) or set(request) !=
             {"operation_id", "repo", "number", "url", "title", "head_sha"}
             or type(request["number"]) is not int or request["operation_id"] != workspace.name
@@ -166,7 +212,7 @@ def main():
     parser.add_argument("--review-id", type=int)
     parser.add_argument("--event", choices=("APPROVE", "REQUEST_CHANGES", "COMMENT"))
     args = parser.parse_args()
-    workspace = ENQUEUE.safe_dir(args.workspace)
+    workspace = args.workspace
     github = GITHUB.GitHub()
     if args.mode == "prepare":
         print(json.dumps(prepare(workspace, github), sort_keys=True))
