@@ -25,6 +25,7 @@ class SnapshotTest(unittest.TestCase):
             self.assertIn(role,soul)
         self.assertIn('parents=[your task ID]',soul)
         self.assertIn('parents=[your task ID, all selected reviewer task IDs]',soul)
+        self.assertIn('result_paths',soul)
         self.assertIn('model=gpt-6-luna',soul)
         self.assertIn('role="synthesis"',soul)
         self.assertIn('only this card may publish',soul)
@@ -139,7 +140,9 @@ class SnapshotTest(unittest.TestCase):
                         db.execute('INSERT INTO task_runs(task_id,profile,outcome,ended_at,worker_pid,summary,metadata,error) VALUES (?,?,?,?,?,?,?,?)',
                             (task_id,f'pr-review-{role}-v2','crashed',1,None,'old failure','{"private":"error"}',None))
                     db.execute('INSERT INTO task_runs(task_id,profile,outcome,ended_at,worker_pid,summary,metadata,error) VALUES (?,?,?,?,?,?,?,?)',
-                        (task_id,f'pr-review-{role}-v2','completed',2,None,'private summary','{"evidence":"private"}',None))
+                        (task_id,f'pr-review-{role}-v2','completed',2,None,'private summary',
+                         json.dumps({'operation_id':operation,'role':role,'verdict':'clear',
+                                     'findings':[],'artifact_digest':prepared['artifact_digest']}),None))
                     db.execute('INSERT INTO task_comments VALUES (?,?,?)',
                         (task_id,f'pr-review-{role}-v2','private comment'))
                     db.execute('INSERT INTO task_events VALUES (?,?)',(task_id,'private event'))
@@ -148,6 +151,14 @@ class SnapshotTest(unittest.TestCase):
                      json.dumps({'role':'synthesis','operation_id':operation,
                                  'artifact_digest':prepared['artifact_digest']}),None,None,
                      'gpt-6-sol','openai-codex'))
+            with mock.patch.dict(os.environ,{'HERMES_KANBAN_DB':str(board),
+                                             'HERMES_KANBAN_TASK':'t_00000003'}), \
+                    mock.patch.object(snapshot.LOCAL,'resolve',return_value=repo):
+                handoffs=snapshot.prepare(workspace,github)['result_paths']
+                self.assertEqual(set(handoffs),{'reliability','mvp'})
+                for role,path in handoffs.items():
+                    self.assertEqual(json.loads(pathlib.Path(path).read_text())['role'],role)
+                    self.assertNotIn('artifact_digest',json.loads(pathlib.Path(path).read_text()))
             with mock.patch.dict(os.environ,{'HERMES_KANBAN_DB':str(board)}):
                 with self.assertRaisesRegex(ValueError,'not verified'):
                     snapshot.cleanup(workspace,8,'APPROVE',github)
@@ -171,14 +182,29 @@ class SnapshotTest(unittest.TestCase):
                     snapshot.cleanup(workspace,7,'APPROVE',github)
                 with sqlite3.connect(board) as db:
                     db.execute('DELETE FROM task_comments WHERE author IS NULL')
-                snapshot.cleanup(workspace,7,'APPROVE',github)
+                    db.execute("UPDATE task_runs SET ended_at=NULL,worker_pid=123 WHERE task_id='t_00000002' AND outcome='crashed'")
+                def settle_failed_attempt(_):
+                    with sqlite3.connect(board) as db:
+                        db.execute("UPDATE task_runs SET ended_at=1,worker_pid=NULL WHERE task_id='t_00000002' AND outcome='crashed'")
+                with mock.patch.object(snapshot.time,'sleep',side_effect=settle_failed_attempt) as wait:
+                    snapshot.cleanup(workspace,7,'APPROVE',github)
+                    self.assertEqual(wait.call_count,1)
                 self.assertFalse((workspace/'input/context.json').exists())
                 self.assertFalse((workspace/'input/identity.json').exists())
+                self.assertTrue(all(not pathlib.Path(path).exists() for path in handoffs.values()))
+                busy=sqlite3.OperationalError('database is locked')
+                busy.sqlite_errorcode=sqlite3.SQLITE_BUSY
+                with mock.patch.object(snapshot,'redact_review_cards',side_effect=[busy,None]), \
+                        mock.patch.object(snapshot.time,'sleep') as wait:
+                    snapshot.cleanup(workspace,7,'APPROVE',github)
+                    wait.assert_called_once_with(1)
                 with sqlite3.connect(board) as db:
                     self.assertEqual(db.execute('SELECT metadata FROM task_runs').fetchall(),[(None,),(None,),(None,)])
                     self.assertEqual(db.execute('SELECT body FROM task_comments').fetchall(),[('[redacted]',),('[redacted]',)])
                 (workspace/'input/context.json').write_bytes(private)
                 (workspace/'input/context.json').chmod(0o400)
+                with sqlite3.connect(board) as db:
+                    db.execute("UPDATE tasks SET status='blocked' WHERE id='t_00000003'")
                 snapshot.cleanup(workspace,7,'APPROVE',github)
                 self.assertFalse((workspace/'input/context.json').exists())
 

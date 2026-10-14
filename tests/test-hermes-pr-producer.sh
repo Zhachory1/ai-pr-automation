@@ -338,4 +338,29 @@ bridge_deferred_out="$(DEFER_BRIDGE=1 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" GH
 echo "$bridge_deferred_out" | grep -q 'admitted=0 failed=0 skipped=1' \
   || { echo 'FAIL: active maintenance round was not deferred' >&2; exit 1; }
 
-echo 'PASS: hermes-pr-producer direct, API, and Compose Kanban bridge modes'
+# Dashboard mode admits assigned PRs across repos without a repository allowlist.
+cat > "$tmp/bin/dashboard-submit" <<'PY'
+import json,os,pathlib,sys
+repo,number,title,head=sys.argv[1:]
+with pathlib.Path(os.environ['TEST_STATE'],'dashboard.log').open('a') as out:
+    out.write(json.dumps([repo,number,title,head])+'\n')
+status='excluded' if os.environ.get('EXCLUDE_PR')==number else 'ready'
+print(json.dumps({'operation_id':'pr-review-'+'a'*64,'task_id':None if status=='excluded' else 't_12345678',
+                  'status':status}))
+PY
+: > "$tmp/dashboard.log"
+dashboard_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+  HERMES_AUTHORITY_FILE="$tmp/nonexistent-authority.yaml" \
+  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" \
+  bin/hermes-pr-producer review 2>&1)"
+[[ "$(wc -l < "$tmp/dashboard.log" | tr -d ' ')" == 3 ]] || { echo 'FAIL: dashboard discovery excluded a repository' >&2; exit 1; }
+grep -Fq 'other/repo' "$tmp/dashboard.log"
+echo "$dashboard_out" | grep -q 'admitted=3 failed=0 skipped=0' || { echo "FAIL: dashboard summary $dashboard_out" >&2; exit 1; }
+: > "$tmp/dashboard.log"
+excluded_out="$(EXCLUDE_PR=9 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+  HERMES_AUTHORITY_FILE="$tmp/nonexistent-authority.yaml" \
+  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" \
+  bin/hermes-pr-producer review 2>&1)"
+echo "$excluded_out" | grep -q 'admitted=2 failed=0 skipped=1' || { echo 'FAIL: legacy exclusion not skipped' >&2; exit 1; }
+
+echo 'PASS: hermes-pr-producer direct, API, bridge, and dashboard modes'

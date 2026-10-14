@@ -116,10 +116,10 @@ services:
     restart: unless-stopped
     environment:
       PR_REVIEW_CRON_SCHEDULE: ${PR_REVIEW_CRON_SCHEDULE:-*/5 * * * *}
-      HERMES_KANBAN_INGRESS_URL: http://host.docker.internal:8767
-    secrets: [github_discovery_token, pr_review_ingress_key]
+      PR_REVIEW_WORK_ROOT: ${PR_REVIEW_WORK_ROOT:?set PR_REVIEW_WORK_ROOT to the host review work root}
+    secrets: [github_discovery_token, pr_review_legacy_owners]
     volumes:
-      - ${HERMES_AUTHORITY_FILE:?set HERMES_AUTHORITY_FILE to the Docker-readable operator authority file}:/config/authority.yaml:ro
+      - pr_review_requests:/state
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -165,6 +165,7 @@ services:
 volumes:
   hindsight_pgdata:
   coderag_cache:
+  pr_review_requests:
   signal_state:
 
 secrets:
@@ -174,7 +175,7 @@ secrets:
     file: ${FLEET_CONTROLLER_TLS_KEY_FILE:?set FLEET_CONTROLLER_TLS_KEY_FILE}
   github_discovery_token:
     file: ${GITHUB_DISCOVERY_TOKEN_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/github-discovery-token}
-  pr_review_ingress_key:
-    file: ${PR_REVIEW_INGRESS_KEY_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/pr-review-ingress-key}
+  pr_review_legacy_owners:
+    file: ${PR_REVIEW_LEGACY_OWNERS_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/pr-review-legacy-owners.json}
   pr_maintain_ingress_key:
     file: ${PR_MAINTAIN_INGRESS_KEY_FILE:-/Users/Shared/ai-pr-automation-runtime/secrets/pr-maintain-ingress-key}

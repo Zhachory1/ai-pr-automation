@@ -27,8 +27,8 @@ AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-$HERE/scripts/hermes-authority.py}"
 [[ -x "$AUTHORITY_BIN" ]] || AUTHORITY_BIN="${HERMES_AUTHORITY_BIN:-/usr/local/libexec/ai-pr-automation/hermes-authority.py}"
 if [[ "$MODE" == review ]]; then QUEUE_VAR=PR_REVIEW_QUEUE_ENGINE; else QUEUE_VAR=PR_MAINTAIN_QUEUE_ENGINE; fi
 QUEUE_ENGINE="${!QUEUE_VAR:-bridge}"
-[[ "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge ]] \
-  || { echo "$QUEUE_VAR must be kanban, api, or bridge" >&2; exit 2; }
+[[ "$QUEUE_ENGINE" == kanban || "$QUEUE_ENGINE" == api || "$QUEUE_ENGINE" == bridge || ( "$MODE" == review && "$QUEUE_ENGINE" == dashboard ) ]] \
+  || { echo "$QUEUE_VAR is not supported: $QUEUE_ENGINE" >&2; exit 2; }
 
 ts() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log() { echo "$(ts) hermes-pr-producer[$MODE] $*" >&2; }
@@ -36,7 +36,10 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dependency: $1" >&2;
 need gh; need jq; need python3
 TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 [[ -n "$TIMEOUT_BIN" ]] || { echo "GNU timeout required (coreutils)" >&2; exit 2; }
-if [[ "$QUEUE_ENGINE" == bridge ]]; then
+if [[ "$QUEUE_ENGINE" == dashboard ]]; then
+  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="${HERMES_KANBAN_DASHBOARD_SUBMIT_BIN:-$HERE/scripts/hermes-review-dashboard-submit.py}"
+  [[ -f "$HERMES_KANBAN_DASHBOARD_SUBMIT_BIN" ]] || { echo "direct Kanban client unavailable" >&2; exit 2; }
+elif [[ "$QUEUE_ENGINE" == bridge ]]; then
   HERMES_KANBAN_SUBMIT_BIN="${HERMES_KANBAN_SUBMIT_BIN:-$HERE/scripts/hermes-kanban-submit.py}"
   [[ -f "$HERMES_KANBAN_SUBMIT_BIN" ]] || { echo "Kanban ingress client unavailable" >&2; exit 2; }
   HERMES_PYTHON=python3
@@ -180,17 +183,20 @@ sys.stdout.buffer.write(raw)
 ' "$HERMES_PR_KANBAN_WORK_ROOT" "$1" "$2" "$3" "$4" 2>/dev/null
 }
 
-# Load the granted-repo allowlist once. Empty grant = nothing to do (not an error).
-mapfile -t GRANTED < <(python3 "$AUTHORITY_BIN" --file "$AUTHORITY" 2>/dev/null | jq -r '.repos[]?' || true)
-if (( ${#GRANTED[@]} == 0 )); then log "no repos granted in $AUTHORITY; nothing to discover"; exit 0; fi
-repo_granted() { local r="$1"; local g; for g in "${GRANTED[@]}"; do [[ "$g" == "$r" || "$g" == "${r%%/*}/*" ]] && return 0; done; return 1; }
+# Dashboard review discovery searches assigned PRs across all accessible repositories.
+GRANTED=()
+if [[ "$QUEUE_ENGINE" != dashboard ]]; then
+  mapfile -t GRANTED < <(python3 "$AUTHORITY_BIN" --file "$AUTHORITY" 2>/dev/null | jq -r '.repos[]?' || true)
+  if (( ${#GRANTED[@]} == 0 )); then log "no repos granted in $AUTHORITY; nothing to discover"; exit 0; fi
+fi
+repo_granted() { local r="$1"; local g; [[ "$QUEUE_ENGINE" == dashboard ]] && return 0; for g in "${GRANTED[@]}"; do [[ "$g" == "$r" || "$g" == "${r%%/*}/*" ]] && return 0; done; return 1; }
 
 ALL_OWNERS=()
 if [[ -n "$DISCOVER_ALL_OWNERS" ]]; then
   IFS=',' read -r -a ALL_OWNERS <<<"$DISCOVER_ALL_OWNERS"
   for owner in "${ALL_OWNERS[@]}"; do
     [[ "$owner" =~ ^[A-Za-z0-9._-]+$ ]] || { log "invalid discover-all owner: $owner"; exit 2; }
-    [[ " ${GRANTED[*]} " == *" $owner/* "* ]] || { log "discover-all owner lacks wildcard authority: $owner"; exit 2; }
+    [[ "$QUEUE_ENGINE" == dashboard || " ${GRANTED[*]} " == *" $owner/* "* ]] || { log "discover-all owner lacks wildcard authority: $owner"; exit 2; }
   done
 fi
 
@@ -200,7 +206,8 @@ search_prs() {
     --jq '.[] | [.repository.nameWithOwner, (.number|tostring), .url, .title, (.updatedAt|fromdateiso8601|tostring)] | @tsv' 2>/dev/null
 }
 
-log "discovering PRs ($GH_FILTER @me, all owners: ${DISCOVER_ALL_OWNERS:-none}) across ${#GRANTED[@]} granted repo(s)"
+if [[ "$QUEUE_ENGINE" == dashboard ]]; then scope='all accessible repos'; else scope="${#GRANTED[@]} granted repo(s)"; fi
+log "discovering PRs ($GH_FILTER @me, all owners: ${DISCOVER_ALL_OWNERS:-none}) across $scope"
 gh_status=0
 prs="$(search_prs "$GH_FILTER" @me)" || gh_status=$?
 if (( gh_status == 0 )); then
@@ -241,6 +248,21 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
       failed=$((failed+1)); log "feedback API failed for $repo#$number@$sha"; continue
     fi
     if [[ "$feedback" == empty ]]; then skip=$((skip+1)); log "skip $repo#$number@$sha: no actionable feedback"; continue; fi
+  fi
+  if [[ "$QUEUE_ENGINE" == dashboard ]]; then
+    if result="$("$TIMEOUT_BIN" --kill-after=5s 40s python3 "$HERMES_KANBAN_DASHBOARD_SUBMIT_BIN" "$repo" "$number" "$title" "$sha")"; then
+      status="$(jq -er 'select(type=="object" and (keys|sort)==["operation_id","status","task_id"] and (.operation_id|test("^pr-review-[0-9a-f]{64}$")) and
+        ((.status=="ready" and (.task_id|test("^t_[0-9a-f]{8}$"))) or
+         ((.status=="cached" or .status=="excluded") and .task_id==null))) | .status' <<<"$result")" || status=""
+      case "$status" in
+        ready) enq=$((enq+1)); log "Kanban pr-review $repo#$number@$sha: $result" ;;
+        cached|excluded) skip=$((skip+1)); log "skip $repo#$number@$sha: $status" ;;
+        *) failed=$((failed+1)); log "invalid dashboard response for $repo#$number@$sha" ;;
+      esac
+    else
+      failed=$((failed+1)); log "Kanban dashboard admission failed for $repo#$number@$sha"
+    fi
+    continue
   fi
   if [[ "$QUEUE_ENGINE" == bridge ]]; then
     submit=("$HERMES_KANBAN_SUBMIT_BIN" "$KIND" "$repo" "$number" "$title" "$sha")
