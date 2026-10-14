@@ -49,7 +49,8 @@ elif [[ "$1" == api && "$*" == *'/reviews?per_page=100'* ]]; then
     if [[ -n "${REVIEWED_PR_NUMBER:-}" && "$*" == *"/pulls/$REVIEWED_PR_NUMBER/reviews"* ]]; then
       printf '[]\n'
       jq -cn --arg sha "${REVIEWED_HEAD:-${HEAD_SHA:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}}" \
-        '[{id:1,user:{login:"maintainer"},commit_id:$sha,state:"APPROVED"}]'
+        --arg state "${REVIEWED_STATE:-APPROVED}" \
+        '[{id:1,user:{login:"maintainer"},commit_id:$sha,state:$state}]'
     else
       printf '[]\n'
     fi
@@ -388,6 +389,11 @@ reviewed_out="$(REVIEWED_PR_NUMBER=7 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_
   HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" bin/hermes-pr-producer review 2>&1)"
 [[ "$(wc -l < "$tmp/dashboard.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: own same-head review admitted to Kanban' >&2; exit 1; }
 echo "$reviewed_out" | grep -q 'admitted=2 failed=0 skipped=1'
+: > "$tmp/dashboard.log"
+pending_out="$(REVIEWED_PR_NUMBER=7 REVIEWED_STATE=PENDING PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" bin/hermes-pr-producer review 2>&1)"
+[[ "$(wc -l < "$tmp/dashboard.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: own pending same-head review admitted to Kanban' >&2; exit 1; }
+echo "$pending_out" | grep -q 'admitted=2 failed=0 skipped=1'
 : > "$tmp/dashboard.log"
 old_head_out="$(REVIEWED_PR_NUMBER=7 REVIEWED_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
   PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \

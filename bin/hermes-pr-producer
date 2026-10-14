@@ -268,7 +268,7 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
     if ! reviewed="$(gh_read api --paginate "repos/$repo/pulls/$number/reviews?per_page=100" 2>/dev/null | jq -sr --arg login "${login,,}" --arg head "$sha" '
       if length==0 or any(.[];type!="array") then error("invalid review pages")
       else any(.[][]; (.user.login|type=="string") and (.user.login|ascii_downcase)==$login
-                       and .commit_id==$head and (.state|type=="string") and .state!="PENDING") end
+                       and .commit_id==$head and (.state|type=="string")) end
     ' 2>/dev/null)"; then
       failed=$((failed+1)); log "review history unavailable for $repo#$number@$sha"; continue
     fi
