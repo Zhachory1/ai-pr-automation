@@ -5,8 +5,10 @@ model:
   provider: openai-codex
   default: gpt-6-luna
 fallback_providers: []
+terminal:
+  env_passthrough: [GH_CONFIG_DIR]
 platform_toolsets:
-  cli: [council-tools]
+  cli: [council-tools, terminal, file]
   api_server: [no_mcp]
 plugins:
   enabled: []
@@ -20,7 +22,7 @@ memory:
 skills:
   creation_nudge_interval: 0
 agent:
-  disabled_toolsets: [delegation, kanban, terminal, file, code_execution, browser, computer_use, web, skills, memory, vision, image_gen, tts, todo, connections]
+  disabled_toolsets: [delegation, kanban, code_execution, browser, computer_use, web, skills, memory, vision, image_gen, tts, todo, connections]
   max_turns: 80
   api_max_retries: 0
 mcp_servers:
@@ -41,4 +43,4 @@ mcp_servers:
       COUNCIL_PROFILE: "${HERMES_PROFILE}"
       COUNCIL_TOOLS_PYTHON: "${HERMES_COUNCIL_TOOLS_PYTHON}"
     tools:
-      include: [snapshot_read, snapshot_search, kanban_show, kanban_comment, kanban_heartbeat, kanban_complete, kanban_block]
+      include: [kanban_show, kanban_heartbeat, kanban_complete, kanban_block]

@@ -233,8 +233,16 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
   if (( MAX_UPDATED_AGE_DAYS > 0 )) && [[ "$updated_epoch" =~ ^[0-9]+$ ]] && (( updated_epoch < cutoff )); then
     skip=$((skip+1)); continue
   fi
-  sha="$("$TIMEOUT_BIN" --kill-after=5s "${GH_TIMEOUT_SECONDS}s" gh pr view "$number" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
-  if [[ -z "$sha" ]]; then log "skip $repo#$number: could not resolve head sha"; skip=$((skip+1)); continue; fi
+  if [[ "$QUEUE_ENGINE" == dashboard ]]; then
+    pair="$(gh_read pr view "$number" -R "$repo" --json headRefOid,baseRefOid --jq '[.headRefOid,.baseRefOid]|@tsv' 2>/dev/null || true)"
+    IFS=$'\t' read -r sha base <<<"$pair"
+    if [[ ! "$sha" =~ ^[0-9a-f]{40}$ || ! "$base" =~ ^[0-9a-f]{40}$ ]]; then
+      failed=$((failed+1)); log "could not resolve pinned PR commits for $repo#$number"; continue
+    fi
+  else
+    sha="$(gh_read pr view "$number" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+    if [[ -z "$sha" ]]; then log "skip $repo#$number: could not resolve head sha"; skip=$((skip+1)); continue; fi
+  fi
   feedback=""
   if [[ "$KIND" == pr-maintain ]]; then
     if (( login_attempted == 0 )); then
@@ -250,13 +258,32 @@ while IFS=$'\t' read -r repo number url title updated_epoch; do
     if [[ "$feedback" == empty ]]; then skip=$((skip+1)); log "skip $repo#$number@$sha: no actionable feedback"; continue; fi
   fi
   if [[ "$QUEUE_ENGINE" == dashboard ]]; then
-    if result="$("$TIMEOUT_BIN" --kill-after=5s 40s python3 "$HERMES_KANBAN_DASHBOARD_SUBMIT_BIN" "$repo" "$number" "$title" "$sha")"; then
+    if (( login_attempted == 0 )); then
+      login_attempted=1
+      if login="$(gh_read api user --jq .login 2>/dev/null)" && [[ -n "$login" ]]; then login_ok=1; fi
+    fi
+    if (( login_ok == 0 )); then
+      failed=$((failed+1)); log "review actor lookup failed for $repo#$number@$sha"; continue
+    fi
+    if ! reviewed="$(gh_read api --paginate "repos/$repo/pulls/$number/reviews?per_page=100" 2>/dev/null | jq -sr --arg login "${login,,}" --arg head "$sha" '
+      if length==0 or any(.[];type!="array") then error("invalid review pages")
+      else any(.[][]; (.user.login|type=="string") and (.user.login|ascii_downcase)==$login
+                       and .commit_id==$head and (.state|type=="string") and .state!="PENDING") end
+    ' 2>/dev/null)"; then
+      failed=$((failed+1)); log "review history unavailable for $repo#$number@$sha"; continue
+    fi
+    if [[ "$reviewed" == true ]]; then
+      skip=$((skip+1)); log "skip $repo#$number@$sha: already reviewed by this account"; continue
+    fi
+    if [[ "$reviewed" != false ]]; then
+      failed=$((failed+1)); log "invalid review history for $repo#$number@$sha"; continue
+    fi
+    if result="$("$TIMEOUT_BIN" --kill-after=5s 40s python3 "$HERMES_KANBAN_DASHBOARD_SUBMIT_BIN" "$repo" "$number" "$title" "$sha" "$base")"; then
       status="$(jq -er 'select(type=="object" and (keys|sort)==["operation_id","status","task_id"] and (.operation_id|test("^pr-review-[0-9a-f]{64}$")) and
-        ((.status=="ready" and (.task_id|test("^t_[0-9a-f]{8}$"))) or
-         ((.status=="cached" or .status=="excluded") and .task_id==null))) | .status' <<<"$result")" || status=""
+        ((.status=="ready" or .status=="existing") and (.task_id|test("^t_[0-9a-f]{8}$")))) | .status' <<<"$result")" || status=""
       case "$status" in
         ready) enq=$((enq+1)); log "Kanban pr-review $repo#$number@$sha: $result" ;;
-        cached|excluded) skip=$((skip+1)); log "skip $repo#$number@$sha: $status" ;;
+        existing) skip=$((skip+1)); log "skip $repo#$number@$sha: existing Kanban card" ;;
         *) failed=$((failed+1)); log "invalid dashboard response for $repo#$number@$sha" ;;
       esac
     else
