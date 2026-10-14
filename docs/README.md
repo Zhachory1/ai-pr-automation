@@ -3,7 +3,7 @@
 - **[From-zero host-native setup](getting-started.md)** — prerequisites, credentials, TLS, and explicit live-activation gate.
 - **[Configuration](configuration.md)** — current credentials and process boundaries.
 - **[Architecture](architecture.md)** — current GitHub → Kanban → Hermes PR flow.
-- **[PR-review replacement design](DD-pr-review-github-files.md)** — agreed GitHub-pinned, file-handoff path; not live yet.
+- **[PR-review replacement design](DD-pr-review-github-files.md)** — GitHub-pinned, file-handoff path; enabled only via the opt-in review profile.
 - **[Historical documentation plan](documentation-plan.md)** — superseded rollout checklist.
 - **[Operations](operations.md)** — Kanban status, reconciliation, safe stop, and recovery limits.
 - **[Contributing](contributing.md)** — source map and focused checks.

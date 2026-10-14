@@ -5,7 +5,7 @@ Use [getting started](getting-started.md) for current setup and [`.env.example`]
 | Boundary | Setting | Purpose |
 | --- | --- | --- |
 | PR discovery | `GITHUB_DISCOVERY_TOKEN_FILE` | Read-only GitHub token shared by both Compose cron producers. |
-| Review Kanban (opt-in; not ready) | `PR_REVIEW_WORK_ROOT` | Host absolute review workspace root; the replacement uses the local dashboard API and native non-archived task key, not a JSON request cache. Do not enable before the [replacement design](DD-pr-review-github-files.md) is complete. |
+| Review Kanban (opt-in) | `PR_REVIEW_WORK_ROOT` | Host absolute review workspace root; the replacement uses the local dashboard API and native non-archived task key, not a JSON request cache. Follow the [review cutover gate](DD-pr-review-github-files.md#validation-and-rollout-gates) before enabling on another host. |
 | Maintenance ingress | `PR_MAINTAIN_INGRESS_KEY_FILE` | Owner-only key for signed submissions from Compose to the current user's host ingress. Keep the separate legacy review ingress key outside Compose until old council-bound heads settle. |
 | Maintenance repository scope | `HERMES_AUTHORITY_SOURCE_FILE`, `HERMES_DOCKER_AUTHORITY_FILE` | Operator authority YAML and Docker-readable mirror; export shell overrides when using `scripts/fleet.sh`. Review discovery uses all accessible assigned PRs; maintenance remains scoped by authority. |
 | Hermes | Current user's `~/.hermes` profiles and credentials | Runs `pr-review-v1` and `pr-maintain-v1`; model and GitHub effect access stay on the host. |

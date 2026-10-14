@@ -1,6 +1,6 @@
 # DD: GitHub-native PR review with file handoffs
 
-- Status: approved direction; implementation and cutover pending
+- Status: implemented locally; host cutover completed after an authorized end-to-end canary
 - Decision owner: operator
 - Supersedes: the active review path described in [architecture](architecture.md) and the older [council design](hermes/DD-pr-review-council.md). Maintenance and inbox are unchanged.
 
@@ -27,7 +27,7 @@ The task carries repository, PR number, and full base/head SHAs. Reviewers use t
 
 Each specialist writes one bounded, owner-only JSON result file named `<specialist_task_id>-<role>.json` in a dedicated private results directory. A new card after archival uses a different task ID, so it does not overwrite an older result. Its Kanban handoff contains the file path, not findings or an artifact digest. Sol reads those paths, synthesizes the independent perspectives, and posts an exact-head review: `APPROVE` for clean/nit-only work, actionable `COMMENT` for required fixes (also `COMMENT` for self-authored PRs). A successful GitHub POST response with a review ID completes the final card with `completion_contract=local-only`; there is no mandatory second read, synchronous redaction, or human Review stage. On an ambiguous POST, read GitHub for a same-head review from our account before considering another attempt; never blindly retry.
 
-A host daily job removes only specialist-result files older than 24 hours from the fixed private directory. It does not inspect Kanban task state and its failure cannot affect review completion. The LaunchAgent template remains uninstalled until the reviewed result-file writer is ready and the operator approves cutover. Keep the producer stopped until the new path is validated. At cutover, stop the gateway and archive remaining non-archived cards on the `pr-review` board **before** installing the revised specialist profiles; do not delete GitHub reviews, maintenance cards, the board database, or historical effect records. Verify the installed profiles, then restart the gateway and enable one review producer. No old-card replay or archive exception to the GitHub prefilter.
+A host daily job removes only specialist-result files older than 24 hours from the fixed private directory. It does not inspect Kanban task state and its failure cannot affect review completion. Install the LaunchAgent at cutover, after the result-file writer is ready; loading the job does not execute it until its daily schedule. Keep the producer stopped while preparing or changing installed profiles; enable scheduled discovery only after one end-to-end canary succeeds. At cutover, stop the gateway and archive remaining non-archived cards on the `pr-review` board **before** installing the revised specialist profiles; do not delete GitHub reviews, maintenance cards, the board database, or historical effect records. Verify the installed profiles, then restart the gateway and enable one review producer. No old-card replay or archive exception to the GitHub prefilter.
 
 ## Alternatives and boundaries
 
@@ -47,4 +47,4 @@ The producer keeps its existing read-only discovery token. Specialists use the o
 3. In an isolated private directory: the janitor removes only matching result files older than 24 hours; failure logs and can retry next run. No task-state lookup.
 4. Before live admission: producer stopped, old non-archived `pr-review` cards archived by the operator-approved cutover, no running cards, existing local `gh` authentication available to specialists, and installed profiles/tools agree with this contract. Run one authorized end-to-end PR, then resume the schedule. Stop only the review producer if admission or completion misbehaves; maintenance and inbox stay on their existing paths.
 
-No files, cards, credentials, or GitHub effects are deleted by writing this design. Archival and activation are separate live actions requiring explicit approval.
+Archival and activation are separate live actions requiring explicit operator approval. The local host completed these gates; another host must repeat them before opt-in.
