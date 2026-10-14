@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import stat
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -83,6 +84,46 @@ def request_at(workspace):
     return request
 
 
+def _result_paths(workspace, spec, roles):
+    paths = {role: str(workspace / "input" / f"{role}-result.json") for role in roles}
+    board = Path(os.environ.get("HERMES_KANBAN_DB", ""))
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "")
+    if not task_id:
+        return paths
+    if (not board.is_absolute() or board.is_symlink() or not board.is_file()
+            or board.stat().st_uid != os.geteuid()):
+        raise ValueError("review board is unavailable for specialist results")
+    with closing(sqlite3.connect(f"file:{board}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        final = conn.execute("SELECT idempotency_key,assignee,status,body,model_override,provider_override "
+                             "FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if final is None or final["idempotency_key"] != spec["workflow_id"] + ":final":
+            return paths
+        body = json.loads(final["body"])
+        if (final["assignee"] != "pr-review-v1" or final["status"] != "running"
+                or final["model_override"] != "gpt-6-sol" or final["provider_override"] != "openai-codex"
+                or body.get("role") != "synthesis" or body.get("operation_id") != spec["operation_id"]
+                or body.get("artifact_digest") != spec["artifact_digest"]):
+            raise ValueError("synthesis result card differs")
+        for role, path in paths.items():
+            task = conn.execute("SELECT id,assignee,status,body FROM tasks WHERE idempotency_key=?",
+                                (spec["workflow_id"] + ":" + role,)).fetchone()
+            if (task is None or task["assignee"] != f"pr-review-{role}-v2" or task["status"] != "done"
+                    or json.loads(task["body"]).get("operation_id") != spec["operation_id"]):
+                raise ValueError("specialist result card differs")
+            run = conn.execute("SELECT profile,outcome,metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                               (task["id"],)).fetchone()
+            if run is None or run["profile"] != task["assignee"] or run["outcome"] != "completed":
+                raise ValueError("specialist result is incomplete")
+            result = json.loads(run["metadata"])
+            if (not isinstance(result, dict) or result.get("operation_id") != spec["operation_id"]
+                    or result.get("role") != role or not isinstance(result.get("findings"), list)):
+                raise ValueError("specialist result differs")
+            result.pop("artifact_digest", None)
+            COUNCIL._immutable_file(Path(path), ENQUEUE.canonical(result), max_bytes=65536)
+    return paths
+
+
 def prepare(workspace, github):
     request = request_at(workspace)
     state = github.state(request["repo"], request["number"])
@@ -113,7 +154,8 @@ def prepare(workspace, github):
                   for role in (*roles, "synthesis")}
     return {"workflow_id": spec["workflow_id"], "artifact_digest": spec["artifact_digest"],
             "head_sha": spec["head_sha"], "base_sha": spec["base_sha"],
-            "repository_path": spec["repository_path"], "roles": roles, "workspaces": workspaces}
+            "repository_path": spec["repository_path"], "roles": roles, "workspaces": workspaces,
+            "result_paths": _result_paths(workspace, spec, roles)}
 
 
 def cleanup(workspace, review_id, event, github):
@@ -140,8 +182,18 @@ def cleanup(workspace, review_id, event, github):
                "artifact_digest": artifact_digest, "review_id": review_id, "event": event}
     COUNCIL._immutable_file(receipt_path, json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode())
     ENQUEUE.fsync_dir(workspace)
-    redact_review_cards(request, artifact_digest)
-    for path in (context, manifest):
+    for attempt in range(10):
+        try:
+            redact_review_cards(request, artifact_digest)
+            break
+        except (ValueError, sqlite3.OperationalError) as error:
+            if (attempt == 9 or isinstance(error, ValueError) and str(error) != "review child run differs before redaction"
+                    or isinstance(error, sqlite3.OperationalError) and
+                    getattr(error, "sqlite_errorcode", None) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)):
+                raise
+            time.sleep(1)
+    for path in (*[workspace / "input" / f"{role}-result.json"
+                   for role in ("reliability", "mvp", "security")], context, manifest):
         if path.exists() or path.is_symlink():
             COUNCIL._immutable_file(path)
             path.unlink()
@@ -168,7 +220,7 @@ def redact_review_cards(request, artifact_digest):
             role = task["idempotency_key"].removeprefix(prefix)
             body = json.loads(task["body"])
             if role == "final":
-                if (final_seen or task["assignee"] != "pr-review-v1" or task["status"] != "running"
+                if (final_seen or task["assignee"] != "pr-review-v1" or task["status"] not in ("running", "blocked", "done")
                         or task["model_override"] != "gpt-6-sol" or task["provider_override"] != "openai-codex"
                         or body.get("role") != "synthesis"
                         or body.get("operation_id") != request["operation_id"]
