@@ -8,6 +8,7 @@ import subprocess
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 loader = importlib.machinery.SourceFileLoader('review_local', str(ROOT/'scripts/hermes-pr-review-local.py'))
@@ -27,6 +28,60 @@ pub_loader.exec_module(publisher)
 
 
 class LocalCheckoutTest(unittest.TestCase):
+    def test_clones_missing_repo_without_checkout_or_existing_branch_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve();code=root/'code';code.mkdir();source=root/'source';source.mkdir()
+            def git(*args):
+                return subprocess.run(['git','-C',str(source),*args],check=True,capture_output=True,text=True).stdout.strip()
+            git('init');git('config','user.email','test@example.test');git('config','user.name','fixture')
+            (source/'file.py').write_text('pinned\n');git('add','file.py');git('commit','-m','head')
+            head=git('rev-parse','HEAD');real_run=subprocess.run;clones=[]
+            def fake_run(command,**kwargs):
+                if command[:3]==['gh','repo','clone']:
+                    clones.append(command)
+                    dest=Path(command[4]);real_run(['git','clone','--no-checkout',str(source),str(dest)],check=True,
+                                                capture_output=True)
+                    real_run(['git','-C',str(dest),'remote','set-url','origin',
+                              'https://github.com/example/widget.git'],check=True,capture_output=True)
+                    return subprocess.CompletedProcess(command,0,b'',b'')
+                return real_run(command,**kwargs)
+            with mock.patch.object(module.subprocess,'run',side_effect=fake_run):
+                found=module.resolve('example/widget',head,root=code)
+                self.assertEqual(module.resolve('example/widget',head,root=code),found)
+            self.assertEqual(found,code/'example/widget')
+            self.assertTrue((found/'.git').is_dir())
+            self.assertFalse((found/'file.py').exists())
+            self.assertEqual(found.stat().st_mode & 0o777,0o700)
+            self.assertEqual(len(clones),1)
+            self.assertIn('--no-checkout',clones[0])
+
+    def test_failed_clone_preserves_partial_destination_for_reconciliation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve()/'code';root.mkdir();attempts=[]
+            def fail_clone(command,**_kwargs):
+                attempts.append(command)
+                target=Path(command[4]);target.mkdir(mode=0o700)
+                (target/'partial').write_text('inspect before retry')
+                return subprocess.CompletedProcess(command,1,b'',b'failed')
+            with mock.patch.object(module.subprocess,'run',side_effect=fail_clone):
+                with self.assertRaisesRegex(ValueError,'clone failed'):
+                    module.resolve('example/widget','a'*40,root=root)
+                with self.assertRaisesRegex(ValueError,'destination already exists'):
+                    module.resolve('example/widget','a'*40,root=root)
+            self.assertEqual(len(attempts),1)
+            self.assertEqual((root/'example/widget/partial').read_text(),'inspect before retry')
+
+    def test_rejects_existing_checkout_with_credential_in_origin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp).resolve()/'code';repo=root/'widget';repo.mkdir(parents=True)
+            def git(*args):
+                return subprocess.run(['git','-C',str(repo),*args],check=True,capture_output=True,text=True).stdout.strip()
+            git('init');git('config','user.email','test@example.test');git('config','user.name','fixture')
+            git('remote','add','origin','https://token@github.com/example/widget.git')
+            (repo/'file.py').write_text('fixture\n');git('add','file.py');git('commit','-m','head')
+            with self.assertRaisesRegex(ValueError,'matching local checkout not found'):
+                module.resolve('example/widget',git('rev-parse','HEAD'),root=root,fetch=False)
+
     def test_does_not_select_a_sibling_feature_worktree(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)/'code';sibling=root/'widget-feature';sibling.mkdir(parents=True)
@@ -85,13 +140,14 @@ class LocalCheckoutTest(unittest.TestCase):
             council._verified_snapshot(workspace,spec)
             self.assertNotIn(b'dirty',diff)
             conn=sqlite3.connect(':memory:');self.addCleanup(conn.close);conn.row_factory=sqlite3.Row
-            conn.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT);'
+            conn.executescript('CREATE TABLE tasks(id TEXT,idempotency_key TEXT,assignee TEXT,body TEXT,model_override TEXT,provider_override TEXT);'
                                'CREATE TABLE task_links(parent_id TEXT,child_id TEXT);')
             class KB:
                 def create_task(self,db,**params):
                     task_id='t_%08x'%(db.execute('SELECT count(*) FROM tasks').fetchone()[0]+1)
-                    db.execute('INSERT INTO tasks VALUES (?,?,?,?)',
-                               (task_id,params['idempotency_key'],params['assignee'],params['body']))
+                    db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?)',
+                               (task_id,params['idempotency_key'],params['assignee'],params['body'],
+                                params['model_override'],params['provider_override']))
                     for parent in params.get('parents',()):db.execute('INSERT INTO task_links VALUES (?,?)',(parent,task_id))
                     db.commit();return task_id
             council.setup(KB(),conn,spec,workspace)
@@ -131,7 +187,7 @@ class LocalCheckoutTest(unittest.TestCase):
             self.assertEqual(module.resolve('example/widget',head,root=root),repo.resolve())
             self.assertEqual((repo/'file.py').read_text(),'dirty uncommitted edit\n')
             self.assertFalse((root/'.hermes-repos').exists())
-            with self.assertRaises(ValueError):module.resolve('someone/widget',head,root=root)
+            with self.assertRaises(ValueError):module.resolve('someone/widget',head,root=root,fetch=False)
             with self.assertRaises(ValueError):module.resolve('example/widget','0'*40,root=root,fetch=False)
 
 
