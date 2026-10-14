@@ -17,7 +17,13 @@ case "${1:-}" in
   up)
     "$ROOT/scripts/compose.sh" config --format json | python3 -c '
 import json, os, pathlib, stat, sys
-secrets = json.load(sys.stdin)["secrets"]
+config = json.load(sys.stdin)
+root = pathlib.Path(config["services"]["pr-producer-review"]["environment"]["PR_REVIEW_WORK_ROOT"])
+if (root != pathlib.Path.home() / ".local/share/ai-pr-automation/pr-kanban"
+        or root.is_symlink() or not root.is_dir() or root.stat().st_uid != os.getuid()
+        or stat.S_IMODE(root.stat().st_mode) != 0o700):
+    raise SystemExit("configure owner-only review work root before fleet up")
+secrets = config["secrets"]
 for name in ("github_discovery_token", "pr_review_legacy_owners", "pr_maintain_ingress_key"):
     path = pathlib.Path(secrets[name]["file"])
     try:

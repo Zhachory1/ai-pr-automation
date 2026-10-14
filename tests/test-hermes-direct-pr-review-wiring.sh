@@ -31,8 +31,8 @@ printf '#!/bin/sh\nexit 0\n' > "$tmp/repo/scripts/hermes-authority.py"
 cat > "$tmp/repo/scripts/compose.sh" <<'SH'
 #!/bin/sh
 if [ "$*" = 'config --format json' ]; then
-  printf '{"secrets":{"github_discovery_token":{"file":"%s"},"pr_review_legacy_owners":{"file":"%s"},"pr_maintain_ingress_key":{"file":"%s"}}}\n' \
-    "${MOCK_TOKEN_FILE:-/dev/null}" "${MOCK_OWNERS_FILE:-/dev/null}" "${MOCK_MAINTAIN_FILE:-/dev/null}"
+  printf '{"services":{"pr-producer-review":{"environment":{"PR_REVIEW_WORK_ROOT":"%s"}}},"secrets":{"github_discovery_token":{"file":"%s"},"pr_review_legacy_owners":{"file":"%s"},"pr_maintain_ingress_key":{"file":"%s"}}}\n' \
+    "${MOCK_WORK_ROOT:-/tmp/pr-kanban}" "${MOCK_TOKEN_FILE:-/dev/null}" "${MOCK_OWNERS_FILE:-/dev/null}" "${MOCK_MAINTAIN_FILE:-/dev/null}"
 else
   printf 'compose %s\n' "$*" >> "$MOCK_LOG"
 fi
@@ -50,9 +50,12 @@ cat > "$tmp/bin/launchctl" <<'SH'
 printf 'launchctl %s\n' "$*" >> "$MOCK_LOG"; exit 1
 SH
 chmod +x "$tmp/repo/scripts/compose.sh" "$tmp/repo/scripts/hermes-authority.py" "$tmp/bin/hermes" "$tmp/bin/sudo" "$tmp/bin/launchctl"
+mkdir -p "$tmp/home/.local/share/ai-pr-automation/pr-kanban"
+chmod 0700 "$tmp/home/.local/share/ai-pr-automation/pr-kanban"
+export MOCK_WORK_ROOT="$tmp/home/.local/share/ai-pr-automation/pr-kanban"
 reject() {
   : > "$tmp/ops.log"
-  if PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" HERMES_AUTHORITY_SOURCE_FILE="$tmp/authority.yaml" \
+  if HOME="$tmp/home" PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" HERMES_AUTHORITY_SOURCE_FILE="$tmp/authority.yaml" \
      HERMES_DOCKER_AUTHORITY_FILE="$mirror" MOCK_TOKEN_FILE="${MOCK_TOKEN_FILE:-/dev/null}" \
      MOCK_OWNERS_FILE="${MOCK_OWNERS_FILE:-/dev/null}" MOCK_MAINTAIN_FILE="${MOCK_MAINTAIN_FILE:-/dev/null}" \
      bash "$tmp/repo/scripts/fleet.sh" up >"$tmp/output" 2>&1; then
@@ -74,7 +77,15 @@ for secret in token owners maintain; do
   chmod 0600 "$tmp/secrets/$secret"
 done
 chmod 0755 "$tmp/secrets"; reject; chmod 0700 "$tmp/secrets"
-PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" HERMES_AUTHORITY_SOURCE_FILE="$tmp/authority.yaml" \
+: > "$tmp/ops.log"
+if HOME="$tmp/home" MOCK_WORK_ROOT="$tmp/elsewhere/pr-kanban" PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" \
+    HERMES_AUTHORITY_SOURCE_FILE="$tmp/authority.yaml" HERMES_DOCKER_AUTHORITY_FILE="$mirror" \
+    bash "$tmp/repo/scripts/fleet.sh" up >"$tmp/output" 2>&1; then
+  echo 'FAIL: fleet up accepted wrong host review work root' >&2; exit 1
+fi
+grep -Fq 'review work root' "$tmp/output"
+[[ ! -s "$tmp/ops.log" && ! -e "$mirror" ]] || { echo 'FAIL: invalid root mutated fleet' >&2; exit 1; }
+HOME="$tmp/home" PATH="$tmp/bin:$PATH" MOCK_LOG="$tmp/ops.log" HERMES_AUTHORITY_SOURCE_FILE="$tmp/authority.yaml" \
   HERMES_DOCKER_AUTHORITY_FILE="$mirror" bash "$tmp/repo/scripts/fleet.sh" up
 cmp "$tmp/authority.yaml" "$mirror"
 [[ "$(stat -f %Lp "$mirror")" == 644 ]]

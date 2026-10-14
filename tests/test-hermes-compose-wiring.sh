@@ -6,13 +6,13 @@ mkdir -p "$tmp/code"
 printf 'repos: []\n' > "$tmp/authority.yaml"
 env CODE_ROOT="$tmp/code" HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HINDSIGHT_DB_PASSWORD=test \
   GITHUB_DISCOVERY_TOKEN_FILE="$tmp/token" \
-  PR_REVIEW_LEGACY_OWNERS_FILE="$tmp/legacy.json" PR_REVIEW_WORK_ROOT="$tmp/work-root" \
+  PR_REVIEW_LEGACY_OWNERS_FILE="$tmp/legacy.json" PR_REVIEW_WORK_ROOT="$HOME/.local/share/ai-pr-automation/pr-kanban" \
   PR_MAINTAIN_INGRESS_KEY_FILE="$tmp/maintain" \
   FLEET_CONTROLLER_TLS_CERT_FILE=/dev/null FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null \
   docker compose config --format json > "$tmp/config.json"
 env CODE_ROOT="$tmp/code" HERMES_AUTHORITY_FILE="$tmp/authority.yaml" HINDSIGHT_DB_PASSWORD=test \
   GITHUB_DISCOVERY_TOKEN_FILE="$tmp/token" \
-  PR_REVIEW_LEGACY_OWNERS_FILE="$tmp/legacy.json" PR_REVIEW_WORK_ROOT="$tmp/work-root" \
+  PR_REVIEW_LEGACY_OWNERS_FILE="$tmp/legacy.json" PR_REVIEW_WORK_ROOT="$HOME/.local/share/ai-pr-automation/pr-kanban" \
   PR_MAINTAIN_INGRESS_KEY_FILE="$tmp/maintain" \
   FLEET_CONTROLLER_TLS_CERT_FILE=/dev/null FLEET_CONTROLLER_TLS_KEY_FILE=/dev/null \
   docker compose --profile legacy-signal config --format json > "$tmp/legacy-config.json"
@@ -41,7 +41,7 @@ review = services['pr-producer-review']
 assert not review.get('profiles') and not review.get('depends_on')
 assert {secret['source'] for secret in review['secrets']} == {'github_discovery_token', 'pr_review_legacy_owners'}
 assert {volume['target'] for volume in review['volumes']} == {'/state'}
-assert review['environment']['PR_REVIEW_WORK_ROOT'] == str(Path(sys.argv[1]).parent / 'work-root')
+assert review['environment']['PR_REVIEW_WORK_ROOT'] == str(Path.home() / '.local/share/ai-pr-automation/pr-kanban')
 assert 'HERMES_KANBAN_INGRESS_URL' not in review['environment']
 maintain = services['pr-producer-maintain']
 assert not maintain.get('profiles') and not maintain.get('depends_on')
