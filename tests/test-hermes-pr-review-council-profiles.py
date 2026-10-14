@@ -55,6 +55,10 @@ class CouncilProfilesTest(unittest.TestCase):
                     self.assertNotIn('GITHUB_READ_TOKEN_FILE',prompt)
                     self.assertNotIn('snapshot/diff.patch',prompt)
                     self.assertIn('No Kanban comments',prompt)
+                    self.assertIn('Do not print the full comparison JSON',prompt)
+                    self.assertIn('fetch smaller ranges before blocking',prompt)
+                    self.assertIn('containing `role`, `verdict`, and `findings`',prompt)
+                    self.assertIn('--jq',prompt)
                     self.assertIn('<your_task_id>-<role>.json',prompt)
         parent_dir=ROOT/'agent-config/hermes/profiles/pr-review-v1'
         parent_cfg=yaml.safe_load((parent_dir/'config.yaml').read_text())
@@ -64,6 +68,7 @@ class CouncilProfilesTest(unittest.TestCase):
         self.assertNotIn('PR_REVIEW_SNAPSHOT_BIN',str(parent_cfg))
         parent=(parent_dir/'SOUL.md').read_text()
         self.assertIn('<specialist_task_id>-<role>.json',parent)
+        self.assertIn('do not require a second operation ID inside the file',parent)
         skill=(parent_dir/'skills/pr-review/SKILL.md').read_text()
         for text in (parent,skill):
             self.assertNotIn('needs-info',text)
