@@ -2,15 +2,9 @@ gateway:
   api_server:
     enabled: false
 terminal:
-  env_passthrough: [GH_CONFIG_DIR, PR_REVIEW_SNAPSHOT_BIN]
-mcp_servers:
-  memory-recall:
-    command: python3
-    args: [/usr/local/libexec/ai-pr-automation/hermes-memory-recall-shim]
-    env:
-      HERMES_MEMORY_BACKEND: hindsight
-  coderag:
-    url: http://127.0.0.1:9750/mcp
+  env_passthrough: [GH_CONFIG_DIR]
+platform_toolsets:
+  cli: [terminal, file, kanban, skills]
 model:
   provider: openai-codex
   default: gpt-6-sol
@@ -23,7 +17,7 @@ auxiliary:
 skills:
   creation_nudge_interval: 0
 agent:
-  disabled_toolsets: [delegation]
+  disabled_toolsets: [delegation, memory, browser, web, computer_use, code_execution, vision, image_gen, tts, todo, connections]
   max_turns: 60
   run_budget_seconds: 1800
   api_max_retries: 0

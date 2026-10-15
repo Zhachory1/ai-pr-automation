@@ -34,12 +34,28 @@ if [[ "$1" == search && "$2" == prs ]]; then
     printf 'other/repo\t9\thttps://x/9\tUngranted PR\t1700000000\n'
   fi
 elif [[ "$1" == pr && "$2" == view ]]; then
-  printf '%s\n' "${HEAD_SHA:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}"
+  if [[ "$*" == *'--json headRefOid,baseRefOid'* ]]; then
+    printf '%s\t%s\n' "${HEAD_SHA:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}" \
+      "${BASE_SHA:-cccccccccccccccccccccccccccccccccccccccc}"
+  else
+    printf '%s\n' "${HEAD_SHA:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}"
+  fi
 elif [[ "$1" == api && "$2" == user ]]; then
   echo maintainer
 elif [[ -n "${FAIL_API_PR:-}" && "$*" == *"/pulls/$FAIL_API_PR/"* ]]; then
   exit 9
 elif [[ "$1" == api && "$*" == *'/reviews?per_page=100'* ]]; then
+  if [[ "${PR_REVIEW_QUEUE_ENGINE:-}" == dashboard ]]; then
+    if [[ -n "${REVIEWED_PR_NUMBER:-}" && "$*" == *"/pulls/$REVIEWED_PR_NUMBER/reviews"* ]]; then
+      printf '[]\n'
+      jq -cn --arg sha "${REVIEWED_HEAD:-${HEAD_SHA:-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef}}" \
+        --arg state "${REVIEWED_STATE:-APPROVED}" \
+        '[{id:1,user:{login:"maintainer"},commit_id:$sha,state:$state}]'
+    else
+      printf '[]\n'
+    fi
+    exit 0
+  fi
   jq -cn '[{id:1,user:{login:"maintainer"},body:"own review",submitted_at:"2026-01-01T00:00:00Z"}]'
   if [[ "${FEEDBACK_VERSION:-none}" != none && "${FEEDBACK_KIND:-all}" =~ ^(all|review)$ ]]; then jq -cn --arg v "$FEEDBACK_VERSION" '[{id:10,user:{login:"reviewer"},body:("review-"+$v),submitted_at:"2026-01-02T00:00:00Z"}]'; fi
 elif [[ "$1" == api && "$2" == graphql ]]; then
@@ -341,11 +357,12 @@ echo "$bridge_deferred_out" | grep -q 'admitted=0 failed=0 skipped=1' \
 # Dashboard mode admits assigned PRs across repos without a repository allowlist.
 cat > "$tmp/bin/dashboard-submit" <<'PY'
 import json,os,pathlib,sys
-repo,number,title,head=sys.argv[1:]
+repo,number,title,head,base=sys.argv[1:]
 with pathlib.Path(os.environ['TEST_STATE'],'dashboard.log').open('a') as out:
-    out.write(json.dumps([repo,number,title,head])+'\n')
-status='excluded' if os.environ.get('EXCLUDE_PR')==number else 'ready'
-print(json.dumps({'operation_id':'pr-review-'+'a'*64,'task_id':None if status=='excluded' else 't_12345678',
+    out.write(json.dumps([repo,number,title,head,base])+'\n')
+status=('invalid' if os.environ.get('INVALID_DASHBOARD_PR')==number else
+        'existing' if os.environ.get('EXISTING_DASHBOARD_PR')==number else 'ready')
+print(json.dumps({'operation_id':'pr-review-'+'a'*64,'task_id':None if status=='invalid' else 't_12345678',
                   'status':status}))
 PY
 : > "$tmp/dashboard.log"
@@ -355,12 +372,41 @@ dashboard_out="$(PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=
   bin/hermes-pr-producer review 2>&1)"
 [[ "$(wc -l < "$tmp/dashboard.log" | tr -d ' ')" == 3 ]] || { echo 'FAIL: dashboard discovery excluded a repository' >&2; exit 1; }
 grep -Fq 'other/repo' "$tmp/dashboard.log"
+jq -es 'all(.[]; .[3]=="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" and .[4]=="cccccccccccccccccccccccccccccccccccccccc")' "$tmp/dashboard.log" >/dev/null
 echo "$dashboard_out" | grep -q 'admitted=3 failed=0 skipped=0' || { echo "FAIL: dashboard summary $dashboard_out" >&2; exit 1; }
 : > "$tmp/dashboard.log"
-excluded_out="$(EXCLUDE_PR=9 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
-  HERMES_AUTHORITY_FILE="$tmp/nonexistent-authority.yaml" \
-  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" \
-  bin/hermes-pr-producer review 2>&1)"
-echo "$excluded_out" | grep -q 'admitted=2 failed=0 skipped=1' || { echo 'FAIL: legacy exclusion not skipped' >&2; exit 1; }
+if INVALID_DASHBOARD_PR=9 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+    HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" \
+    bin/hermes-pr-producer review >"$tmp/dashboard-invalid.out" 2>&1; then
+  echo 'FAIL: invalid dashboard response accepted' >&2; exit 1
+fi
+grep -q 'admitted=2 failed=1 skipped=0' "$tmp/dashboard-invalid.out"
+existing_out="$(EXISTING_DASHBOARD_PR=9 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" bin/hermes-pr-producer review 2>&1)"
+echo "$existing_out" | grep -q 'admitted=2 failed=0 skipped=1' || { echo 'FAIL: existing Kanban card counted as a new admission' >&2; exit 1; }
+: > "$tmp/dashboard.log"
+reviewed_out="$(REVIEWED_PR_NUMBER=7 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" bin/hermes-pr-producer review 2>&1)"
+[[ "$(wc -l < "$tmp/dashboard.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: own same-head review admitted to Kanban' >&2; exit 1; }
+echo "$reviewed_out" | grep -q 'admitted=2 failed=0 skipped=1'
+: > "$tmp/dashboard.log"
+pending_out="$(REVIEWED_PR_NUMBER=7 REVIEWED_STATE=PENDING PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" bin/hermes-pr-producer review 2>&1)"
+[[ "$(wc -l < "$tmp/dashboard.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: own pending same-head review admitted to Kanban' >&2; exit 1; }
+echo "$pending_out" | grep -q 'admitted=2 failed=0 skipped=1'
+: > "$tmp/dashboard.log"
+old_head_out="$(REVIEWED_PR_NUMBER=7 REVIEWED_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+  HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" bin/hermes-pr-producer review 2>&1)"
+[[ "$(wc -l < "$tmp/dashboard.log" | tr -d ' ')" == 3 ]] || { echo 'FAIL: old-head review suppressed new head' >&2; exit 1; }
+echo "$old_head_out" | grep -q 'admitted=3 failed=0 skipped=0'
+: > "$tmp/dashboard.log"
+if FAIL_API_PR=7 PATH="$tmp/bin:$PATH" TEST_STATE="$tmp" PR_REVIEW_QUEUE_ENGINE=dashboard \
+    HERMES_KANBAN_DASHBOARD_SUBMIT_BIN="$tmp/bin/dashboard-submit" \
+    bin/hermes-pr-producer review >"$tmp/dashboard-failed.out" 2>&1; then
+  echo 'FAIL: unavailable review history returned success' >&2; exit 1
+fi
+[[ "$(wc -l < "$tmp/dashboard.log" | tr -d ' ')" == 2 ]] || { echo 'FAIL: review API failure admitted the affected PR or starved others' >&2; exit 1; }
+grep -q 'admitted=2 failed=1 skipped=0' "$tmp/dashboard-failed.out"
 
 echo 'PASS: hermes-pr-producer direct, API, bridge, and dashboard modes'

@@ -18,29 +18,58 @@ class CouncilProfilesTest(unittest.TestCase):
                 folder=ROOT/f"agent-config/hermes/profiles/pr-review-{role}-v2"
                 config=yaml.safe_load((folder/'config.yaml').read_text())
                 self.assertEqual(config['model'],{'provider':'openai-codex','default':model})
-                self.assertEqual(config['platform_toolsets']['cli'],['council-tools'])
+                self.assertEqual(config['platform_toolsets']['cli'],
+                                 ['council-tools','terminal','file'] if role in ('reliability','mvp','security')
+                                 else ['council-tools'])
                 self.assertEqual(config['plugins']['enabled'],[])
                 self.assertFalse(config['memory']['memory_enabled'])
                 self.assertEqual(set(config['mcp_servers']),{'council-tools'})
                 server=config['mcp_servers']['council-tools']
-                self.assertEqual(set(server['tools']['include']),TOOLS | ({'kanban_parent_handoffs'} if role=='synthesis' else set()))
+                expected_tools=(TOOLS-{'snapshot_read','snapshot_search','kanban_comment'} if role in ('reliability','mvp','security')
+                                else TOOLS | ({'kanban_parent_handoffs'} if role=='synthesis' else set()))
+                self.assertEqual(set(server['tools']['include']),expected_tools)
                 self.assertEqual(server['command'],'${HERMES_COUNCIL_TOOLS_BIN}')
                 self.assertTrue(server['worker_only'])
-                self.assertNotIn('GH_CONFIG_DIR',str(config))
-                self.assertNotIn('github',str(config).lower())
-                for forbidden in ('terminal','file','browser','web','kanban','delegation'):
+                if role in ('generalist','synthesis'):
+                    self.assertNotIn('GH_CONFIG_DIR',str(config))
+                for forbidden in ('browser','web','kanban','delegation'):
                     self.assertIn(forbidden,config['agent']['disabled_toolsets'])
                 prompt=(folder/'SOUL.md').read_text()
-                self.assertIn('artifact_digest',prompt)
+                if role in ('reliability','mvp','security'):
+                    self.assertEqual(config['terminal']['env_passthrough'],['GH_CONFIG_DIR'])
+                    for enabled in ('terminal','file'):
+                        self.assertNotIn(enabled,config['agent']['disabled_toolsets'])
+                    self.assertNotIn('artifact_digest',prompt)
+                else:
+                    self.assertNotIn('github',str(config).lower())
+                    self.assertIn('artifact_digest',prompt)
+                    for forbidden in ('terminal','file'):
+                        self.assertIn(forbidden,config['agent']['disabled_toolsets'])
                 self.assertIn('kanban_complete',prompt)
                 self.assertNotIn('autopraxis-pr-review',prompt)
                 self.assertNotIn('HERMES RUNS API OVERRIDE',prompt)
                 if role in ('reliability','mvp','security'):
                     self.assertNotIn('needs-info',prompt)
-                    for step in ('input/identity.json','snapshot/diff.patch','kanban_block'):
+                    for step in ('gh api','result_path','kanban_block'):
                         self.assertIn(step,prompt)
-        parent=(ROOT/'agent-config/hermes/profiles/pr-review-v1/SOUL.md').read_text()
-        skill=(ROOT/'agent-config/hermes/profiles/pr-review-v1/skills/pr-review/SKILL.md').read_text()
+                    self.assertNotIn('GITHUB_READ_TOKEN_FILE',prompt)
+                    self.assertNotIn('snapshot/diff.patch',prompt)
+                    self.assertIn('No Kanban comments',prompt)
+                    self.assertIn('Do not print the full comparison JSON',prompt)
+                    self.assertIn('fetch smaller ranges before blocking',prompt)
+                    self.assertIn('containing `role`, `verdict`, and `findings`',prompt)
+                    self.assertIn('--jq',prompt)
+                    self.assertIn('<your_task_id>-<role>.json',prompt)
+        parent_dir=ROOT/'agent-config/hermes/profiles/pr-review-v1'
+        parent_cfg=yaml.safe_load((parent_dir/'config.yaml').read_text())
+        self.assertEqual(parent_cfg['platform_toolsets']['cli'],['terminal','file','kanban','skills'])
+        self.assertEqual(parent_cfg['terminal']['env_passthrough'],['GH_CONFIG_DIR'])
+        self.assertNotIn('mcp_servers',parent_cfg)
+        self.assertNotIn('PR_REVIEW_SNAPSHOT_BIN',str(parent_cfg))
+        parent=(parent_dir/'SOUL.md').read_text()
+        self.assertIn('<specialist_task_id>-<role>.json',parent)
+        self.assertIn('do not require a second operation ID inside the file',parent)
+        skill=(parent_dir/'skills/pr-review/SKILL.md').read_text()
         for text in (parent,skill):
             self.assertNotIn('needs-info',text)
             self.assertIn('kanban_block',text)
