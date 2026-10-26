@@ -154,14 +154,15 @@ def history(value):
         strings = (item[key] for key in ("profile","step_key","status","outcome","summary","error"))
         if type(item["id"]) is not int or item["id"] <= 0 or not all(isinstance(field, (str, type(None))) for field in strings) or not isinstance(item["metadata"], (dict, type(None))) or any(field is not None and type(field) is not int for field in (item["worker_pid"],item["started_at"],item["ended_at"])): fail("run history drift")
 
-def verify_task(task, task_id, body, title, workspace, tenant, runtime, status, assignees, operational=False, allow_legacy=True):
+def verify_task(task, task_id, body, title, workspace, tenant, runtime, status, assignees, operational=False, allow_legacy=True, strict=True):
     exact(task, TASK_KEYS, "task")
     model, provider = model_policy(tenant, task if allow_legacy else None)
-    expected = {"id":task_id,"body":body,"title":title,"priority":0,"model_override":model,"provider_override":provider,"workspace_kind":"dir","workspace_path":str(workspace),"branch_name":None,"project_id":None,"tenant":tenant,
+    expected = {"id":task_id,"priority":0,"model_override":model,"provider_override":provider,"workspace_kind":"dir","workspace_path":str(workspace),"branch_name":None,"project_id":None,"tenant":tenant,
                 "skills":[],"max_runtime_seconds":runtime,"max_retries":1,"created_by":"operator","session_id":None,"workflow_template_id":None,"current_step_key":None,"completion_contract":"local-only"}
-    if any(task[key] != item for key,item in expected.items()) or task["status"] != status or task["assignee"] not in assignees or type(task["created_at"]) is not int or (task["started_at"] is not None and type(task["started_at"]) is not int): fail("Kanban card drift")
+    if strict: expected.update(body=body, title=title)
+    if any(task[key] != item for key,item in expected.items()) or task["status"] != status or (strict and task["assignee"] not in assignees) or type(task["created_at"]) is not int or (task["started_at"] is not None and type(task["started_at"]) is not int): fail("Kanban card drift")
     terminal = status in {"done","archived"}
-    if (terminal and type(task["completed_at"]) is not int) or (not terminal and task["completed_at"] is not None): fail("Kanban completion drift")
+    if (strict and terminal and type(task["completed_at"]) is not int) or (not terminal and task["completed_at"] is not None): fail("Kanban completion drift")
     if (not terminal and task["result"] is not None) or (terminal and not isinstance(task["result"], (str, type(None)))) or not bounded(task["result"]): fail("Kanban result drift")
     error = task["last_failure_error"]
     if error is not None and (not operational or not isinstance(error, str) or not error or len(error.encode()) > 4096): fail("Kanban failure drift")
