@@ -272,7 +272,7 @@ class IngressTest(unittest.TestCase):
                 self.assertEqual(ingress.admit(self.config, "pr-maintain", "b" * 64, payload)["status"], "deferred")
                 task.update(model_override=ingress.ENQUEUE.MODEL,provider_override='anthropic')
                 task.update(status="done", completed_at=2, result="ok")
-                for field, altered in (("tenant", "other-operation"), ("body", "{}"),
+                for field, altered in (("tenant", "other-operation"),
                                        ("workspace_path", str(self.root)), ("id", "t_87654321")):
                     original = task[field]
                     task[field] = altered
@@ -297,6 +297,37 @@ class IngressTest(unittest.TestCase):
             with self.assertRaisesRegex(TimeoutError, "prior maintenance status timed out"):
                 ingress.admit(self.config, "pr-maintain", "b" * 64, payload)
             helper.assert_not_called()
+
+    def test_settled_prior_round_tolerates_board_recovery_rewrite(self):
+        # See #355: Kanban board recovery (e.g. triage `specify`, direct archive from a
+        # blocked/triage status) can legitimately rewrite a settled card's title/body/
+        # assignee/completed_at outside the ingress; that must not permanently block later
+        # maintenance rounds for the same PR.
+        first = {"operation_id": ingress.identity("pr-maintain", "owner/repo", 7, "a" * 40, "1" * 64)["operation_id"],
+                 **self.review, "feedback_digest": "1" * 64, "round": 1}
+        workspace = self.work / first["operation_id"]
+        workspace.mkdir(mode=0o700)
+        record = workspace / "request.json"
+        record.write_bytes(ingress.ENQUEUE.canonical(first))
+        record.chmod(0o440)
+        intent = workspace / "create-intent.json"
+        intent.write_bytes(ingress.ENQUEUE.canonical({"operation_id": first["operation_id"],
+            "request_digest": hashlib.sha256(record.read_bytes()).hexdigest()}))
+        intent.chmod(0o440)
+        binding = workspace / "task-id.json"
+        binding.write_bytes(ingress.ENQUEUE.canonical({"task_id": "t_12345678"}))
+        binding.chmod(0o440)
+        payload = {**self.review, "feedback_digest": "2" * 64}
+        for status, rewritten in (("archived", {"completed_at": None}),
+                                  ("archived", {"assignee": "council-reviewer-v2"}),
+                                  ("done", {"title": "Address feedback on PR", "body": "free-form board text"})):
+            shown = self.prior_card(first, workspace, status)
+            shown["task"].update(rewritten)
+            with mock.patch.object(ingress.ENQUEUE, "show", return_value=shown), \
+                 mock.patch.object(ingress, "invoke", return_value={"status": "ready"}) as helper:
+                with self.subTest(status=status, rewritten=rewritten):
+                    self.assertEqual(ingress.admit(self.config, "pr-maintain", "b" * 64, payload)["status"], "ready")
+                    self.assertEqual(helper.call_args.args[2]["round"], 2)
 
     def test_later_uncertain_create_is_not_hidden_by_earlier_active_round(self):
         for round_number in (1, 2):

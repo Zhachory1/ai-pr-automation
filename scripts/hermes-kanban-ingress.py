@@ -159,9 +159,14 @@ def round_request(config, payload):
         if status not in {"blocked", "ready", "running", "review", "done", "archived"}:
             raise ValueError("invalid prior maintenance task")
         _, _, profile, runtime = ENQUEUE.CONFIG["pr-maintain"]
+        # A settled (done/archived) prior round may have had its title/body/completion
+        # rewritten by Kanban board recovery (e.g. triage `specify`) or archived directly
+        # from a non-done status; only the immutable request and settlement matter for
+        # round accounting (see #355), so only in-flight rounds are checked byte-exact.
         ENQUEUE.verify_task(task, task_id, ENQUEUE.canonical(previous).decode(),
                             f"{previous['repo']}#{previous['number']} @ {previous['head_sha'][:8]}",
-                            entry, previous["operation_id"], runtime, status, {profile, None}, True)
+                            entry, previous["operation_id"], runtime, status, {profile, None}, True,
+                            strict=status not in {"done", "archived"})
         if time.monotonic() >= deadline:
             raise TimeoutError("prior maintenance status timed out")
         if status not in {"done", "archived"}:
@@ -193,6 +198,24 @@ def invoke(config, kind, payload):
     return value
 
 
+def _config_matches_source(path, source):
+    """Byte-exact, except Hermes's own onboarding.seen.* first-run write (see issue #354):
+    that stanza is appended to config.yaml the first time a profile runs interactively and
+    is not part of the profile's authored content."""
+    installed, authored = path.read_bytes(), source.read_bytes()
+    if installed == authored:
+        return True
+    try:
+        installed_value, authored_value = yaml.safe_load(installed), yaml.safe_load(authored)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(installed_value, dict) or not isinstance(authored_value, dict):
+        return False
+    installed_value.pop("onboarding", None)
+    authored_value.pop("onboarding", None)
+    return installed_value == authored_value
+
+
 def validate_council_runtime(config):
     install = config.council_install
     helper = config.home / "bin/hermes-council-tools"
@@ -214,7 +237,11 @@ def validate_council_runtime(config):
             raise ValueError("restricted review profile is not installed")
         for name in ("config.yaml", "SOUL.md"):
             path = target / name
-            if path.is_symlink() or not path.is_file() or path.read_bytes() != (source / name).read_bytes():
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("installed review profile differs from source")
+            matches = _config_matches_source(path, source / name) if name == "config.yaml" \
+                else path.read_bytes() == (source / name).read_bytes()
+            if not matches:
                 raise ValueError("installed review profile differs from source")
         env = target / ".env"
         if env.is_symlink() or not env.is_file() or env.stat().st_mode & 0o077:
