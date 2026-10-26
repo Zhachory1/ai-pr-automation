@@ -200,7 +200,7 @@ class IngressTest(unittest.TestCase):
                 ingress.invoke(self.config, "pr-review", request)
         cli.assert_called_once()
 
-    def test_review_replay_is_exact_and_maintenance_round_is_capped(self):
+    def test_review_replay_is_exact_and_maintenance_rounds_are_uncapped(self):
         responses, task_ids, payload_by_id = [], {}, {}
         def helper(config, kind, payload):
             responses.append(payload)
@@ -237,10 +237,10 @@ class IngressTest(unittest.TestCase):
                 binding.chmod(0o440)
             replay = ingress.admit(self.config, "pr-maintain", "b" * 64, {**self.review, "feedback_digest": "1" * 64, "head_sha": "b" * 40})
             self.assertEqual(replay["operation_id"], responses[2]["operation_id"])
-            capped = ingress.admit(self.config, "pr-maintain", "b" * 64, {**self.review, "feedback_digest": "4" * 64})
-            self.assertEqual(capped["status"], "capped")
-            self.assertIsNone(capped["task_id"])
-            self.assertEqual(len(responses), 6)
+            fourth = ingress.admit(self.config, "pr-maintain", "b" * 64, {**self.review, "feedback_digest": "4" * 64})
+            self.assertEqual(fourth["status"], "ready")
+            self.assertEqual(responses[-1]["round"], 4)
+            self.assertEqual(len(responses), 7)
 
     def test_distinct_maintenance_round_waits_for_prior_card(self):
         first = {"operation_id": ingress.identity("pr-maintain", "owner/repo", 7, "a" * 40, "1" * 64)["operation_id"],

@@ -65,7 +65,7 @@ def history_entry(entry):
     previous = json.loads(raw)
     if (raw != ENQUEUE.canonical(previous) or type(previous) is not dict
             or set(previous) != {"operation_id", "repo", "number", "url", "title", "head_sha", "feedback_digest", "round"}
-            or type(previous["round"]) is not int or previous["round"] not in range(1, 4)
+            or type(previous["round"]) is not int or previous["round"] < 1
             or validate({key: previous[key] for key in ("repo", "number", "url", "title", "head_sha", "feedback_digest")}, "pr-maintain")["operation_id"] != previous["operation_id"]
             or entry.name != previous["operation_id"]):
         raise ValueError("invalid maintenance history")
@@ -81,8 +81,6 @@ def add_history(history, entry):
     if digest in seen and seen[digest][0]["operation_id"] != previous["operation_id"]:
         raise ValueError("conflicting maintenance history")
     seen[digest] = (previous, entry)
-    if len(seen) > 3:
-        raise ValueError("maintenance round cap exceeded")
 
 
 def load_history(work, known=None):
@@ -143,8 +141,6 @@ def round_request(config, payload):
         previous, entry = seen[digest]
         prior_binding(previous, entry)
         return previous
-    if len(seen) == 3:
-        return None
     pending = [(previous, entry, prior_binding(previous, entry)) for previous, entry in seen.values()]
     env = {"HOME": str(config.home.parent), "HERMES_HOME": str(config.home), "PATH": os.environ.get("PATH", ""),
            "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1", "HERMES_SAFE_MODE": "1"}
