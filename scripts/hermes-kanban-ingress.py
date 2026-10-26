@@ -119,7 +119,10 @@ def prior_binding(previous, entry):
 
 def round_request(config, payload):
     repo, number, digest = payload["repo"].lower(), payload["number"], payload["feedback_digest"]
-    deadline = time.monotonic() + 3
+    # Scans every prior round's Kanban card (one `show` subprocess each) before admitting the
+    # next one; uncapped round counts (see fix/remove-maintenance-round-cap) mean this budget
+    # must scale past a handful of rounds instead of the original fixed 3s for <=3 rounds.
+    deadline = time.monotonic() + 30
     if config.history_dirs is not None:
         current = set()
         for entry in config.work.iterdir():

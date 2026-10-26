@@ -291,7 +291,7 @@ class IngressTest(unittest.TestCase):
                  mock.patch.object(ingress, "invoke", return_value={"status": "ready"}) as helper:
                 self.assertEqual(ingress.admit(self.config, "pr-maintain", "b" * 64, payload)["status"], "ready")
                 self.assertEqual(helper.call_args.args[2]["round"], 2)
-        with mock.patch.object(ingress.time, "monotonic", side_effect=[0, 0, 3]), \
+        with mock.patch.object(ingress.time, "monotonic", side_effect=[0, 0, 30]), \
              mock.patch.object(ingress.ENQUEUE, "show", return_value=shown), \
              mock.patch.object(ingress, "invoke") as helper:
             with self.assertRaisesRegex(TimeoutError, "prior maintenance status timed out"):
