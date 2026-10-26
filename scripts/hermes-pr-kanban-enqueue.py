@@ -48,7 +48,7 @@ def load_request(kind):
     if type(value["number"]) is not int or value["number"] <= 0: fail("invalid PR number")
     if not 0 < len(value["title"]) <= 256: fail("invalid title")
     if value["url"] != f"https://github.com/{value['repo']}/pull/{value['number']}": fail("invalid GitHub PR URL")
-    if kind == "pr-maintain" and (type(value["round"]) is not int or value["round"] not in range(1, 4)): fail("invalid maintenance round")
+    if kind == "pr-maintain" and (type(value["round"]) is not int or value["round"] < 1): fail("invalid maintenance round")
     try: operation = identity(kind, value["repo"], value["number"], value["head_sha"], value.get("feedback_digest"))
     except ValueError as error: raise ValueError("invalid request identity") from error
     if value["operation_id"] != operation["operation_id"]: fail("operation ID differs from canonical identity")
